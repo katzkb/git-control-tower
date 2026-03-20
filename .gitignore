@@ -1,0 +1,10 @@
+*~
+.DS_Store
+.idea/
+.history
+.metals
+.vscode
+project/
+.claude/*
+!.claude/settings.json
+.agent/*
