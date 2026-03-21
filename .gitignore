@@ -9,3 +9,8 @@ project/
 !.claude/settings.json
 .agent/*
 .serena
+
+
+# Added by cargo
+
+/target
