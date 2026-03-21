@@ -10,7 +10,5 @@ project/
 .agent/*
 .serena
 
-
 # Added by cargo
-
 /target
