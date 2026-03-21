@@ -6,8 +6,6 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Git Control Tower (gct) — a terminal TUI tool that acts as a "control tower" for Git/GitHub workflows. It provides full-screen views for Log, PR, Branch, and Worktree management, enabling developers to oversee repositories, start reviews, and clean up branches entirely from the terminal.
 
-Design spec: `.agent/spec/draft-spec.md`
-
 ## Tech Stack
 
 - **Language:** Rust
