@@ -64,14 +64,10 @@ pub struct App {
     pub notification: Option<Notification>,
     pub show_help: bool,
 
-    // Action requests (used by PR C)
-    #[allow(dead_code)]
+    // Action requests
     pub wt_delete_requested: Option<String>,
-    #[allow(dead_code)]
     pub wt_create_requested: Option<(String, u64)>,
-    #[allow(dead_code)]
     pub branch_selected: HashSet<String>,
-    #[allow(dead_code)]
     pub branch_delete_requested: bool,
 }
 
@@ -223,6 +219,60 @@ impl App {
                     self.request_details_for_selection();
                 }
             }
+            KeyCode::Char(' ') => {
+                if let Some(entry) = self.selected_entry() {
+                    let name = entry.name.clone();
+                    if !entry.is_current() && !Self::is_protected_branch(&name) {
+                        if self.branch_selected.contains(&name) {
+                            self.branch_selected.remove(&name);
+                        } else {
+                            self.branch_selected.insert(name);
+                        }
+                    }
+                }
+            }
+            KeyCode::Char('a') => {
+                for entry in &self.entries {
+                    if entry.is_merged()
+                        && !entry.is_current()
+                        && !Self::is_protected_branch(&entry.name)
+                    {
+                        self.branch_selected.insert(entry.name.clone());
+                    }
+                }
+            }
+            KeyCode::Char('d') => {
+                if !self.branch_selected.is_empty() {
+                    let count = self.branch_selected.len();
+                    let names: Vec<&str> =
+                        self.branch_selected.iter().map(|s| s.as_str()).collect();
+                    let preview = if count <= 3 {
+                        names.join(", ")
+                    } else {
+                        format!("{} and {} more", names[..2].join(", "), count - 2)
+                    };
+                    self.confirm_dialog = Some(ConfirmDialog::new(
+                        "Delete Branches",
+                        format!("Delete {count} branch(es)? [{preview}]"),
+                    ));
+                } else if let Some(entry) = self.selected_entry()
+                    && let Some(wt_path) = entry.worktree_path()
+                    && !entry.is_current()
+                {
+                    self.confirm_dialog = Some(ConfirmDialog::new(
+                        "Delete Worktree",
+                        format!("Remove worktree at {wt_path}?"),
+                    ));
+                }
+            }
+            KeyCode::Char('w') => {
+                if let Some(entry) = self.selected_entry()
+                    && entry.worktree.is_none()
+                    && let Some(pr) = &entry.pull_request
+                {
+                    self.wt_create_requested = Some((entry.name.clone(), pr.number));
+                }
+            }
             _ => {}
         }
     }
@@ -244,7 +294,13 @@ impl App {
     fn handle_confirm_key(&mut self, code: KeyCode) {
         match code {
             KeyCode::Char('y') => {
-                // PR C will add action dispatch here
+                if !self.branch_selected.is_empty() {
+                    self.branch_delete_requested = true;
+                } else if let Some(entry) = self.selected_entry()
+                    && let Some(wt_path) = entry.worktree_path()
+                {
+                    self.wt_delete_requested = Some(wt_path.to_string());
+                }
                 self.confirm_dialog = None;
             }
             KeyCode::Char('n') | KeyCode::Esc => {
@@ -254,7 +310,6 @@ impl App {
         }
     }
 
-    #[allow(dead_code)]
     pub fn is_protected_branch(name: &str) -> bool {
         matches!(name, "main" | "master")
     }
