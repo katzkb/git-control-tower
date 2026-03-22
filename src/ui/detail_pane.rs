@@ -40,7 +40,7 @@ pub fn draw(frame: &mut Frame, area: Rect, app: &App) {
     draw_worktree_section(&mut lines, entry);
 
     // PR section
-    draw_pr_section(&mut lines, entry, app.pr_detail.as_ref());
+    draw_pr_section(&mut lines, entry, app.selected_pr_detail());
 
     if lines.is_empty() {
         lines.push(Line::from(Span::styled(

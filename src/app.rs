@@ -1,6 +1,6 @@
 use crossterm::event::{KeyCode, KeyEvent};
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use crate::git::types::{Branch, BranchEntry, Commit, PrDetail, PullRequest, Worktree};
 use crate::ui::confirm_dialog::ConfirmDialog;
@@ -51,8 +51,8 @@ pub struct App {
     pub pull_requests: Vec<PullRequest>,
     pub gh_user: String,
 
-    // PR Detail (for detail pane)
-    pub pr_detail: Option<PrDetail>,
+    // PR Detail (for detail pane, cached by PR number)
+    pub pr_detail_cache: HashMap<u64, PrDetail>,
     pub pr_detail_scroll: usize,
     pub pr_detail_requested: Option<u64>,
 
@@ -90,7 +90,7 @@ impl App {
             worktrees: Vec::new(),
             pull_requests: Vec::new(),
             gh_user: String::new(),
-            pr_detail: None,
+            pr_detail_cache: HashMap::new(),
             pr_detail_scroll: 0,
             pr_detail_requested: None,
             git_status_requested: None,
@@ -125,20 +125,24 @@ impl App {
         self.filtered_entries().into_iter().nth(self.sidebar_scroll)
     }
 
+    /// Return the cached PR detail for the currently selected entry, if available.
+    pub fn selected_pr_detail(&self) -> Option<&PrDetail> {
+        let entry = self.selected_entry()?;
+        let pr_num = entry.pr_number()?;
+        self.pr_detail_cache.get(&pr_num)
+    }
+
     /// Signal that the selection changed; request PR detail and git status as needed.
     pub fn request_details_for_selection(&mut self) {
+        self.pr_detail_scroll = 0;
+
         let selected = self.selected_entry().cloned();
         if let Some(entry) = selected {
-            // Request PR detail if entry has a PR
-            if let Some(pr_num) = entry.pr_number() {
-                if self.pr_detail.as_ref().map(|d| d.number) != Some(pr_num) {
-                    self.pr_detail_requested = Some(pr_num);
-                    self.pr_detail = None;
-                    self.pr_detail_scroll = 0;
-                }
-            } else {
-                self.pr_detail = None;
-                self.pr_detail_scroll = 0;
+            // Request PR detail if entry has a PR and it's not cached
+            if let Some(pr_num) = entry.pr_number()
+                && !self.pr_detail_cache.contains_key(&pr_num)
+            {
+                self.pr_detail_requested = Some(pr_num);
             }
 
             // Request git status if entry has a worktree and status not yet loaded
@@ -147,9 +151,6 @@ impl App {
             {
                 self.git_status_requested = Some(wt_path.to_string());
             }
-        } else {
-            self.pr_detail = None;
-            self.pr_detail_scroll = 0;
         }
     }
 

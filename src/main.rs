@@ -96,10 +96,7 @@ async fn run(terminal: &mut ratatui::DefaultTerminal) -> anyhow::Result<()> {
     app.entries = merge_entries(&app.branches, &app.worktrees, &app.pull_requests);
     app.entries_loaded = true;
 
-    // Load git status for worktree entries
-    load_all_git_statuses(&mut app).await;
-
-    // Request details for the initial selection
+    // Request details for the initial selection (lazy-loads git status and PR detail)
     app.request_details_for_selection();
 
     loop {
@@ -128,7 +125,7 @@ async fn run(terminal: &mut ratatui::DefaultTerminal) -> anyhow::Result<()> {
             .await
                 && let Ok(detail) = serde_json::from_str::<PrDetail>(&output)
             {
-                app.pr_detail = Some(detail);
+                app.pr_detail_cache.insert(detail.number, detail);
             }
         }
 
@@ -152,17 +149,6 @@ async fn run(terminal: &mut ratatui::DefaultTerminal) -> anyhow::Result<()> {
     }
 
     Ok(())
-}
-
-/// Load git status for all entries that have worktrees.
-async fn load_all_git_statuses(app: &mut App) {
-    for entry in &mut app.entries {
-        if let Some(wt_path) = entry.worktree.as_ref().map(|w| w.path.clone())
-            && let Some(status) = data::load_git_status(&wt_path).await
-        {
-            entry.git_status = Some(status);
-        }
-    }
 }
 
 async fn load_branches(app: &mut App) {
