@@ -1,6 +1,7 @@
 use crossterm::event::{KeyCode, KeyEvent};
 
-use crate::git::types::{Commit, PrDetail, PullRequest};
+use crate::git::types::{Commit, PrDetail, PullRequest, Worktree};
+use crate::ui::confirm_dialog::ConfirmDialog;
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub enum ActiveView {
@@ -56,6 +57,12 @@ pub struct App {
     pub pr_detail: Option<PrDetail>,
     pub pr_detail_scroll: usize,
     pub pr_detail_requested: Option<u64>,
+    // Worktree View
+    pub worktrees: Vec<Worktree>,
+    pub wt_scroll: usize,
+    pub wt_loaded: bool,
+    pub confirm_dialog: Option<ConfirmDialog>,
+    pub wt_delete_requested: Option<String>,
 }
 
 impl App {
@@ -73,6 +80,11 @@ impl App {
             pr_detail: None,
             pr_detail_scroll: 0,
             pr_detail_requested: None,
+            worktrees: Vec::new(),
+            wt_scroll: 0,
+            wt_loaded: false,
+            confirm_dialog: None,
+            wt_delete_requested: None,
         }
     }
 
@@ -90,6 +102,12 @@ impl App {
     }
 
     pub fn handle_key(&mut self, key: KeyEvent) {
+        // Confirm dialog takes priority
+        if self.confirm_dialog.is_some() {
+            self.handle_confirm_key(key.code);
+            return;
+        }
+
         // PR detail: Esc/Backspace goes back to list instead of quitting
         if self.active_view == ActiveView::Pr && self.pr_detail.is_some() {
             self.handle_pr_detail_key(key.code);
@@ -105,6 +123,7 @@ impl App {
             _ => match self.active_view {
                 ActiveView::Log => self.handle_log_key(key.code),
                 ActiveView::Pr => self.handle_pr_key(key.code),
+                ActiveView::Worktree => self.handle_wt_key(key.code),
                 _ => {}
             },
         }
@@ -173,6 +192,49 @@ impl App {
             }
             KeyCode::Char('k') | KeyCode::Up => {
                 self.pr_detail_scroll = self.pr_detail_scroll.saturating_sub(1);
+            }
+            _ => {}
+        }
+    }
+
+    fn handle_wt_key(&mut self, code: KeyCode) {
+        let len = self.worktrees.len();
+        match code {
+            KeyCode::Char('j') | KeyCode::Down => {
+                if len > 0 && self.wt_scroll + 1 < len {
+                    self.wt_scroll += 1;
+                }
+            }
+            KeyCode::Char('k') | KeyCode::Up => {
+                self.wt_scroll = self.wt_scroll.saturating_sub(1);
+            }
+            KeyCode::Char('d') => {
+                if let Some(wt) = self.worktrees.get(self.wt_scroll) {
+                    // Don't allow deleting the main worktree (first one)
+                    if self.wt_scroll == 0 {
+                        return;
+                    }
+                    self.confirm_dialog = Some(ConfirmDialog::new(
+                        "Delete Worktree",
+                        format!("Remove worktree at {}?", wt.path),
+                    ));
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn handle_confirm_key(&mut self, code: KeyCode) {
+        match code {
+            KeyCode::Char('y') => {
+                // Execute the pending delete action
+                if let Some(wt) = self.worktrees.get(self.wt_scroll) {
+                    self.wt_delete_requested = Some(wt.path.clone());
+                }
+                self.confirm_dialog = None;
+            }
+            KeyCode::Char('n') | KeyCode::Esc => {
+                self.confirm_dialog = None;
             }
             _ => {}
         }

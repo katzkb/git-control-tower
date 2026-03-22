@@ -1,4 +1,5 @@
 mod branch_view;
+pub mod confirm_dialog;
 mod log_view;
 pub mod markdown;
 mod pr_detail;
@@ -21,7 +22,7 @@ pub fn draw(frame: &mut Frame, app: &App) {
         ActiveView::Log => log_view::draw(frame, chunks[0], app),
         ActiveView::Pr => pr_view::draw(frame, chunks[0], app),
         ActiveView::Branch => branch_view::draw(frame, chunks[0]),
-        ActiveView::Worktree => worktree_view::draw(frame, chunks[0]),
+        ActiveView::Worktree => worktree_view::draw(frame, chunks[0], app),
     }
 
     let status = Paragraph::new(format!(

@@ -71,7 +71,6 @@ pub struct PrDetail {
 }
 
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct Worktree {
     pub path: String,
     pub head: String,
