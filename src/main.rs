@@ -1,5 +1,6 @@
 mod app;
 mod event;
+mod git;
 mod ui;
 
 use std::time::Duration;
