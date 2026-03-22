@@ -1,5 +1,6 @@
 use serde::Deserialize;
 use std::fs;
+use std::path::PathBuf;
 
 #[derive(Debug, Deserialize, Default)]
 pub struct Config {
@@ -25,11 +26,35 @@ impl Default for WorktreeConfig {
     }
 }
 
+/// Load config from the first file found:
+/// 1. `~/.config/gct/config.toml`
+/// 2. `~/.gct.toml`
 pub fn load_config() -> Config {
-    fs::read_to_string(".gct.toml")
+    let candidates = config_paths();
+    for path in &candidates {
+        if let Ok(content) = fs::read_to_string(path)
+            && let Ok(config) = toml::from_str(&content)
+        {
+            return config;
+        }
+    }
+    Config::default()
+}
+
+fn config_paths() -> Vec<PathBuf> {
+    let mut paths = Vec::new();
+    if let Some(home) = home_dir() {
+        paths.push(home.join(".config/gct/config.toml"));
+        paths.push(home.join(".gct.toml"));
+    }
+    paths
+}
+
+fn home_dir() -> Option<PathBuf> {
+    std::env::var("HOME")
+        .or_else(|_| std::env::var("USERPROFILE"))
         .ok()
-        .and_then(|s| toml::from_str(&s).ok())
-        .unwrap_or_default()
+        .map(PathBuf::from)
 }
 
 #[cfg(test)]
@@ -56,5 +81,15 @@ dir = "../wt"
     fn test_parse_empty_config() {
         let config: Config = toml::from_str("").unwrap();
         assert_eq!(config.worktree.dir, "../gct-wt");
+    }
+
+    #[test]
+    fn test_config_paths() {
+        let paths = config_paths();
+        assert!(paths.len() <= 2);
+        if let Some(home) = home_dir() {
+            assert_eq!(paths[0], home.join(".config/gct/config.toml"));
+            assert_eq!(paths[1], home.join(".gct.toml"));
+        }
     }
 }
