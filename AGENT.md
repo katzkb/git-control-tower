@@ -28,19 +28,18 @@ cargo fmt -- --check     # Check formatting without modifying
 
 ## Architecture
 
-The application has 4 main views, each as a full-screen TUI panel navigated by keyboard shortcuts:
+The application has a branch-centric 2-pane layout:
 
-- **Log View** — Git commit graph and history (default/home view)
-- **PR View** — GitHub PR list with author/reviewer filtering, PR detail with markdown body, one-key worktree creation for review
-- **Branch View** — Local branches with remote sync status (merged/open), checkbox multi-select for batch deletion
-- **Worktree View** — List, delete, and inspect worktrees
+- **Main View** — Left sidebar lists branches with filter modes (Local/My PR/Review). Right detail pane shows git status, worktree info, and PR details with markdown rendering.
+- **Log View** — Git commit history, accessible via `l` key.
 
 Key design principles:
 - All Git operations go through `git` CLI; all GitHub operations go through `gh` CLI (not direct API calls)
 - Destructive operations (branch deletion, worktree removal) must always have a confirmation step
 - GitHub API calls run async (tokio) so the UI stays responsive during network I/O
-- Navigation is keyboard-only, full-screen transitions between views
+- Navigation is keyboard-only
 
 ## Language
 
-The spec and UI strings are in Japanese context. Comments and code should be in English.
+- Comments and code should be in English.
+- All PR titles, descriptions, commit messages, and issue content must be written in English.
