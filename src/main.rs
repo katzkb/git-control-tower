@@ -1,4 +1,5 @@
 mod app;
+mod config;
 mod data;
 mod event;
 mod git;
@@ -50,6 +51,7 @@ async fn check_prerequisites() {
 
 async fn run(terminal: &mut ratatui::DefaultTerminal) -> anyhow::Result<()> {
     let mut app = App::new();
+    let config = config::load_config();
     let mut events = EventHandler::new(Duration::from_millis(250));
 
     // Load commit history
@@ -164,7 +166,7 @@ async fn run(terminal: &mut ratatui::DefaultTerminal) -> anyhow::Result<()> {
         // Create worktree from PR if requested
         if let Some((head_ref, _pr_number)) = app.wt_create_requested.take() {
             let safe_name = head_ref.replace('/', "-");
-            let wt_path = format!("../gct-wt-{safe_name}");
+            let wt_path = format!("{}/{safe_name}", config.worktree.dir);
             match run_git(&["fetch", "origin", &head_ref]).await {
                 Ok(_) => match run_git(&["worktree", "add", &wt_path, &head_ref]).await {
                     Ok(_) => {
