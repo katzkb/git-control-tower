@@ -76,6 +76,8 @@ pub struct App {
     pub branch_delete_requested: bool,
     // Notification
     pub notification: Option<Notification>,
+    // Help
+    pub show_help: bool,
 }
 
 impl App {
@@ -105,6 +107,7 @@ impl App {
             branches_loaded: false,
             branch_delete_requested: false,
             notification: None,
+            show_help: false,
         }
     }
 
@@ -122,6 +125,17 @@ impl App {
     }
 
     pub fn handle_key(&mut self, key: KeyEvent) {
+        // Help overlay takes priority
+        if self.show_help {
+            match key.code {
+                KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('?') => {
+                    self.show_help = false;
+                }
+                _ => {}
+            }
+            return;
+        }
+
         // Confirm dialog takes priority
         if self.confirm_dialog.is_some() {
             self.handle_confirm_key(key.code);
@@ -135,6 +149,7 @@ impl App {
         }
 
         match key.code {
+            KeyCode::Char('?') => self.show_help = true,
             KeyCode::Char('q') | KeyCode::Esc => self.should_quit = true,
             KeyCode::Char('1') => self.active_view = ActiveView::Log,
             KeyCode::Char('2') => self.active_view = ActiveView::Pr,

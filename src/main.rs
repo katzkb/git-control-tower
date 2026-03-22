@@ -3,6 +3,7 @@ mod event;
 mod git;
 mod ui;
 
+use std::process;
 use std::time::Duration;
 
 use crossterm::event::KeyEventKind;
@@ -16,10 +17,33 @@ use crate::ui::notification::Notification;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    // Startup checks before initializing TUI
+    check_prerequisites().await;
+
     let mut terminal = ratatui::init();
     let result = run(&mut terminal).await;
     ratatui::restore();
     result
+}
+
+async fn check_prerequisites() {
+    if run_git(&["--version"]).await.is_err() {
+        eprintln!("Error: git is not installed or not in PATH.");
+        eprintln!("Please install git: https://git-scm.com/");
+        process::exit(1);
+    }
+
+    if run_gh(&["--version"]).await.is_err() {
+        eprintln!("Error: gh (GitHub CLI) is not installed or not in PATH.");
+        eprintln!("Please install gh: https://cli.github.com/");
+        process::exit(1);
+    }
+
+    if run_git(&["rev-parse", "--git-dir"]).await.is_err() {
+        eprintln!("Error: not a git repository.");
+        eprintln!("Please run gct from inside a git repository.");
+        process::exit(1);
+    }
 }
 
 async fn run(terminal: &mut ratatui::DefaultTerminal) -> anyhow::Result<()> {
