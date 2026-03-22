@@ -78,6 +78,7 @@ pub struct Worktree {
 }
 
 /// Unified entry keyed by branch name, aggregating local branch, worktree, and PR data.
+#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct BranchEntry {
     pub name: String,
@@ -87,6 +88,7 @@ pub struct BranchEntry {
     pub git_status: Option<GitStatus>,
 }
 
+#[allow(dead_code)]
 impl BranchEntry {
     pub fn has_local(&self) -> bool {
         self.local_branch.is_some() || self.worktree.is_some()
@@ -109,6 +111,7 @@ impl BranchEntry {
     }
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Clone, Default)]
 pub struct GitStatus {
     pub untracked: Vec<String>,
