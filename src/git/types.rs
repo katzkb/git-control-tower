@@ -6,7 +6,6 @@ pub struct Commit {
     pub message: String,
     pub author: String,
     pub date: String,
-    #[allow(dead_code)]
     pub graph: String,
 }
 

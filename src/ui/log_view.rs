@@ -21,17 +21,23 @@ pub fn draw(frame: &mut Frame, area: Rect, app: &App) {
         .commits
         .iter()
         .map(|commit| {
-            let line = Line::from(vec![
-                Span::styled(
-                    format!("{} ", commit.hash),
-                    Style::default().fg(Color::Yellow),
-                ),
-                Span::raw(&commit.message),
-                Span::styled(
-                    format!("  ({}, {})", commit.author, commit.date),
-                    Style::default().fg(Color::DarkGray),
-                ),
-            ]);
+            let mut spans = Vec::new();
+            if !commit.graph.is_empty() {
+                spans.push(Span::styled(
+                    &commit.graph,
+                    Style::default().fg(Color::Magenta),
+                ));
+            }
+            spans.push(Span::styled(
+                format!("{} ", commit.hash),
+                Style::default().fg(Color::Yellow),
+            ));
+            spans.push(Span::raw(&commit.message));
+            spans.push(Span::styled(
+                format!("  ({}, {})", commit.author, commit.date),
+                Style::default().fg(Color::DarkGray),
+            ));
+            let line = Line::from(spans);
             ListItem::new(line)
         })
         .collect();

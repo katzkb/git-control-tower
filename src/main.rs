@@ -53,6 +53,7 @@ async fn run(terminal: &mut ratatui::DefaultTerminal) -> anyhow::Result<()> {
     // Load commit history
     if let Ok(output) = run_git(&[
         "log",
+        "--graph",
         "--format=%h%x00%s%x00%an%x00%ad",
         "--date=short",
         "-n",
