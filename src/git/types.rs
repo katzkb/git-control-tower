@@ -76,3 +76,44 @@ pub struct Worktree {
     pub branch: Option<String>,
     pub is_bare: bool,
 }
+
+/// Unified entry keyed by branch name, aggregating local branch, worktree, and PR data.
+#[derive(Debug, Clone)]
+pub struct BranchEntry {
+    pub name: String,
+    pub local_branch: Option<Branch>,
+    pub worktree: Option<Worktree>,
+    pub pull_request: Option<PullRequest>,
+    pub git_status: Option<GitStatus>,
+}
+
+impl BranchEntry {
+    pub fn has_local(&self) -> bool {
+        self.local_branch.is_some() || self.worktree.is_some()
+    }
+
+    pub fn is_current(&self) -> bool {
+        self.local_branch.as_ref().is_some_and(|b| b.is_current)
+    }
+
+    pub fn is_merged(&self) -> bool {
+        self.local_branch.as_ref().is_some_and(|b| b.is_merged)
+    }
+
+    pub fn worktree_path(&self) -> Option<&str> {
+        self.worktree.as_ref().map(|w| w.path.as_str())
+    }
+
+    pub fn pr_number(&self) -> Option<u64> {
+        self.pull_request.as_ref().map(|pr| pr.number)
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct GitStatus {
+    pub untracked: Vec<String>,
+    pub unstaged: Vec<String>,
+    pub staged: Vec<String>,
+    pub ahead: u32,
+    pub behind: u32,
+}
