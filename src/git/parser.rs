@@ -84,7 +84,6 @@ pub fn parse_branches(output: &str, merged_output: &str) -> Vec<Branch> {
 }
 
 /// Parse output of `git worktree list --porcelain`
-#[allow(dead_code)]
 pub fn parse_worktrees(output: &str) -> Vec<Worktree> {
     let mut worktrees = Vec::new();
     let mut path = String::new();

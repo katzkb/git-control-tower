@@ -10,7 +10,7 @@ use crossterm::event::KeyEventKind;
 use crate::app::App;
 use crate::event::{Event, EventHandler};
 use crate::git::command::{run_gh, run_git};
-use crate::git::parser::parse_log;
+use crate::git::parser::{parse_log, parse_worktrees};
 use crate::git::types::{PrDetail, PullRequest};
 
 #[tokio::main]
@@ -59,6 +59,12 @@ async fn run(terminal: &mut ratatui::DefaultTerminal) -> anyhow::Result<()> {
     }
     app.prs_loaded = true;
 
+    // Load worktrees
+    if let Ok(output) = run_git(&["worktree", "list", "--porcelain"]).await {
+        app.worktrees = parse_worktrees(&output);
+    }
+    app.wt_loaded = true;
+
     loop {
         terminal.draw(|frame| ui::draw(frame, &app))?;
 
@@ -70,6 +76,18 @@ async fn run(terminal: &mut ratatui::DefaultTerminal) -> anyhow::Result<()> {
             Some(Event::Tick) => {}
             Some(Event::Key(_)) => {}
             None => break,
+        }
+
+        // Delete worktree if requested
+        if let Some(path) = app.wt_delete_requested.take() {
+            let _ = run_git(&["worktree", "remove", &path]).await;
+            // Refresh worktree list
+            if let Ok(output) = run_git(&["worktree", "list", "--porcelain"]).await {
+                app.worktrees = parse_worktrees(&output);
+                if app.wt_scroll >= app.worktrees.len() && app.wt_scroll > 0 {
+                    app.wt_scroll -= 1;
+                }
+            }
         }
 
         // Load PR detail if requested
