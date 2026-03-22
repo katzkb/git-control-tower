@@ -39,17 +39,25 @@ pub fn merge_entries(
         }
     }
 
-    // Add PRs (match by head_ref)
+    // Add PRs (match by head_ref, prefer OPEN over MERGED)
     for pr in pull_requests {
-        map.entry(pr.head_ref.clone())
+        let entry = map
+            .entry(pr.head_ref.clone())
             .or_insert_with(|| BranchEntry {
                 name: pr.head_ref.clone(),
                 local_branch: None,
                 worktree: None,
                 pull_request: None,
                 git_status: None,
-            })
-            .pull_request = Some(pr.clone());
+            });
+        match (&entry.pull_request, pr.state.as_str()) {
+            (Some(existing), "MERGED") if existing.state == "OPEN" => {
+                // Don't overwrite an OPEN PR with a MERGED one
+            }
+            _ => {
+                entry.pull_request = Some(pr.clone());
+            }
+        }
     }
 
     // Sort: current branch first, then alphabetical
@@ -204,6 +212,67 @@ mod tests {
         assert_eq!(entries.len(), 1);
         assert!(!entries[0].has_local());
         assert!(entries[0].pull_request.is_some());
+    }
+
+    #[test]
+    fn test_pr_is_merged() {
+        let branches = vec![Branch {
+            name: "feature-a".to_string(),
+            is_current: false,
+            upstream: None,
+            is_merged: false,
+        }];
+        let prs = vec![PullRequest {
+            number: 10,
+            title: "Feature A".to_string(),
+            author: "alice".to_string(),
+            state: "MERGED".to_string(),
+            head_ref: "feature-a".to_string(),
+            updated_at: "2024-01-15".to_string(),
+            review_requests: vec![],
+        }];
+
+        let entries = merge_entries(&branches, &[], &prs);
+        assert_eq!(entries.len(), 1);
+        // git says not merged, but PR says merged
+        assert!(!entries[0].is_merged());
+        assert!(entries[0].pr_is_merged());
+    }
+
+    #[test]
+    fn test_open_pr_preferred_over_merged() {
+        let branches = vec![Branch {
+            name: "feature-a".to_string(),
+            is_current: false,
+            upstream: None,
+            is_merged: false,
+        }];
+        let prs = vec![
+            PullRequest {
+                number: 5,
+                title: "Old merged PR".to_string(),
+                author: "alice".to_string(),
+                state: "MERGED".to_string(),
+                head_ref: "feature-a".to_string(),
+                updated_at: "2024-01-01".to_string(),
+                review_requests: vec![],
+            },
+            PullRequest {
+                number: 10,
+                title: "New open PR".to_string(),
+                author: "alice".to_string(),
+                state: "OPEN".to_string(),
+                head_ref: "feature-a".to_string(),
+                updated_at: "2024-01-15".to_string(),
+                review_requests: vec![],
+            },
+        ];
+
+        let entries = merge_entries(&branches, &[], &prs);
+        assert_eq!(entries.len(), 1);
+        // OPEN PR should win over MERGED
+        assert_eq!(entries[0].pr_number(), Some(10));
+        assert!(!entries[0].pr_is_merged());
     }
 
     #[test]
