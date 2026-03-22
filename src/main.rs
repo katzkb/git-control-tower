@@ -161,9 +161,10 @@ async fn run(terminal: &mut ratatui::DefaultTerminal) -> anyhow::Result<()> {
         }
 
         // Create worktree from PR if requested
-        if let Some((head_ref, pr_number)) = app.wt_create_requested.take() {
+        if let Some((head_ref, _pr_number)) = app.wt_create_requested.take() {
             let remote_ref = format!("origin/{head_ref}");
-            let wt_path = format!("../gct-review-{pr_number}");
+            let safe_name = head_ref.replace('/', "-");
+            let wt_path = format!("../gct-wt-{safe_name}");
             match run_git(&["fetch", "origin", &head_ref]).await {
                 Ok(_) => match run_git(&["worktree", "add", &wt_path, &remote_ref]).await {
                     Ok(_) => {
