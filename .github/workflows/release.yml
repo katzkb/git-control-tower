@@ -1,14 +1,46 @@
 name: Release
 
 on:
-  push:
-    tags: ["v*"]
+  pull_request:
+    branches: [main]
+    types: [closed]
 
 permissions:
   contents: write
 
 jobs:
+  # Create tag and GitHub Release when a release/* branch is merged
+  create-release:
+    if: github.event.pull_request.merged == true && startsWith(github.event.pull_request.head.ref, 'release/')
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Extract version from branch name
+        id: version
+        run: |
+          BRANCH="${{ github.event.pull_request.head.ref }}"
+          VERSION="${BRANCH#release/}"
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+
+      - name: Create tag
+        run: |
+          git tag "${{ steps.version.outputs.version }}"
+          git push origin "${{ steps.version.outputs.version }}"
+
+      - name: Create GitHub Release
+        run: |
+          gh release create "${{ steps.version.outputs.version }}" \
+            --title "${{ steps.version.outputs.version }}" \
+            --generate-notes
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # Build binaries for each platform and upload to the release
   build:
+    needs: create-release
     strategy:
       matrix:
         include:
@@ -41,17 +73,17 @@ jobs:
         if: runner.os != 'Windows'
         run: |
           cd target/${{ matrix.target }}/release
-          tar czf ../../../gct-${{ github.ref_name }}-${{ matrix.target }}.tar.gz gct
+          tar czf ../../../gct-${{ needs.create-release.outputs.version }}-${{ matrix.target }}.tar.gz gct
           cd ../../..
 
       - name: Package (Windows)
         if: runner.os == 'Windows'
         run: |
           cd target/${{ matrix.target }}/release
-          7z a ../../../gct-${{ github.ref_name }}-${{ matrix.target }}.zip gct.exe
+          7z a ../../../gct-${{ needs.create-release.outputs.version }}-${{ matrix.target }}.zip gct.exe
           cd ../../..
 
       - name: Upload to Release
-        run: gh release upload ${{ github.ref_name }} gct-${{ github.ref_name }}-${{ matrix.target }}.*
+        run: gh release upload ${{ needs.create-release.outputs.version }} gct-${{ needs.create-release.outputs.version }}-${{ matrix.target }}.*
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
