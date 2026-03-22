@@ -14,6 +14,7 @@ pub struct Commit {
 pub struct Branch {
     pub name: String,
     pub is_current: bool,
+    #[allow(dead_code)]
     pub upstream: Option<String>,
     pub is_merged: bool,
 }
@@ -55,9 +56,12 @@ where
 #[derive(Debug, Clone, Deserialize)]
 pub struct PrDetail {
     pub number: u64,
+    #[allow(dead_code)]
     pub title: String,
     #[serde(deserialize_with = "deserialize_author")]
+    #[allow(dead_code)]
     pub author: String,
+    #[allow(dead_code)]
     pub state: String,
     #[serde(default)]
     pub body: String,
@@ -66,19 +70,21 @@ pub struct PrDetail {
     #[serde(default)]
     pub deletions: u64,
     #[serde(rename = "headRefName")]
+    #[allow(dead_code)]
     pub head_ref: String,
 }
 
 #[derive(Debug, Clone)]
 pub struct Worktree {
     pub path: String,
+    #[allow(dead_code)]
     pub head: String,
     pub branch: Option<String>,
+    #[allow(dead_code)]
     pub is_bare: bool,
 }
 
 /// Unified entry keyed by branch name, aggregating local branch, worktree, and PR data.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct BranchEntry {
     pub name: String,
@@ -88,7 +94,6 @@ pub struct BranchEntry {
     pub git_status: Option<GitStatus>,
 }
 
-#[allow(dead_code)]
 impl BranchEntry {
     pub fn has_local(&self) -> bool {
         self.local_branch.is_some() || self.worktree.is_some()
@@ -111,7 +116,6 @@ impl BranchEntry {
     }
 }
 
-#[allow(dead_code)]
 #[derive(Debug, Clone, Default)]
 pub struct GitStatus {
     pub untracked: Vec<String>,

@@ -13,6 +13,7 @@ pub struct ConfirmDialog {
 }
 
 impl ConfirmDialog {
+    #[allow(dead_code)]
     pub fn new(title: impl Into<String>, message: impl Into<String>) -> Self {
         Self {
             title: title.into(),
