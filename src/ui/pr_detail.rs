@@ -73,7 +73,7 @@ pub fn draw(frame: &mut Frame, area: Rect, detail: &PrDetail, scroll: usize) {
         .block(
             Block::default()
                 .borders(Borders::ALL)
-                .title(" Description (j/k:scroll  Esc:back) "),
+                .title(" Description (j/k:scroll  w:worktree  Esc:back) "),
         )
         .wrap(Wrap { trim: false })
         .scroll((scroll as u16, 0));

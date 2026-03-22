@@ -12,6 +12,7 @@ use crate::event::{Event, EventHandler};
 use crate::git::command::{run_gh, run_git};
 use crate::git::parser::{parse_log, parse_worktrees};
 use crate::git::types::{PrDetail, PullRequest};
+use crate::ui::notification::Notification;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -86,6 +87,39 @@ async fn run(terminal: &mut ratatui::DefaultTerminal) -> anyhow::Result<()> {
                 app.worktrees = parse_worktrees(&output);
                 if app.wt_scroll >= app.worktrees.len() && app.wt_scroll > 0 {
                     app.wt_scroll -= 1;
+                }
+            }
+        }
+
+        // Create worktree from PR if requested
+        if let Some((head_ref, pr_number)) = app.wt_create_requested.take() {
+            let remote_ref = format!("origin/{head_ref}");
+            let wt_path = format!("../gct-review-{pr_number}");
+
+            // Fetch the branch first
+            match run_git(&["fetch", "origin", &head_ref]).await {
+                Ok(_) => {
+                    // Create the worktree
+                    match run_git(&["worktree", "add", &wt_path, &remote_ref]).await {
+                        Ok(_) => {
+                            app.notification = Some(Notification::success(format!(
+                                "Worktree created: {wt_path}"
+                            )));
+                            // Refresh worktree list
+                            if let Ok(output) = run_git(&["worktree", "list", "--porcelain"]).await
+                            {
+                                app.worktrees = parse_worktrees(&output);
+                            }
+                        }
+                        Err(e) => {
+                            app.notification = Some(Notification::error(format!(
+                                "Failed to create worktree: {e}"
+                            )));
+                        }
+                    }
+                }
+                Err(e) => {
+                    app.notification = Some(Notification::error(format!("Failed to fetch: {e}")));
                 }
             }
         }

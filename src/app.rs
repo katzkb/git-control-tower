@@ -2,6 +2,7 @@ use crossterm::event::{KeyCode, KeyEvent};
 
 use crate::git::types::{Commit, PrDetail, PullRequest, Worktree};
 use crate::ui::confirm_dialog::ConfirmDialog;
+use crate::ui::notification::Notification;
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub enum ActiveView {
@@ -63,6 +64,10 @@ pub struct App {
     pub wt_loaded: bool,
     pub confirm_dialog: Option<ConfirmDialog>,
     pub wt_delete_requested: Option<String>,
+    // Worktree creation from PR
+    pub wt_create_requested: Option<(String, u64)>, // (head_ref, pr_number)
+    // Notification
+    pub notification: Option<Notification>,
 }
 
 impl App {
@@ -85,6 +90,8 @@ impl App {
             wt_loaded: false,
             confirm_dialog: None,
             wt_delete_requested: None,
+            wt_create_requested: None,
+            notification: None,
         }
     }
 
@@ -182,6 +189,9 @@ impl App {
     }
 
     fn handle_pr_detail_key(&mut self, code: KeyCode) {
+        // Clear notification on any key press
+        self.notification = None;
+
         match code {
             KeyCode::Esc | KeyCode::Backspace | KeyCode::Char('q') => {
                 self.pr_detail = None;
@@ -192,6 +202,11 @@ impl App {
             }
             KeyCode::Char('k') | KeyCode::Up => {
                 self.pr_detail_scroll = self.pr_detail_scroll.saturating_sub(1);
+            }
+            KeyCode::Char('w') => {
+                if let Some(detail) = &self.pr_detail {
+                    self.wt_create_requested = Some((detail.head_ref.clone(), detail.number));
+                }
             }
             _ => {}
         }
