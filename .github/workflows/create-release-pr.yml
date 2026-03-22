@@ -53,7 +53,21 @@ jobs:
         run: |
           VERSION="${{ steps.version.outputs.version }}"
           BRANCH="release/${VERSION}"
-          git push origin --delete "$BRANCH" 2>/dev/null || true
+          # Refuse to delete if an open PR exists for this branch
+          EXISTING_PR_COUNT=$(gh pr list --head "$BRANCH" --state open --json number --jq 'length')
+          if [ "$EXISTING_PR_COUNT" -gt 0 ]; then
+            echo "::error::An open PR already exists for branch '$BRANCH'. Close it before re-running."
+            exit 1
+          fi
+          # Delete remote branch if it exists (leftover from a failed run)
+          if git ls-remote --heads origin "$BRANCH" | grep -q "$BRANCH"; then
+            echo "Deleting existing remote branch $BRANCH"
+            git push origin --delete "$BRANCH"
+          else
+            echo "No existing remote branch $BRANCH to delete"
+          fi
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Create release branch and push
         run: |
