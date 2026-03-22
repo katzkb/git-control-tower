@@ -66,6 +66,7 @@ pub struct App {
 
     // Action requests
     pub wt_delete_requested: Option<String>,
+    pub wt_delete_pending_path: Option<String>, // path stored when confirm dialog shown
     pub wt_create_requested: Option<(String, u64)>,
     pub branch_selected: HashSet<String>,
     pub branch_delete_requested: bool,
@@ -94,6 +95,7 @@ impl App {
             notification: None,
             show_help: false,
             wt_delete_requested: None,
+            wt_delete_pending_path: None,
             wt_create_requested: None,
             branch_selected: HashSet::new(),
             branch_delete_requested: false,
@@ -255,14 +257,16 @@ impl App {
                         "Delete Branches",
                         format!("Delete {count} branch(es)? [{preview}]"),
                     ));
-                } else if let Some(entry) = self.selected_entry()
+                } else if let Some(entry) = self.selected_entry().cloned()
                     && let Some(wt_path) = entry.worktree_path()
                     && !entry.is_current()
                 {
+                    let path = wt_path.to_string();
                     self.confirm_dialog = Some(ConfirmDialog::new(
                         "Delete Worktree",
-                        format!("Remove worktree at {wt_path}?"),
+                        format!("Remove worktree at {path}?"),
                     ));
+                    self.wt_delete_pending_path = Some(path);
                 }
             }
             KeyCode::Char('w') => {
@@ -271,6 +275,8 @@ impl App {
                     && let Some(pr) = &entry.pull_request
                 {
                     self.wt_create_requested = Some((entry.name.clone(), pr.number));
+                    self.notification =
+                        Some(Notification::success("Creating worktree...".to_string()));
                 }
             }
             _ => {}
@@ -296,14 +302,13 @@ impl App {
             KeyCode::Char('y') => {
                 if !self.branch_selected.is_empty() {
                     self.branch_delete_requested = true;
-                } else if let Some(entry) = self.selected_entry()
-                    && let Some(wt_path) = entry.worktree_path()
-                {
-                    self.wt_delete_requested = Some(wt_path.to_string());
+                } else if let Some(path) = self.wt_delete_pending_path.take() {
+                    self.wt_delete_requested = Some(path);
                 }
                 self.confirm_dialog = None;
             }
             KeyCode::Char('n') | KeyCode::Esc => {
+                self.wt_delete_pending_path = None;
                 self.confirm_dialog = None;
             }
             _ => {}
