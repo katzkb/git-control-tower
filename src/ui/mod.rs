@@ -1,5 +1,7 @@
 mod branch_view;
 mod log_view;
+pub mod markdown;
+mod pr_detail;
 mod pr_view;
 mod worktree_view;
 

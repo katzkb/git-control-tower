@@ -1,6 +1,6 @@
 use crossterm::event::{KeyCode, KeyEvent};
 
-use crate::git::types::{Commit, PullRequest};
+use crate::git::types::{Commit, PrDetail, PullRequest};
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub enum ActiveView {
@@ -52,6 +52,10 @@ pub struct App {
     pub pr_filter: PrFilter,
     pub gh_user: String,
     pub prs_loaded: bool,
+    // PR Detail
+    pub pr_detail: Option<PrDetail>,
+    pub pr_detail_scroll: usize,
+    pub pr_detail_requested: Option<u64>,
 }
 
 impl App {
@@ -66,6 +70,9 @@ impl App {
             pr_filter: PrFilter::default(),
             gh_user: String::new(),
             prs_loaded: false,
+            pr_detail: None,
+            pr_detail_scroll: 0,
+            pr_detail_requested: None,
         }
     }
 
@@ -83,6 +90,12 @@ impl App {
     }
 
     pub fn handle_key(&mut self, key: KeyEvent) {
+        // PR detail: Esc/Backspace goes back to list instead of quitting
+        if self.active_view == ActiveView::Pr && self.pr_detail.is_some() {
+            self.handle_pr_detail_key(key.code);
+            return;
+        }
+
         match key.code {
             KeyCode::Char('q') | KeyCode::Esc => self.should_quit = true,
             KeyCode::Char('1') => self.active_view = ActiveView::Log,
@@ -112,7 +125,8 @@ impl App {
     }
 
     fn handle_pr_key(&mut self, code: KeyCode) {
-        let filtered_len = self.filtered_prs().len();
+        let filtered = self.filtered_prs();
+        let filtered_len = filtered.len();
         match code {
             KeyCode::Char('j') | KeyCode::Down => {
                 if filtered_len > 0 && self.pr_scroll + 1 < filtered_len {
@@ -121,6 +135,12 @@ impl App {
             }
             KeyCode::Char('k') | KeyCode::Up => {
                 self.pr_scroll = self.pr_scroll.saturating_sub(1);
+            }
+            KeyCode::Enter => {
+                if let Some(pr) = filtered.get(self.pr_scroll) {
+                    self.pr_detail_requested = Some(pr.number);
+                    self.pr_detail_scroll = 0;
+                }
             }
             KeyCode::Char('a') => {
                 self.pr_filter = if self.pr_filter == PrFilter::AuthoredByMe {
@@ -137,6 +157,22 @@ impl App {
                     PrFilter::ReviewRequested
                 };
                 self.pr_scroll = 0;
+            }
+            _ => {}
+        }
+    }
+
+    fn handle_pr_detail_key(&mut self, code: KeyCode) {
+        match code {
+            KeyCode::Esc | KeyCode::Backspace | KeyCode::Char('q') => {
+                self.pr_detail = None;
+                self.pr_detail_scroll = 0;
+            }
+            KeyCode::Char('j') | KeyCode::Down => {
+                self.pr_detail_scroll += 1;
+            }
+            KeyCode::Char('k') | KeyCode::Up => {
+                self.pr_detail_scroll = self.pr_detail_scroll.saturating_sub(1);
             }
             _ => {}
         }

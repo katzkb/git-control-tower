@@ -53,6 +53,23 @@ where
     Ok(author.login)
 }
 
+#[derive(Debug, Clone, Deserialize)]
+pub struct PrDetail {
+    pub number: u64,
+    pub title: String,
+    #[serde(deserialize_with = "deserialize_author")]
+    pub author: String,
+    pub state: String,
+    #[serde(default)]
+    pub body: String,
+    #[serde(default)]
+    pub additions: u64,
+    #[serde(default)]
+    pub deletions: u64,
+    #[serde(rename = "headRefName")]
+    pub head_ref: String,
+}
+
 #[derive(Debug, Clone)]
 #[allow(dead_code)]
 pub struct Worktree {

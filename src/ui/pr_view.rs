@@ -7,8 +7,15 @@ use ratatui::{
 };
 
 use crate::app::App;
+use crate::ui::pr_detail;
 
 pub fn draw(frame: &mut Frame, area: Rect, app: &App) {
+    // If a PR detail is loaded, show the detail view instead
+    if let Some(detail) = &app.pr_detail {
+        pr_detail::draw(frame, area, detail, app.pr_detail_scroll);
+        return;
+    }
+
     let chunks = Layout::vertical([Constraint::Length(1), Constraint::Min(1)]).split(area);
 
     // Filter bar
