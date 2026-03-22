@@ -105,10 +105,12 @@ impl BranchEntry {
 
     pub fn is_merged(&self) -> bool {
         self.local_branch.as_ref().is_some_and(|b| b.is_merged)
-            || self
-                .pull_request
-                .as_ref()
-                .is_some_and(|pr| pr.state == "MERGED")
+    }
+
+    pub fn pr_is_merged(&self) -> bool {
+        self.pull_request
+            .as_ref()
+            .is_some_and(|pr| pr.state == "MERGED")
     }
 
     pub fn worktree_path(&self) -> Option<&str> {

@@ -80,7 +80,7 @@ fn format_entry_line(
         Style::default()
             .fg(Color::Green)
             .add_modifier(Modifier::BOLD)
-    } else if entry.is_merged() {
+    } else if entry.is_merged() || entry.pr_is_merged() {
         Style::default().fg(Color::Yellow)
     } else {
         Style::default().fg(Color::White)
@@ -111,7 +111,7 @@ fn format_entry_line(
     }
 
     // Merged tag
-    if entry.is_merged() && !entry.is_current() {
+    if (entry.is_merged() || entry.pr_is_merged()) && !entry.is_current() {
         spans.push(Span::styled(
             " [merged]",
             Style::default().fg(Color::Yellow),
