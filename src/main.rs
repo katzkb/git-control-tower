@@ -9,8 +9,9 @@ use crossterm::event::KeyEventKind;
 
 use crate::app::App;
 use crate::event::{Event, EventHandler};
-use crate::git::command::run_git;
+use crate::git::command::{run_gh, run_git};
 use crate::git::parser::parse_log;
+use crate::git::types::PullRequest;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -36,6 +37,27 @@ async fn run(terminal: &mut ratatui::DefaultTerminal) -> anyhow::Result<()> {
     {
         app.commits = parse_log(&output);
     }
+
+    // Load GitHub user
+    if let Ok(user) = run_gh(&["api", "user", "--jq", ".login"]).await {
+        app.gh_user = user.trim().to_string();
+    }
+
+    // Load PR list
+    if let Ok(output) = run_gh(&[
+        "pr",
+        "list",
+        "--json",
+        "number,title,author,state,headRefName,updatedAt,reviewRequests",
+        "--limit",
+        "50",
+    ])
+    .await
+        && let Ok(prs) = serde_json::from_str::<Vec<PullRequest>>(&output)
+    {
+        app.pull_requests = prs;
+    }
+    app.prs_loaded = true;
 
     loop {
         terminal.draw(|frame| ui::draw(frame, &app))?;

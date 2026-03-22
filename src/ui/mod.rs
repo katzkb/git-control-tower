@@ -17,7 +17,7 @@ pub fn draw(frame: &mut Frame, app: &App) {
 
     match app.active_view {
         ActiveView::Log => log_view::draw(frame, chunks[0], app),
-        ActiveView::Pr => pr_view::draw(frame, chunks[0]),
+        ActiveView::Pr => pr_view::draw(frame, chunks[0], app),
         ActiveView::Branch => branch_view::draw(frame, chunks[0]),
         ActiveView::Worktree => worktree_view::draw(frame, chunks[0]),
     }

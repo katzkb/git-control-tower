@@ -16,7 +16,6 @@ pub async fn run_git(args: &[&str]) -> Result<String> {
     Ok(String::from_utf8_lossy(&output.stdout).into_owned())
 }
 
-#[allow(dead_code)]
 pub async fn run_gh(args: &[&str]) -> Result<String> {
     let output = Command::new("gh")
         .args(args)

@@ -20,7 +20,6 @@ pub struct Branch {
 }
 
 #[derive(Debug, Clone, Deserialize)]
-#[allow(dead_code)]
 pub struct PullRequest {
     pub number: u64,
     pub title: String,
@@ -28,9 +27,18 @@ pub struct PullRequest {
     pub author: String,
     pub state: String,
     #[serde(rename = "headRefName")]
+    #[allow(dead_code)]
     pub head_ref: String,
     #[serde(rename = "updatedAt")]
+    #[allow(dead_code)]
     pub updated_at: String,
+    #[serde(rename = "reviewRequests", default)]
+    pub review_requests: Vec<ReviewRequest>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct ReviewRequest {
+    pub login: String,
 }
 
 fn deserialize_author<'de, D>(deserializer: D) -> Result<String, D::Error>
