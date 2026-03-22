@@ -1,4 +1,6 @@
 mod app;
+#[allow(dead_code)]
+mod data;
 mod event;
 mod git;
 mod ui;
