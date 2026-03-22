@@ -12,6 +12,10 @@ permissions:
   contents: write
   pull-requests: write
 
+concurrency:
+  group: create-release-pr
+  cancel-in-progress: false
+
 jobs:
   create-release-pr:
     runs-on: ubuntu-latest
@@ -60,11 +64,17 @@ jobs:
             exit 1
           fi
           # Delete remote branch if it exists (leftover from a failed run)
-          if git ls-remote --heads origin "$BRANCH" | grep -q "$BRANCH"; then
+          if git ls-remote --exit-code --heads origin "$BRANCH" >/dev/null 2>&1; then
             echo "Deleting existing remote branch $BRANCH"
             git push origin --delete "$BRANCH"
           else
-            echo "No existing remote branch $BRANCH to delete"
+            status=$?
+            if [ "$status" -eq 2 ]; then
+              echo "No existing remote branch $BRANCH to delete"
+            else
+              echo "::error::Failed to query remote for branch '$BRANCH' (exit code $status)"
+              exit "$status"
+            fi
           fi
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
