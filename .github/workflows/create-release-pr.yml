@@ -49,6 +49,12 @@ jobs:
           echo "Updated Cargo.toml to ${SEMVER}"
           grep '^version' Cargo.toml
 
+      - name: Clean up existing release branch if any
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          BRANCH="release/${VERSION}"
+          git push origin --delete "$BRANCH" 2>/dev/null || true
+
       - name: Create release branch and push
         run: |
           VERSION="${{ steps.version.outputs.version }}"
