@@ -1,0 +1,87 @@
+name: Create Release PR
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to release (e.g. v0.1.0). Leave empty to auto-increment patch."
+        required: false
+        default: ""
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  create-release-pr:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Determine version
+        id: version
+        run: |
+          INPUT_VERSION="${{ github.event.inputs.version }}"
+          if [ -n "$INPUT_VERSION" ]; then
+            VERSION="$INPUT_VERSION"
+          else
+            # Get latest tag and increment patch
+            LATEST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "v0.0.0")
+            echo "Latest tag: $LATEST_TAG"
+            # Strip v prefix, split by dots
+            SEMVER="${LATEST_TAG#v}"
+            MAJOR=$(echo "$SEMVER" | cut -d. -f1)
+            MINOR=$(echo "$SEMVER" | cut -d. -f2)
+            PATCH=$(echo "$SEMVER" | cut -d. -f3)
+            PATCH=$((PATCH + 1))
+            VERSION="v${MAJOR}.${MINOR}.${PATCH}"
+          fi
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "Releasing: ${VERSION}"
+
+      - name: Update Cargo.toml version
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          SEMVER="${VERSION#v}"
+          sed -i "s/^version = \".*\"/version = \"${SEMVER}\"/" Cargo.toml
+          echo "Updated Cargo.toml to ${SEMVER}"
+          grep '^version' Cargo.toml
+
+      - name: Create release branch and push
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          BRANCH="release/${VERSION}"
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git checkout -b "$BRANCH"
+          git add Cargo.toml Cargo.lock
+          git commit -m "chore: bump version to ${VERSION}"
+          git push origin "$BRANCH"
+
+      - name: Create Pull Request
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          BRANCH="release/${VERSION}"
+          gh pr create \
+            --base main \
+            --head "$BRANCH" \
+            --title "Release: ${VERSION}" \
+            --body "$(cat <<'BODY'
+          ## Release ${VERSION}
+
+          This PR was automatically created by the release workflow.
+
+          ### Checklist
+          - [ ] Version in Cargo.toml is correct
+          - [ ] All tests pass
+
+          ### What happens on merge
+          1. Tag `${VERSION}` is created automatically
+          2. GitHub Release is created with auto-generated notes
+          3. Binaries are built for macOS (arm64/x86_64), Linux, and Windows
+          BODY
+          )"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
