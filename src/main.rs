@@ -20,11 +20,12 @@ use crate::ui::notification::Notification;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    // Startup checks before initializing TUI
+    // Startup checks and config loading before TUI init (eprintln is safe here)
     check_prerequisites().await;
+    let config = config::load_config();
 
     let mut terminal = ratatui::init();
-    let result = run(&mut terminal).await;
+    let result = run(&mut terminal, &config).await;
     ratatui::restore();
     result
 }
@@ -49,9 +50,11 @@ async fn check_prerequisites() {
     }
 }
 
-async fn run(terminal: &mut ratatui::DefaultTerminal) -> anyhow::Result<()> {
+async fn run(
+    terminal: &mut ratatui::DefaultTerminal,
+    config: &config::Config,
+) -> anyhow::Result<()> {
     let mut app = App::new();
-    let config = config::load_config();
     let mut events = EventHandler::new(Duration::from_millis(250));
 
     // Load commit history
@@ -165,11 +168,7 @@ async fn run(terminal: &mut ratatui::DefaultTerminal) -> anyhow::Result<()> {
 
         // Create worktree from PR if requested
         if let Some((head_ref, _pr_number)) = app.wt_create_requested.take() {
-            let safe_name = head_ref.replace('/', "-");
-            let wt_path = std::path::Path::new(&config.worktree.dir)
-                .join(&safe_name)
-                .to_string_lossy()
-                .to_string();
+            let wt_path = config.worktree_path(&head_ref);
             match run_git(&["fetch", "origin", &head_ref]).await {
                 Ok(_) => match run_git(&["worktree", "add", &wt_path, &head_ref]).await {
                     Ok(_) => {

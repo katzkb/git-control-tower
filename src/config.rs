@@ -26,9 +26,29 @@ impl Default for WorktreeConfig {
     }
 }
 
-/// Load config from the first file found:
+impl Config {
+    /// Build the worktree path for a given branch name.
+    /// Default produces `../gct-wt-{safe_name}` for backward compatibility.
+    /// Custom dir produces `{dir}/{safe_name}`.
+    pub fn worktree_path(&self, branch_name: &str) -> String {
+        let safe_name = branch_name.replace('/', "-");
+        if self.worktree.dir == default_worktree_dir() {
+            // Backward compatible: ../gct-wt-{branch}
+            format!("../gct-wt-{safe_name}")
+        } else {
+            std::path::Path::new(&self.worktree.dir)
+                .join(&safe_name)
+                .to_string_lossy()
+                .to_string()
+        }
+    }
+}
+
+/// Load config from the first valid file found:
 /// 1. `~/.config/gct/config.toml`
 /// 2. `~/.gct.toml`
+///
+/// Must be called before TUI initialization (eprintln warnings).
 pub fn load_config() -> Config {
     let candidates = config_paths();
     for path in &candidates {
@@ -37,7 +57,7 @@ pub fn load_config() -> Config {
                 Ok(config) => return config,
                 Err(e) => {
                     eprintln!("Warning: failed to parse {}: {e}", path.display());
-                    return Config::default();
+                    continue;
                 }
             },
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
@@ -74,6 +94,25 @@ mod tests {
     fn test_default_config() {
         let config = Config::default();
         assert_eq!(config.worktree.dir, "../gct-wt");
+    }
+
+    #[test]
+    fn test_default_worktree_path() {
+        let config = Config::default();
+        assert_eq!(
+            config.worktree_path("feature/auth"),
+            "../gct-wt-feature-auth"
+        );
+    }
+
+    #[test]
+    fn test_custom_worktree_path() {
+        let config = Config {
+            worktree: WorktreeConfig {
+                dir: "../wt".to_string(),
+            },
+        };
+        assert_eq!(config.worktree_path("feature/auth"), "../wt/feature-auth");
     }
 
     #[test]
