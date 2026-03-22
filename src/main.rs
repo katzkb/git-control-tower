@@ -11,7 +11,7 @@ use crate::app::App;
 use crate::event::{Event, EventHandler};
 use crate::git::command::{run_gh, run_git};
 use crate::git::parser::parse_log;
-use crate::git::types::PullRequest;
+use crate::git::types::{PrDetail, PullRequest};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -70,6 +70,23 @@ async fn run(terminal: &mut ratatui::DefaultTerminal) -> anyhow::Result<()> {
             Some(Event::Tick) => {}
             Some(Event::Key(_)) => {}
             None => break,
+        }
+
+        // Load PR detail if requested
+        if let Some(number) = app.pr_detail_requested.take() {
+            let num_str = number.to_string();
+            if let Ok(output) = run_gh(&[
+                "pr",
+                "view",
+                &num_str,
+                "--json",
+                "number,title,author,state,body,additions,deletions,headRefName",
+            ])
+            .await
+                && let Ok(detail) = serde_json::from_str::<PrDetail>(&output)
+            {
+                app.pr_detail = Some(detail);
+            }
         }
 
         if app.should_quit {
