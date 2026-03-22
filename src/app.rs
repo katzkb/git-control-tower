@@ -1,6 +1,8 @@
 use crossterm::event::{KeyCode, KeyEvent};
 
-use crate::git::types::{Commit, PrDetail, PullRequest, Worktree};
+use std::collections::HashSet;
+
+use crate::git::types::{Branch, Commit, PrDetail, PullRequest, Worktree};
 use crate::ui::confirm_dialog::ConfirmDialog;
 use crate::ui::notification::Notification;
 
@@ -66,6 +68,12 @@ pub struct App {
     pub wt_delete_requested: Option<String>,
     // Worktree creation from PR
     pub wt_create_requested: Option<(String, u64)>, // (head_ref, pr_number)
+    // Branch View
+    pub branches: Vec<Branch>,
+    pub branch_scroll: usize,
+    pub branch_selected: HashSet<String>,
+    pub branches_loaded: bool,
+    pub branch_delete_requested: bool,
     // Notification
     pub notification: Option<Notification>,
 }
@@ -91,6 +99,11 @@ impl App {
             confirm_dialog: None,
             wt_delete_requested: None,
             wt_create_requested: None,
+            branches: Vec::new(),
+            branch_scroll: 0,
+            branch_selected: HashSet::new(),
+            branches_loaded: false,
+            branch_delete_requested: false,
             notification: None,
         }
     }
@@ -130,8 +143,8 @@ impl App {
             _ => match self.active_view {
                 ActiveView::Log => self.handle_log_key(key.code),
                 ActiveView::Pr => self.handle_pr_key(key.code),
+                ActiveView::Branch => self.handle_branch_key(key.code),
                 ActiveView::Worktree => self.handle_wt_key(key.code),
-                _ => {}
             },
         }
     }
@@ -239,12 +252,75 @@ impl App {
         }
     }
 
+    fn handle_branch_key(&mut self, code: KeyCode) {
+        let len = self.branches.len();
+        match code {
+            KeyCode::Char('j') | KeyCode::Down => {
+                if len > 0 && self.branch_scroll + 1 < len {
+                    self.branch_scroll += 1;
+                }
+            }
+            KeyCode::Char('k') | KeyCode::Up => {
+                self.branch_scroll = self.branch_scroll.saturating_sub(1);
+            }
+            KeyCode::Char(' ') => {
+                if let Some(branch) = self.branches.get(self.branch_scroll) {
+                    // Don't allow selecting current branch or main/master
+                    if branch.is_current || Self::is_protected_branch(&branch.name) {
+                        return;
+                    }
+                    let name = branch.name.clone();
+                    if self.branch_selected.contains(&name) {
+                        self.branch_selected.remove(&name);
+                    } else {
+                        self.branch_selected.insert(name);
+                    }
+                }
+            }
+            KeyCode::Char('a') => {
+                // Select all merged branches (except current and protected)
+                for branch in &self.branches {
+                    if branch.is_merged
+                        && !branch.is_current
+                        && !Self::is_protected_branch(&branch.name)
+                    {
+                        self.branch_selected.insert(branch.name.clone());
+                    }
+                }
+            }
+            KeyCode::Char('d') => {
+                if !self.branch_selected.is_empty() {
+                    let count = self.branch_selected.len();
+                    let names: Vec<&str> =
+                        self.branch_selected.iter().map(|s| s.as_str()).collect();
+                    let preview = if count <= 3 {
+                        names.join(", ")
+                    } else {
+                        format!("{} and {} more", names[..2].join(", "), count - 2)
+                    };
+                    self.confirm_dialog = Some(ConfirmDialog::new(
+                        "Delete Branches",
+                        format!("Delete {count} branch(es)? [{preview}]"),
+                    ));
+                }
+            }
+            _ => {}
+        }
+    }
+
     fn handle_confirm_key(&mut self, code: KeyCode) {
         match code {
             KeyCode::Char('y') => {
-                // Execute the pending delete action
-                if let Some(wt) = self.worktrees.get(self.wt_scroll) {
-                    self.wt_delete_requested = Some(wt.path.clone());
+                match self.active_view {
+                    ActiveView::Worktree => {
+                        if let Some(wt) = self.worktrees.get(self.wt_scroll) {
+                            self.wt_delete_requested = Some(wt.path.clone());
+                        }
+                    }
+                    ActiveView::Branch => {
+                        self.branch_delete_requested = true;
+                    }
+                    _ => {}
                 }
                 self.confirm_dialog = None;
             }
@@ -253,5 +329,9 @@ impl App {
             }
             _ => {}
         }
+    }
+
+    fn is_protected_branch(name: &str) -> bool {
+        matches!(name, "main" | "master")
     }
 }

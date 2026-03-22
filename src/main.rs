@@ -10,7 +10,7 @@ use crossterm::event::KeyEventKind;
 use crate::app::App;
 use crate::event::{Event, EventHandler};
 use crate::git::command::{run_gh, run_git};
-use crate::git::parser::{parse_log, parse_worktrees};
+use crate::git::parser::{parse_branches, parse_log, parse_worktrees};
 use crate::git::types::{PrDetail, PullRequest};
 use crate::ui::notification::Notification;
 
@@ -65,6 +65,10 @@ async fn run(terminal: &mut ratatui::DefaultTerminal) -> anyhow::Result<()> {
         app.worktrees = parse_worktrees(&output);
     }
     app.wt_loaded = true;
+
+    // Load branches
+    load_branches(&mut app).await;
+    app.branches_loaded = true;
 
     loop {
         terminal.draw(|frame| ui::draw(frame, &app))?;
@@ -124,6 +128,20 @@ async fn run(terminal: &mut ratatui::DefaultTerminal) -> anyhow::Result<()> {
             }
         }
 
+        // Delete selected branches if requested
+        if app.branch_delete_requested {
+            app.branch_delete_requested = false;
+            let selected: Vec<String> = app.branch_selected.drain().collect();
+            for name in &selected {
+                let _ = run_git(&["branch", "-d", name]).await;
+            }
+            // Refresh branch list
+            load_branches(&mut app).await;
+            if app.branch_scroll >= app.branches.len() && app.branch_scroll > 0 {
+                app.branch_scroll = app.branches.len().saturating_sub(1);
+            }
+        }
+
         // Load PR detail if requested
         if let Some(number) = app.pr_detail_requested.take() {
             let num_str = number.to_string();
@@ -147,4 +165,10 @@ async fn run(terminal: &mut ratatui::DefaultTerminal) -> anyhow::Result<()> {
     }
 
     Ok(())
+}
+
+async fn load_branches(app: &mut App) {
+    let branch_output = run_git(&["branch", "-vv"]).await.unwrap_or_default();
+    let merged_output = run_git(&["branch", "--merged"]).await.unwrap_or_default();
+    app.branches = parse_branches(&branch_output, &merged_output);
 }

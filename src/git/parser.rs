@@ -36,7 +36,6 @@ pub fn parse_log(output: &str) -> Vec<Commit> {
 }
 
 /// Parse output of `git branch -vv`
-#[allow(dead_code)]
 pub fn parse_branches(output: &str, merged_output: &str) -> Vec<Branch> {
     let merged_names: Vec<&str> = merged_output
         .lines()
