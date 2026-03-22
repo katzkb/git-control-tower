@@ -1,52 +1,43 @@
-use std::io;
+mod app;
+mod event;
+mod ui;
 
-use crossterm::{
-    ExecutableCommand,
-    event::{self, Event, KeyCode, KeyEventKind},
-    terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
-};
-use ratatui::{
-    DefaultTerminal, Frame,
-    layout::{Constraint, Layout},
-    style::{Color, Style},
-    text::Text,
-    widgets::{Block, Borders, Paragraph},
-};
+use std::time::Duration;
 
-fn main() -> anyhow::Result<()> {
-    enable_raw_mode()?;
-    io::stdout().execute(EnterAlternateScreen)?;
+use crossterm::event::KeyEventKind;
 
-    let terminal = ratatui::init();
-    let result = run(terminal);
+use crate::app::App;
+use crate::event::{Event, EventHandler};
 
+#[tokio::main]
+async fn main() -> anyhow::Result<()> {
+    let mut terminal = ratatui::init();
+    let result = run(&mut terminal).await;
     ratatui::restore();
-    disable_raw_mode()?;
-    io::stdout().execute(LeaveAlternateScreen)?;
-
     result
 }
 
-fn run(mut terminal: DefaultTerminal) -> anyhow::Result<()> {
-    loop {
-        terminal.draw(ui)?;
+async fn run(terminal: &mut ratatui::DefaultTerminal) -> anyhow::Result<()> {
+    let mut app = App::new();
+    let mut events = EventHandler::new(Duration::from_millis(250));
 
-        if let Event::Key(key) = event::read()?
-            && key.kind == KeyEventKind::Press
-            && matches!(key.code, KeyCode::Char('q') | KeyCode::Esc)
-        {
-            return Ok(());
+    loop {
+        terminal.draw(|frame| ui::draw(frame, &app))?;
+
+        match events.next().await {
+            Some(Event::Key(key)) if key.kind == KeyEventKind::Press => {
+                app.handle_key(key);
+            }
+            Some(Event::Resize(_, _)) => {}
+            Some(Event::Tick) => {}
+            Some(Event::Key(_)) => {}
+            None => break,
+        }
+
+        if app.should_quit {
+            break;
         }
     }
-}
 
-fn ui(frame: &mut Frame) {
-    let chunks = Layout::vertical([Constraint::Min(1), Constraint::Length(1)]).split(frame.area());
-
-    let title = Paragraph::new(Text::raw("Git Control Tower"))
-        .block(Block::default().borders(Borders::ALL).title(" gct "));
-    frame.render_widget(title, chunks[0]);
-
-    let status = Paragraph::new("Press q to quit").style(Style::default().fg(Color::DarkGray));
-    frame.render_widget(status, chunks[1]);
+    Ok(())
 }
