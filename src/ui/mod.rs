@@ -2,6 +2,7 @@ mod branch_view;
 pub mod confirm_dialog;
 mod log_view;
 pub mod markdown;
+pub mod notification;
 mod pr_detail;
 mod pr_view;
 mod worktree_view;
@@ -31,4 +32,9 @@ pub fn draw(frame: &mut Frame, app: &App) {
     ))
     .style(Style::default().fg(Color::White).bg(Color::DarkGray));
     frame.render_widget(status, chunks[1]);
+
+    // Notification overlay
+    if let Some(notif) = &app.notification {
+        notification::draw(frame, notif);
+    }
 }
