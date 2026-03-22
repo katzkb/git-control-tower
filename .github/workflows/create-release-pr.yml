@@ -12,6 +12,10 @@ permissions:
   contents: write
   pull-requests: write
 
+concurrency:
+  group: create-release-pr
+  cancel-in-progress: false
+
 jobs:
   create-release-pr:
     runs-on: ubuntu-latest
@@ -48,6 +52,32 @@ jobs:
           sed -i "s/^version = \".*\"/version = \"${SEMVER}\"/" Cargo.toml
           echo "Updated Cargo.toml to ${SEMVER}"
           grep '^version' Cargo.toml
+
+      - name: Clean up existing release branch if any
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          BRANCH="release/${VERSION}"
+          # Refuse to delete if an open PR exists for this branch
+          EXISTING_PR_COUNT=$(gh pr list --head "$BRANCH" --state open --json number --jq 'length')
+          if [ "$EXISTING_PR_COUNT" -gt 0 ]; then
+            echo "::error::An open PR already exists for branch '$BRANCH'. Close it before re-running."
+            exit 1
+          fi
+          # Delete remote branch if it exists (leftover from a failed run)
+          if git ls-remote --exit-code --heads origin "$BRANCH" >/dev/null 2>&1; then
+            echo "Deleting existing remote branch $BRANCH"
+            git push origin --delete "$BRANCH"
+          else
+            status=$?
+            if [ "$status" -eq 2 ]; then
+              echo "No existing remote branch $BRANCH to delete"
+            else
+              echo "::error::Failed to query remote for branch '$BRANCH' (exit code $status)"
+              exit "$status"
+            fi
+          fi
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Create release branch and push
         run: |
