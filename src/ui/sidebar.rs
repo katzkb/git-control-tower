@@ -35,10 +35,14 @@ fn draw_filter_bar(frame: &mut Frame, area: Rect, app: &App) {
 
 fn draw_entry_list(frame: &mut Frame, area: Rect, app: &App) {
     let filtered = app.filtered_entries();
+    let show_checkboxes = !app.branch_selected.is_empty();
 
     let items: Vec<ListItem> = filtered
         .iter()
-        .map(|entry| ListItem::new(format_entry_line(entry)))
+        .map(|entry| {
+            let is_selected = app.branch_selected.contains(&entry.name);
+            ListItem::new(format_entry_line(entry, show_checkboxes, is_selected))
+        })
         .collect();
 
     let block = Block::default()
@@ -55,8 +59,21 @@ fn draw_entry_list(frame: &mut Frame, area: Rect, app: &App) {
     frame.render_stateful_widget(list, area, &mut state);
 }
 
-fn format_entry_line(entry: &BranchEntry) -> Line<'static> {
+fn format_entry_line(
+    entry: &BranchEntry,
+    show_checkboxes: bool,
+    is_selected: bool,
+) -> Line<'static> {
     let mut spans: Vec<Span> = Vec::new();
+
+    // Checkbox (only shown when multi-select is active)
+    if show_checkboxes {
+        if is_selected {
+            spans.push(Span::styled("[x] ", Style::default().fg(Color::Cyan)));
+        } else {
+            spans.push(Span::styled("[ ] ", Style::default().fg(Color::DarkGray)));
+        }
+    }
 
     // Branch name
     let name_style = if entry.is_current() {

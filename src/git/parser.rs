@@ -51,7 +51,7 @@ pub fn parse_branches(output: &str, merged_output: &str) -> Vec<Branch> {
             }
 
             let is_current = trimmed.starts_with('*');
-            let rest = if is_current {
+            let rest = if is_current || trimmed.starts_with('+') {
                 trimmed[1..].trim()
             } else {
                 trimmed

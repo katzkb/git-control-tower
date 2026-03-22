@@ -15,6 +15,7 @@ use crate::event::{Event, EventHandler};
 use crate::git::command::{run_gh, run_git};
 use crate::git::parser::{parse_branches, parse_log, parse_worktrees};
 use crate::git::types::{PrDetail, PullRequest};
+use crate::ui::notification::Notification;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -143,12 +144,74 @@ async fn run(terminal: &mut ratatui::DefaultTerminal) -> anyhow::Result<()> {
             }
         }
 
+        // Delete worktree if requested
+        if let Some(path) = app.wt_delete_requested.take() {
+            match run_git(&["worktree", "remove", &path]).await {
+                Ok(_) => {
+                    app.notification =
+                        Some(Notification::success(format!("Worktree removed: {path}")));
+                }
+                Err(e) => {
+                    app.notification = Some(Notification::error(format!(
+                        "Failed to remove worktree: {e}"
+                    )));
+                }
+            }
+            refresh_entries(&mut app).await;
+        }
+
+        // Create worktree from PR if requested
+        if let Some((head_ref, _pr_number)) = app.wt_create_requested.take() {
+            let safe_name = head_ref.replace('/', "-");
+            let wt_path = format!("../gct-wt-{safe_name}");
+            match run_git(&["fetch", "origin", &head_ref]).await {
+                Ok(_) => match run_git(&["worktree", "add", &wt_path, &head_ref]).await {
+                    Ok(_) => {
+                        app.notification = Some(Notification::success(format!(
+                            "Worktree created: {wt_path}"
+                        )));
+                    }
+                    Err(e) => {
+                        app.notification = Some(Notification::error(format!(
+                            "Failed to create worktree: {e}"
+                        )));
+                    }
+                },
+                Err(e) => {
+                    app.notification = Some(Notification::error(format!("Failed to fetch: {e}")));
+                }
+            }
+            refresh_entries(&mut app).await;
+        }
+
+        // Delete selected branches if requested
+        if app.branch_delete_requested {
+            app.branch_delete_requested = false;
+            let selected: Vec<String> = app.branch_selected.drain().collect();
+            for name in &selected {
+                let _ = run_git(&["branch", "-d", name]).await;
+            }
+            refresh_entries(&mut app).await;
+        }
+
         if app.should_quit {
             break;
         }
     }
 
     Ok(())
+}
+
+async fn refresh_entries(app: &mut App) {
+    load_branches(app).await;
+    if let Ok(output) = run_git(&["worktree", "list", "--porcelain"]).await {
+        app.worktrees = parse_worktrees(&output);
+    }
+    app.entries = merge_entries(&app.branches, &app.worktrees, &app.pull_requests);
+    let filtered_len = app.filtered_entries().len();
+    if app.sidebar_scroll >= filtered_len && filtered_len > 0 {
+        app.sidebar_scroll = filtered_len - 1;
+    }
 }
 
 async fn load_branches(app: &mut App) {

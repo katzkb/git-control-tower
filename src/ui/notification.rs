@@ -12,7 +12,6 @@ pub struct Notification {
 }
 
 impl Notification {
-    #[allow(dead_code)]
     pub fn success(message: impl Into<String>) -> Self {
         Self {
             message: message.into(),
@@ -20,7 +19,6 @@ impl Notification {
         }
     }
 
-    #[allow(dead_code)]
     pub fn error(message: impl Into<String>) -> Self {
         Self {
             message: message.into(),
