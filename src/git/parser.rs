@@ -2,7 +2,6 @@ use crate::git::types::{Branch, Commit, Worktree};
 
 /// Parse output of `git log --format="%h%x00%s%x00%an%x00%ad" --date=short`
 /// with optional `--graph` prefix per line.
-#[allow(dead_code)]
 pub fn parse_log(output: &str) -> Vec<Commit> {
     output
         .lines()

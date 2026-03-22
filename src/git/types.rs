@@ -1,12 +1,12 @@
 use serde::Deserialize;
 
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct Commit {
     pub hash: String,
     pub message: String,
     pub author: String,
     pub date: String,
+    #[allow(dead_code)]
     pub graph: String,
 }
 
