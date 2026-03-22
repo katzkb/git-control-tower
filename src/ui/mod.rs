@@ -1,5 +1,6 @@
 mod branch_view;
 pub mod confirm_dialog;
+mod help_overlay;
 mod log_view;
 pub mod markdown;
 pub mod notification;
@@ -27,7 +28,7 @@ pub fn draw(frame: &mut Frame, app: &App) {
     }
 
     let status = Paragraph::new(format!(
-        " [{}]  1:Log  2:PR  3:Branch  4:Worktree  q:Quit",
+        " [{}]  1:Log  2:PR  3:Branch  4:Worktree  ?:Help  q:Quit",
         app.active_view.label()
     ))
     .style(Style::default().fg(Color::White).bg(Color::DarkGray));
@@ -36,5 +37,10 @@ pub fn draw(frame: &mut Frame, app: &App) {
     // Notification overlay
     if let Some(notif) = &app.notification {
         notification::draw(frame, notif);
+    }
+
+    // Help overlay
+    if app.show_help {
+        help_overlay::draw(frame);
     }
 }
