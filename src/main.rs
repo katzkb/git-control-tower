@@ -166,7 +166,10 @@ async fn run(terminal: &mut ratatui::DefaultTerminal) -> anyhow::Result<()> {
         // Create worktree from PR if requested
         if let Some((head_ref, _pr_number)) = app.wt_create_requested.take() {
             let safe_name = head_ref.replace('/', "-");
-            let wt_path = format!("{}/{safe_name}", config.worktree.dir);
+            let wt_path = std::path::Path::new(&config.worktree.dir)
+                .join(&safe_name)
+                .to_string_lossy()
+                .to_string();
             match run_git(&["fetch", "origin", &head_ref]).await {
                 Ok(_) => match run_git(&["worktree", "add", &wt_path, &head_ref]).await {
                     Ok(_) => {

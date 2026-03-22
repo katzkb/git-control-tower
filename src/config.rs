@@ -32,10 +32,19 @@ impl Default for WorktreeConfig {
 pub fn load_config() -> Config {
     let candidates = config_paths();
     for path in &candidates {
-        if let Ok(content) = fs::read_to_string(path)
-            && let Ok(config) = toml::from_str(&content)
-        {
-            return config;
+        match fs::read_to_string(path) {
+            Ok(content) => match toml::from_str::<Config>(&content) {
+                Ok(config) => return config,
+                Err(e) => {
+                    eprintln!("Warning: failed to parse {}: {e}", path.display());
+                    return Config::default();
+                }
+            },
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(e) => {
+                eprintln!("Warning: failed to read {}: {e}", path.display());
+                continue;
+            }
         }
     }
     Config::default()
