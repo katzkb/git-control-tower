@@ -50,9 +50,9 @@ pub fn merge_entries(
                 pull_request: None,
                 git_status: None,
             });
-        match &entry.pull_request {
-            Some(existing) if existing.state == "OPEN" => {
-                // Keep existing OPEN PR, don't overwrite with MERGED
+        match (&entry.pull_request, pr.state.as_str()) {
+            (Some(existing), "MERGED") if existing.state == "OPEN" => {
+                // Don't overwrite an OPEN PR with a MERGED one
             }
             _ => {
                 entry.pull_request = Some(pr.clone());
