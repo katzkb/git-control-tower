@@ -1,5 +1,4 @@
 mod app;
-#[allow(dead_code)]
 mod data;
 mod event;
 mod git;
@@ -11,11 +10,11 @@ use std::time::Duration;
 use crossterm::event::KeyEventKind;
 
 use crate::app::App;
+use crate::data::merge_entries;
 use crate::event::{Event, EventHandler};
 use crate::git::command::{run_gh, run_git};
 use crate::git::parser::{parse_branches, parse_log, parse_worktrees};
 use crate::git::types::{PrDetail, PullRequest};
-use crate::ui::notification::Notification;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -84,17 +83,24 @@ async fn run(terminal: &mut ratatui::DefaultTerminal) -> anyhow::Result<()> {
     {
         app.pull_requests = prs;
     }
-    app.prs_loaded = true;
 
     // Load worktrees
     if let Ok(output) = run_git(&["worktree", "list", "--porcelain"]).await {
         app.worktrees = parse_worktrees(&output);
     }
-    app.wt_loaded = true;
 
     // Load branches
     load_branches(&mut app).await;
-    app.branches_loaded = true;
+
+    // Build merged entries
+    app.entries = merge_entries(&app.branches, &app.worktrees, &app.pull_requests);
+    app.entries_loaded = true;
+
+    // Load git status for worktree entries
+    load_all_git_statuses(&mut app).await;
+
+    // Request details for the initial selection
+    app.request_details_for_selection();
 
     loop {
         terminal.draw(|frame| ui::draw(frame, &app))?;
@@ -107,65 +113,6 @@ async fn run(terminal: &mut ratatui::DefaultTerminal) -> anyhow::Result<()> {
             Some(Event::Tick) => {}
             Some(Event::Key(_)) => {}
             None => break,
-        }
-
-        // Delete worktree if requested
-        if let Some(path) = app.wt_delete_requested.take() {
-            let _ = run_git(&["worktree", "remove", &path]).await;
-            // Refresh worktree list
-            if let Ok(output) = run_git(&["worktree", "list", "--porcelain"]).await {
-                app.worktrees = parse_worktrees(&output);
-                if app.wt_scroll >= app.worktrees.len() && app.wt_scroll > 0 {
-                    app.wt_scroll -= 1;
-                }
-            }
-        }
-
-        // Create worktree from PR if requested
-        if let Some((head_ref, pr_number)) = app.wt_create_requested.take() {
-            let remote_ref = format!("origin/{head_ref}");
-            let wt_path = format!("../gct-review-{pr_number}");
-
-            // Fetch the branch first
-            match run_git(&["fetch", "origin", &head_ref]).await {
-                Ok(_) => {
-                    // Create the worktree
-                    match run_git(&["worktree", "add", &wt_path, &remote_ref]).await {
-                        Ok(_) => {
-                            app.notification = Some(Notification::success(format!(
-                                "Worktree created: {wt_path}"
-                            )));
-                            // Refresh worktree list
-                            if let Ok(output) = run_git(&["worktree", "list", "--porcelain"]).await
-                            {
-                                app.worktrees = parse_worktrees(&output);
-                            }
-                        }
-                        Err(e) => {
-                            app.notification = Some(Notification::error(format!(
-                                "Failed to create worktree: {e}"
-                            )));
-                        }
-                    }
-                }
-                Err(e) => {
-                    app.notification = Some(Notification::error(format!("Failed to fetch: {e}")));
-                }
-            }
-        }
-
-        // Delete selected branches if requested
-        if app.branch_delete_requested {
-            app.branch_delete_requested = false;
-            let selected: Vec<String> = app.branch_selected.drain().collect();
-            for name in &selected {
-                let _ = run_git(&["branch", "-d", name]).await;
-            }
-            // Refresh branch list
-            load_branches(&mut app).await;
-            if app.branch_scroll >= app.branches.len() && app.branch_scroll > 0 {
-                app.branch_scroll = app.branches.len().saturating_sub(1);
-            }
         }
 
         // Load PR detail if requested
@@ -185,12 +132,37 @@ async fn run(terminal: &mut ratatui::DefaultTerminal) -> anyhow::Result<()> {
             }
         }
 
+        // Load git status if requested for a specific worktree
+        if let Some(wt_path) = app.git_status_requested.take()
+            && let Some(status) = data::load_git_status(&wt_path).await
+        {
+            // Find the entry with this worktree path and update its git_status
+            if let Some(entry) = app
+                .entries
+                .iter_mut()
+                .find(|e| e.worktree_path() == Some(wt_path.as_str()))
+            {
+                entry.git_status = Some(status);
+            }
+        }
+
         if app.should_quit {
             break;
         }
     }
 
     Ok(())
+}
+
+/// Load git status for all entries that have worktrees.
+async fn load_all_git_statuses(app: &mut App) {
+    for entry in &mut app.entries {
+        if let Some(wt_path) = entry.worktree.as_ref().map(|w| w.path.clone())
+            && let Some(status) = data::load_git_status(&wt_path).await
+        {
+            entry.git_status = Some(status);
+        }
+    }
 }
 
 async fn load_branches(app: &mut App) {

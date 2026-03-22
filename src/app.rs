@@ -2,44 +2,31 @@ use crossterm::event::{KeyCode, KeyEvent};
 
 use std::collections::HashSet;
 
-use crate::git::types::{Branch, Commit, PrDetail, PullRequest, Worktree};
+use crate::git::types::{Branch, BranchEntry, Commit, PrDetail, PullRequest, Worktree};
 use crate::ui::confirm_dialog::ConfirmDialog;
 use crate::ui::notification::Notification;
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub enum ActiveView {
     #[default]
+    Main,
     Log,
-    Pr,
-    Branch,
-    Worktree,
-}
-
-impl ActiveView {
-    pub fn label(&self) -> &'static str {
-        match self {
-            Self::Log => "Log",
-            Self::Pr => "PR",
-            Self::Branch => "Branch",
-            Self::Worktree => "Worktree",
-        }
-    }
 }
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
-pub enum PrFilter {
+pub enum MainFilter {
     #[default]
-    All,
-    AuthoredByMe,
+    Local,
+    MyPr,
     ReviewRequested,
 }
 
-impl PrFilter {
+impl MainFilter {
     pub fn label(&self) -> &'static str {
         match self {
-            Self::All => "All",
-            Self::AuthoredByMe => "Authored",
-            Self::ReviewRequested => "Review Requested",
+            Self::Local => "Local",
+            Self::MyPr => "My PR",
+            Self::ReviewRequested => "Review",
         }
     }
 }
@@ -47,37 +34,45 @@ impl PrFilter {
 pub struct App {
     pub active_view: ActiveView,
     pub should_quit: bool,
+
     // Log View
     pub commits: Vec<Commit>,
     pub log_scroll: usize,
-    // PR View
+
+    // Main View — unified entries
+    pub entries: Vec<BranchEntry>,
+    pub entries_loaded: bool,
+    pub main_filter: MainFilter,
+    pub sidebar_scroll: usize,
+
+    // Raw data sources (for merge_entries and async reload)
+    pub branches: Vec<Branch>,
+    pub worktrees: Vec<Worktree>,
     pub pull_requests: Vec<PullRequest>,
-    pub pr_scroll: usize,
-    pub pr_filter: PrFilter,
     pub gh_user: String,
-    pub prs_loaded: bool,
-    // PR Detail
+
+    // PR Detail (for detail pane)
     pub pr_detail: Option<PrDetail>,
     pub pr_detail_scroll: usize,
     pub pr_detail_requested: Option<u64>,
-    // Worktree View
-    pub worktrees: Vec<Worktree>,
-    pub wt_scroll: usize,
-    pub wt_loaded: bool,
+
+    // Git status loading
+    pub git_status_requested: Option<String>, // worktree path
+
+    // Overlays
     pub confirm_dialog: Option<ConfirmDialog>,
-    pub wt_delete_requested: Option<String>,
-    // Worktree creation from PR
-    pub wt_create_requested: Option<(String, u64)>, // (head_ref, pr_number)
-    // Branch View
-    pub branches: Vec<Branch>,
-    pub branch_scroll: usize,
-    pub branch_selected: HashSet<String>,
-    pub branches_loaded: bool,
-    pub branch_delete_requested: bool,
-    // Notification
     pub notification: Option<Notification>,
-    // Help
     pub show_help: bool,
+
+    // Action requests (used by PR C)
+    #[allow(dead_code)]
+    pub wt_delete_requested: Option<String>,
+    #[allow(dead_code)]
+    pub wt_create_requested: Option<(String, u64)>,
+    #[allow(dead_code)]
+    pub branch_selected: HashSet<String>,
+    #[allow(dead_code)]
+    pub branch_delete_requested: bool,
 }
 
 impl App {
@@ -87,41 +82,75 @@ impl App {
             should_quit: false,
             commits: Vec::new(),
             log_scroll: 0,
+            entries: Vec::new(),
+            entries_loaded: false,
+            main_filter: MainFilter::default(),
+            sidebar_scroll: 0,
+            branches: Vec::new(),
+            worktrees: Vec::new(),
             pull_requests: Vec::new(),
-            pr_scroll: 0,
-            pr_filter: PrFilter::default(),
             gh_user: String::new(),
-            prs_loaded: false,
             pr_detail: None,
             pr_detail_scroll: 0,
             pr_detail_requested: None,
-            worktrees: Vec::new(),
-            wt_scroll: 0,
-            wt_loaded: false,
+            git_status_requested: None,
             confirm_dialog: None,
-            wt_delete_requested: None,
-            wt_create_requested: None,
-            branches: Vec::new(),
-            branch_scroll: 0,
-            branch_selected: HashSet::new(),
-            branches_loaded: false,
-            branch_delete_requested: false,
             notification: None,
             show_help: false,
+            wt_delete_requested: None,
+            wt_create_requested: None,
+            branch_selected: HashSet::new(),
+            branch_delete_requested: false,
         }
     }
 
-    pub fn filtered_prs(&self) -> Vec<&PullRequest> {
-        self.pull_requests
+    pub fn filtered_entries(&self) -> Vec<&BranchEntry> {
+        self.entries
             .iter()
-            .filter(|pr| match self.pr_filter {
-                PrFilter::All => true,
-                PrFilter::AuthoredByMe => pr.author == self.gh_user,
-                PrFilter::ReviewRequested => {
-                    pr.review_requests.iter().any(|r| r.login == self.gh_user)
-                }
+            .filter(|entry| match self.main_filter {
+                MainFilter::Local => entry.has_local(),
+                MainFilter::MyPr => entry
+                    .pull_request
+                    .as_ref()
+                    .is_some_and(|pr| pr.author == self.gh_user),
+                MainFilter::ReviewRequested => entry
+                    .pull_request
+                    .as_ref()
+                    .is_some_and(|pr| pr.review_requests.iter().any(|r| r.login == self.gh_user)),
             })
             .collect()
+    }
+
+    pub fn selected_entry(&self) -> Option<&BranchEntry> {
+        self.filtered_entries().into_iter().nth(self.sidebar_scroll)
+    }
+
+    /// Signal that the selection changed; request PR detail and git status as needed.
+    pub fn request_details_for_selection(&mut self) {
+        let selected = self.selected_entry().cloned();
+        if let Some(entry) = selected {
+            // Request PR detail if entry has a PR
+            if let Some(pr_num) = entry.pr_number() {
+                if self.pr_detail.as_ref().map(|d| d.number) != Some(pr_num) {
+                    self.pr_detail_requested = Some(pr_num);
+                    self.pr_detail = None;
+                    self.pr_detail_scroll = 0;
+                }
+            } else {
+                self.pr_detail = None;
+                self.pr_detail_scroll = 0;
+            }
+
+            // Request git status if entry has a worktree and status not yet loaded
+            if let Some(wt_path) = entry.worktree_path()
+                && entry.git_status.is_none()
+            {
+                self.git_status_requested = Some(wt_path.to_string());
+            }
+        } else {
+            self.pr_detail = None;
+            self.pr_detail_scroll = 0;
+        }
     }
 
     pub fn handle_key(&mut self, key: KeyEvent) {
@@ -142,25 +171,58 @@ impl App {
             return;
         }
 
-        // PR detail: Esc/Backspace goes back to list instead of quitting
-        if self.active_view == ActiveView::Pr && self.pr_detail.is_some() {
-            self.handle_pr_detail_key(key.code);
-            return;
-        }
-
         match key.code {
             KeyCode::Char('?') => self.show_help = true,
-            KeyCode::Char('q') | KeyCode::Esc => self.should_quit = true,
-            KeyCode::Char('1') => self.active_view = ActiveView::Log,
-            KeyCode::Char('2') => self.active_view = ActiveView::Pr,
-            KeyCode::Char('3') => self.active_view = ActiveView::Branch,
-            KeyCode::Char('4') => self.active_view = ActiveView::Worktree,
+            KeyCode::Char('q') => self.should_quit = true,
+            KeyCode::Esc => {
+                if self.active_view == ActiveView::Log {
+                    self.active_view = ActiveView::Main;
+                } else {
+                    self.should_quit = true;
+                }
+            }
+            KeyCode::Char('l') => self.active_view = ActiveView::Log,
+            KeyCode::Char('1') => {
+                self.main_filter = MainFilter::Local;
+                self.active_view = ActiveView::Main;
+                self.sidebar_scroll = 0;
+                self.request_details_for_selection();
+            }
+            KeyCode::Char('2') => {
+                self.main_filter = MainFilter::MyPr;
+                self.active_view = ActiveView::Main;
+                self.sidebar_scroll = 0;
+                self.request_details_for_selection();
+            }
+            KeyCode::Char('3') => {
+                self.main_filter = MainFilter::ReviewRequested;
+                self.active_view = ActiveView::Main;
+                self.sidebar_scroll = 0;
+                self.request_details_for_selection();
+            }
             _ => match self.active_view {
+                ActiveView::Main => self.handle_main_key(key.code),
                 ActiveView::Log => self.handle_log_key(key.code),
-                ActiveView::Pr => self.handle_pr_key(key.code),
-                ActiveView::Branch => self.handle_branch_key(key.code),
-                ActiveView::Worktree => self.handle_wt_key(key.code),
             },
+        }
+    }
+
+    fn handle_main_key(&mut self, code: KeyCode) {
+        let filtered_len = self.filtered_entries().len();
+        match code {
+            KeyCode::Char('j') | KeyCode::Down => {
+                if filtered_len > 0 && self.sidebar_scroll + 1 < filtered_len {
+                    self.sidebar_scroll += 1;
+                    self.request_details_for_selection();
+                }
+            }
+            KeyCode::Char('k') | KeyCode::Up => {
+                if self.sidebar_scroll > 0 {
+                    self.sidebar_scroll = self.sidebar_scroll.saturating_sub(1);
+                    self.request_details_for_selection();
+                }
+            }
+            _ => {}
         }
     }
 
@@ -178,165 +240,10 @@ impl App {
         }
     }
 
-    fn handle_pr_key(&mut self, code: KeyCode) {
-        let filtered = self.filtered_prs();
-        let filtered_len = filtered.len();
-        match code {
-            KeyCode::Char('j') | KeyCode::Down => {
-                if filtered_len > 0 && self.pr_scroll + 1 < filtered_len {
-                    self.pr_scroll += 1;
-                }
-            }
-            KeyCode::Char('k') | KeyCode::Up => {
-                self.pr_scroll = self.pr_scroll.saturating_sub(1);
-            }
-            KeyCode::Enter => {
-                if let Some(pr) = filtered.get(self.pr_scroll) {
-                    self.pr_detail_requested = Some(pr.number);
-                    self.pr_detail_scroll = 0;
-                }
-            }
-            KeyCode::Char('a') => {
-                self.pr_filter = if self.pr_filter == PrFilter::AuthoredByMe {
-                    PrFilter::All
-                } else {
-                    PrFilter::AuthoredByMe
-                };
-                self.pr_scroll = 0;
-            }
-            KeyCode::Char('r') => {
-                self.pr_filter = if self.pr_filter == PrFilter::ReviewRequested {
-                    PrFilter::All
-                } else {
-                    PrFilter::ReviewRequested
-                };
-                self.pr_scroll = 0;
-            }
-            _ => {}
-        }
-    }
-
-    fn handle_pr_detail_key(&mut self, code: KeyCode) {
-        // Clear notification on any key press
-        self.notification = None;
-
-        match code {
-            KeyCode::Esc | KeyCode::Backspace | KeyCode::Char('q') => {
-                self.pr_detail = None;
-                self.pr_detail_scroll = 0;
-            }
-            KeyCode::Char('j') | KeyCode::Down => {
-                self.pr_detail_scroll += 1;
-            }
-            KeyCode::Char('k') | KeyCode::Up => {
-                self.pr_detail_scroll = self.pr_detail_scroll.saturating_sub(1);
-            }
-            KeyCode::Char('w') => {
-                if let Some(detail) = &self.pr_detail {
-                    self.wt_create_requested = Some((detail.head_ref.clone(), detail.number));
-                }
-            }
-            _ => {}
-        }
-    }
-
-    fn handle_wt_key(&mut self, code: KeyCode) {
-        let len = self.worktrees.len();
-        match code {
-            KeyCode::Char('j') | KeyCode::Down => {
-                if len > 0 && self.wt_scroll + 1 < len {
-                    self.wt_scroll += 1;
-                }
-            }
-            KeyCode::Char('k') | KeyCode::Up => {
-                self.wt_scroll = self.wt_scroll.saturating_sub(1);
-            }
-            KeyCode::Char('d') => {
-                if let Some(wt) = self.worktrees.get(self.wt_scroll) {
-                    // Don't allow deleting the main worktree (first one)
-                    if self.wt_scroll == 0 {
-                        return;
-                    }
-                    self.confirm_dialog = Some(ConfirmDialog::new(
-                        "Delete Worktree",
-                        format!("Remove worktree at {}?", wt.path),
-                    ));
-                }
-            }
-            _ => {}
-        }
-    }
-
-    fn handle_branch_key(&mut self, code: KeyCode) {
-        let len = self.branches.len();
-        match code {
-            KeyCode::Char('j') | KeyCode::Down => {
-                if len > 0 && self.branch_scroll + 1 < len {
-                    self.branch_scroll += 1;
-                }
-            }
-            KeyCode::Char('k') | KeyCode::Up => {
-                self.branch_scroll = self.branch_scroll.saturating_sub(1);
-            }
-            KeyCode::Char(' ') => {
-                if let Some(branch) = self.branches.get(self.branch_scroll) {
-                    // Don't allow selecting current branch or main/master
-                    if branch.is_current || Self::is_protected_branch(&branch.name) {
-                        return;
-                    }
-                    let name = branch.name.clone();
-                    if self.branch_selected.contains(&name) {
-                        self.branch_selected.remove(&name);
-                    } else {
-                        self.branch_selected.insert(name);
-                    }
-                }
-            }
-            KeyCode::Char('a') => {
-                // Select all merged branches (except current and protected)
-                for branch in &self.branches {
-                    if branch.is_merged
-                        && !branch.is_current
-                        && !Self::is_protected_branch(&branch.name)
-                    {
-                        self.branch_selected.insert(branch.name.clone());
-                    }
-                }
-            }
-            KeyCode::Char('d') => {
-                if !self.branch_selected.is_empty() {
-                    let count = self.branch_selected.len();
-                    let names: Vec<&str> =
-                        self.branch_selected.iter().map(|s| s.as_str()).collect();
-                    let preview = if count <= 3 {
-                        names.join(", ")
-                    } else {
-                        format!("{} and {} more", names[..2].join(", "), count - 2)
-                    };
-                    self.confirm_dialog = Some(ConfirmDialog::new(
-                        "Delete Branches",
-                        format!("Delete {count} branch(es)? [{preview}]"),
-                    ));
-                }
-            }
-            _ => {}
-        }
-    }
-
     fn handle_confirm_key(&mut self, code: KeyCode) {
         match code {
             KeyCode::Char('y') => {
-                match self.active_view {
-                    ActiveView::Worktree => {
-                        if let Some(wt) = self.worktrees.get(self.wt_scroll) {
-                            self.wt_delete_requested = Some(wt.path.clone());
-                        }
-                    }
-                    ActiveView::Branch => {
-                        self.branch_delete_requested = true;
-                    }
-                    _ => {}
-                }
+                // PR C will add action dispatch here
                 self.confirm_dialog = None;
             }
             KeyCode::Char('n') | KeyCode::Esc => {
@@ -346,7 +253,8 @@ impl App {
         }
     }
 
-    fn is_protected_branch(name: &str) -> bool {
+    #[allow(dead_code)]
+    pub fn is_protected_branch(name: &str) -> bool {
         matches!(name, "main" | "master")
     }
 }
