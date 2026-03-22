@@ -1,5 +1,7 @@
 use crossterm::event::{KeyCode, KeyEvent};
 
+use crate::git::types::Commit;
+
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub enum ActiveView {
     #[default]
@@ -23,6 +25,8 @@ impl ActiveView {
 pub struct App {
     pub active_view: ActiveView,
     pub should_quit: bool,
+    pub commits: Vec<Commit>,
+    pub log_scroll: usize,
 }
 
 impl App {
@@ -30,6 +34,8 @@ impl App {
         Self {
             active_view: ActiveView::default(),
             should_quit: false,
+            commits: Vec::new(),
+            log_scroll: 0,
         }
     }
 
@@ -40,6 +46,24 @@ impl App {
             KeyCode::Char('2') => self.active_view = ActiveView::Pr,
             KeyCode::Char('3') => self.active_view = ActiveView::Branch,
             KeyCode::Char('4') => self.active_view = ActiveView::Worktree,
+            _ => {
+                if self.active_view == ActiveView::Log {
+                    self.handle_log_key(key.code);
+                }
+            }
+        }
+    }
+
+    fn handle_log_key(&mut self, code: KeyCode) {
+        match code {
+            KeyCode::Char('j') | KeyCode::Down => {
+                if self.log_scroll + 1 < self.commits.len() {
+                    self.log_scroll += 1;
+                }
+            }
+            KeyCode::Char('k') | KeyCode::Up => {
+                self.log_scroll = self.log_scroll.saturating_sub(1);
+            }
             _ => {}
         }
     }

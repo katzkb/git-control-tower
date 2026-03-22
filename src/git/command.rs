@@ -1,7 +1,6 @@
 use anyhow::{Context, Result, bail};
 use tokio::process::Command;
 
-#[allow(dead_code)]
 pub async fn run_git(args: &[&str]) -> Result<String> {
     let output = Command::new("git")
         .args(args)
