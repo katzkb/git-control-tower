@@ -11,7 +11,6 @@ pub struct Commit {
 }
 
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct Branch {
     pub name: String,
     pub is_current: bool,
