@@ -70,19 +70,20 @@ async fn run(terminal: &mut ratatui::DefaultTerminal) -> anyhow::Result<()> {
         app.gh_user = user.trim().to_string();
     }
 
-    // Load PR list
+    // Load PR list (open + merged)
+    let pr_fields = "number,title,author,state,headRefName,updatedAt,reviewRequests";
+    if let Ok(output) = run_gh(&["pr", "list", "--json", pr_fields, "--limit", "50"]).await
+        && let Ok(prs) = serde_json::from_str::<Vec<PullRequest>>(&output)
+    {
+        app.pull_requests = prs;
+    }
     if let Ok(output) = run_gh(&[
-        "pr",
-        "list",
-        "--json",
-        "number,title,author,state,headRefName,updatedAt,reviewRequests",
-        "--limit",
-        "50",
+        "pr", "list", "--state", "merged", "--json", pr_fields, "--limit", "50",
     ])
     .await
         && let Ok(prs) = serde_json::from_str::<Vec<PullRequest>>(&output)
     {
-        app.pull_requests = prs;
+        app.pull_requests.extend(prs);
     }
 
     // Load worktrees
