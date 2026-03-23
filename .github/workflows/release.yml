@@ -120,6 +120,7 @@ jobs:
         with:
           repository: katzkb/homebrew-tap
           token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          ref: main
 
       - name: Update formula
         env:
@@ -145,4 +146,4 @@ jobs:
           git add Formula/gct.rb
           git diff --cached --quiet && echo "Formula already up to date" && exit 0
           git commit -m "chore: update gct to ${VERSION}"
-          git push
+          git push origin main
