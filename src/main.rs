@@ -5,6 +5,7 @@ mod event;
 mod git;
 mod ui;
 
+use std::collections::HashSet;
 use std::process;
 use std::time::Duration;
 
@@ -21,7 +22,9 @@ use crate::ui::notification::Notification;
 
 enum AsyncResult {
     PrDetail(PrDetail),
+    PrDetailError(u64),
     GitStatus { wt_path: String, status: GitStatus },
+    GitStatusError(String),
 }
 
 #[tokio::main]
@@ -63,6 +66,8 @@ async fn run(
     let mut app = App::new();
     let mut events = EventHandler::new(Duration::from_millis(250));
     let (tx, mut rx) = mpsc::unbounded_channel::<AsyncResult>();
+    let mut pr_inflight: HashSet<u64> = HashSet::new();
+    let mut status_inflight: HashSet<String> = HashSet::new();
 
     // Load commit history
     if let Ok(output) = run_git(&[
@@ -135,8 +140,11 @@ async fn run(
             None => break,
         }
 
-        // Spawn PR detail load in background (non-blocking)
-        if let Some(number) = app.pr_detail_requested.take() {
+        // Spawn PR detail load in background (non-blocking, deduplicated)
+        if let Some(number) = app.pr_detail_requested.take()
+            && !pr_inflight.contains(&number)
+        {
+            pr_inflight.insert(number);
             let tx = tx.clone();
             tokio::spawn(async move {
                 let num_str = number.to_string();
@@ -151,16 +159,23 @@ async fn run(
                     && let Ok(detail) = serde_json::from_str::<PrDetail>(&output)
                 {
                     let _ = tx.send(AsyncResult::PrDetail(detail));
+                } else {
+                    let _ = tx.send(AsyncResult::PrDetailError(number));
                 }
             });
         }
 
-        // Spawn git status load in background (non-blocking)
-        if let Some(wt_path) = app.git_status_requested.take() {
+        // Spawn git status load in background (non-blocking, deduplicated)
+        if let Some(wt_path) = app.git_status_requested.take()
+            && !status_inflight.contains(&wt_path)
+        {
+            status_inflight.insert(wt_path.clone());
             let tx = tx.clone();
             tokio::spawn(async move {
                 if let Some(status) = data::load_git_status(&wt_path).await {
                     let _ = tx.send(AsyncResult::GitStatus { wt_path, status });
+                } else {
+                    let _ = tx.send(AsyncResult::GitStatusError(wt_path));
                 }
             });
         }
@@ -169,9 +184,16 @@ async fn run(
         while let Ok(result) = rx.try_recv() {
             match result {
                 AsyncResult::PrDetail(detail) => {
+                    pr_inflight.remove(&detail.number);
                     app.pr_detail_cache.insert(detail.number, detail);
                 }
+                AsyncResult::PrDetailError(number) => {
+                    pr_inflight.remove(&number);
+                    app.notification =
+                        Some(Notification::error(format!("Failed to load PR #{number}")));
+                }
                 AsyncResult::GitStatus { wt_path, status } => {
+                    status_inflight.remove(&wt_path);
                     if let Some(entry) = app
                         .entries
                         .iter_mut()
@@ -179,6 +201,9 @@ async fn run(
                     {
                         entry.git_status = Some(status);
                     }
+                }
+                AsyncResult::GitStatusError(wt_path) => {
+                    status_inflight.remove(&wt_path);
                 }
             }
         }
