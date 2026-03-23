@@ -188,7 +188,7 @@ impl App {
         }
 
         // Search mode takes priority in Main view
-        if self.search_active {
+        if self.search_active && self.active_view == ActiveView::Main {
             self.handle_search_key(key.code);
             return;
         }
