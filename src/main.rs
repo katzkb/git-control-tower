@@ -9,14 +9,20 @@ use std::process;
 use std::time::Duration;
 
 use crossterm::event::KeyEventKind;
+use tokio::sync::mpsc;
 
 use crate::app::App;
 use crate::data::merge_entries;
 use crate::event::{Event, EventHandler};
 use crate::git::command::{run_gh, run_git};
 use crate::git::parser::{parse_branches, parse_log, parse_worktrees};
-use crate::git::types::{PrDetail, PullRequest};
+use crate::git::types::{GitStatus, PrDetail, PullRequest};
 use crate::ui::notification::Notification;
+
+enum AsyncResult {
+    PrDetail(PrDetail),
+    GitStatus { wt_path: String, status: GitStatus },
+}
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -56,6 +62,7 @@ async fn run(
 ) -> anyhow::Result<()> {
     let mut app = App::new();
     let mut events = EventHandler::new(Duration::from_millis(250));
+    let (tx, mut rx) = mpsc::unbounded_channel::<AsyncResult>();
 
     // Load commit history
     if let Ok(output) = run_git(&[
@@ -128,34 +135,51 @@ async fn run(
             None => break,
         }
 
-        // Load PR detail if requested
+        // Spawn PR detail load in background (non-blocking)
         if let Some(number) = app.pr_detail_requested.take() {
-            let num_str = number.to_string();
-            if let Ok(output) = run_gh(&[
-                "pr",
-                "view",
-                &num_str,
-                "--json",
-                "number,title,author,state,body,additions,deletions,headRefName",
-            ])
-            .await
-                && let Ok(detail) = serde_json::from_str::<PrDetail>(&output)
-            {
-                app.pr_detail_cache.insert(detail.number, detail);
-            }
+            let tx = tx.clone();
+            tokio::spawn(async move {
+                let num_str = number.to_string();
+                if let Ok(output) = run_gh(&[
+                    "pr",
+                    "view",
+                    &num_str,
+                    "--json",
+                    "number,title,author,state,body,additions,deletions,headRefName",
+                ])
+                .await
+                    && let Ok(detail) = serde_json::from_str::<PrDetail>(&output)
+                {
+                    let _ = tx.send(AsyncResult::PrDetail(detail));
+                }
+            });
         }
 
-        // Load git status if requested for a specific worktree
-        if let Some(wt_path) = app.git_status_requested.take()
-            && let Some(status) = data::load_git_status(&wt_path).await
-        {
-            // Find the entry with this worktree path and update its git_status
-            if let Some(entry) = app
-                .entries
-                .iter_mut()
-                .find(|e| e.worktree_path() == Some(wt_path.as_str()))
-            {
-                entry.git_status = Some(status);
+        // Spawn git status load in background (non-blocking)
+        if let Some(wt_path) = app.git_status_requested.take() {
+            let tx = tx.clone();
+            tokio::spawn(async move {
+                if let Some(status) = data::load_git_status(&wt_path).await {
+                    let _ = tx.send(AsyncResult::GitStatus { wt_path, status });
+                }
+            });
+        }
+
+        // Receive completed background results (non-blocking)
+        while let Ok(result) = rx.try_recv() {
+            match result {
+                AsyncResult::PrDetail(detail) => {
+                    app.pr_detail_cache.insert(detail.number, detail);
+                }
+                AsyncResult::GitStatus { wt_path, status } => {
+                    if let Some(entry) = app
+                        .entries
+                        .iter_mut()
+                        .find(|e| e.worktree_path() == Some(wt_path.as_str()))
+                    {
+                        entry.git_status = Some(status);
+                    }
+                }
             }
         }
 
