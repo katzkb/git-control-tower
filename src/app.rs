@@ -107,7 +107,11 @@ impl App {
     }
 
     pub fn filtered_entries(&self) -> Vec<&BranchEntry> {
-        let query = self.search_query.to_lowercase();
+        let search_query = if self.search_active && !self.search_query.is_empty() {
+            Some(self.search_query.to_lowercase())
+        } else {
+            None
+        };
         self.entries
             .iter()
             .filter(|entry| {
@@ -121,9 +125,10 @@ impl App {
                         pr.review_requests.iter().any(|r| r.login == self.gh_user)
                     }),
                 };
-                let passes_search = !self.search_active
-                    || query.is_empty()
-                    || entry.name.to_lowercase().contains(&query);
+                let passes_search = match &search_query {
+                    Some(q) => entry.name.to_lowercase().contains(q.as_str()),
+                    None => true,
+                };
                 passes_filter && passes_search
             })
             .collect()

@@ -30,9 +30,7 @@ pub fn draw(frame: &mut Frame, app: &App) {
             " [{}]  1:Local  2:My PR  3:Review  /:Search  l:Log  ?:Help  q:Quit",
             app.main_filter.label()
         ),
-        ActiveView::Log => {
-            " [Log]  1:Local  2:My PR  3:Review  /:Search  l:Log  ?:Help  q:Quit".to_string()
-        }
+        ActiveView::Log => " [Log]  1:Local  2:My PR  3:Review  l:Log  ?:Help  q:Quit".to_string(),
     };
     let status =
         Paragraph::new(status_text).style(Style::default().fg(Color::White).bg(Color::DarkGray));
