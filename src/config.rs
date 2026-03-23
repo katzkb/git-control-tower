@@ -1,6 +1,8 @@
 use serde::Deserialize;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+
+const DEFAULT_WORKTREE_PREFIX: &str = "../gct-wt";
 
 #[derive(Debug, Deserialize, Default)]
 pub struct Config {
@@ -15,7 +17,7 @@ pub struct WorktreeConfig {
 }
 
 fn default_worktree_dir() -> String {
-    "../gct-wt".to_string()
+    DEFAULT_WORKTREE_PREFIX.to_string()
 }
 
 impl Default for WorktreeConfig {
@@ -32,11 +34,11 @@ impl Config {
     /// Custom dir produces `{dir}/{safe_name}`.
     pub fn worktree_path(&self, branch_name: &str) -> String {
         let safe_name = branch_name.replace('/', "-");
-        if self.worktree.dir == default_worktree_dir() {
+        if self.worktree.dir == DEFAULT_WORKTREE_PREFIX {
             // Backward compatible: ../gct-wt-{branch}
-            format!("../gct-wt-{safe_name}")
+            format!("{DEFAULT_WORKTREE_PREFIX}-{safe_name}")
         } else {
-            std::path::Path::new(&self.worktree.dir)
+            Path::new(&self.worktree.dir)
                 .join(&safe_name)
                 .to_string_lossy()
                 .to_string()
@@ -93,7 +95,7 @@ mod tests {
     #[test]
     fn test_default_config() {
         let config = Config::default();
-        assert_eq!(config.worktree.dir, "../gct-wt");
+        assert_eq!(config.worktree.dir, DEFAULT_WORKTREE_PREFIX);
     }
 
     #[test]
@@ -112,7 +114,11 @@ mod tests {
                 dir: "../wt".to_string(),
             },
         };
-        assert_eq!(config.worktree_path("feature/auth"), "../wt/feature-auth");
+        let expected = Path::new("../wt").join("feature-auth");
+        assert_eq!(
+            config.worktree_path("feature/auth"),
+            expected.to_string_lossy()
+        );
     }
 
     #[test]
@@ -128,7 +134,7 @@ dir = "../wt"
     #[test]
     fn test_parse_empty_config() {
         let config: Config = toml::from_str("").unwrap();
-        assert_eq!(config.worktree.dir, "../gct-wt");
+        assert_eq!(config.worktree.dir, DEFAULT_WORKTREE_PREFIX);
     }
 
     #[test]
