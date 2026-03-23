@@ -70,8 +70,17 @@ async fn run(
         app.commits = parse_log(&output);
     }
 
-    // Load GitHub user
-    if let Ok(user) = run_gh(&["api", "user", "--jq", ".login"]).await {
+    // Load GitHub user (uses graphql viewer query which respects GHE host)
+    if let Ok(user) = run_gh(&[
+        "api",
+        "graphql",
+        "-f",
+        "query={viewer{login}}",
+        "--jq",
+        ".data.viewer.login",
+    ])
+    .await
+    {
         app.gh_user = user.trim().to_string();
     }
 
