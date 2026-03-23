@@ -50,6 +50,7 @@ jobs:
           VERSION="${{ steps.version.outputs.version }}"
           SEMVER="${VERSION#v}"
           sed -i "s/^version = \".*\"/version = \"${SEMVER}\"/" Cargo.toml
+          cargo generate-lockfile
           echo "Updated Cargo.toml to ${SEMVER}"
           grep '^version' Cargo.toml
 
