@@ -344,6 +344,8 @@ impl App {
                         .position(|e| e.name == name)
                         .unwrap_or(0);
                     self.sidebar_scroll = new_idx;
+                } else {
+                    self.sidebar_scroll = self.search_pre_scroll;
                 }
                 self.request_details_for_selection();
             }
@@ -365,8 +367,10 @@ impl App {
                 }
             }
             KeyCode::Up => {
-                self.sidebar_scroll = self.sidebar_scroll.saturating_sub(1);
-                self.request_details_for_selection();
+                if self.sidebar_scroll > 0 {
+                    self.sidebar_scroll -= 1;
+                    self.request_details_for_selection();
+                }
             }
             _ => {}
         }
