@@ -5,18 +5,27 @@ mod event;
 mod git;
 mod ui;
 
+use std::collections::HashSet;
 use std::process;
 use std::time::Duration;
 
 use crossterm::event::KeyEventKind;
+use tokio::sync::mpsc;
 
 use crate::app::App;
 use crate::data::merge_entries;
 use crate::event::{Event, EventHandler};
 use crate::git::command::{run_gh, run_git};
 use crate::git::parser::{parse_branches, parse_log, parse_worktrees};
-use crate::git::types::{PrDetail, PullRequest};
+use crate::git::types::{GitStatus, PrDetail, PullRequest};
 use crate::ui::notification::Notification;
+
+enum AsyncResult {
+    PrDetail(PrDetail),
+    PrDetailError(u64),
+    GitStatus { wt_path: String, status: GitStatus },
+    GitStatusError(String),
+}
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -56,6 +65,9 @@ async fn run(
 ) -> anyhow::Result<()> {
     let mut app = App::new();
     let mut events = EventHandler::new(Duration::from_millis(250));
+    let (tx, mut rx) = mpsc::unbounded_channel::<AsyncResult>();
+    let mut pr_inflight: HashSet<u64> = HashSet::new();
+    let mut status_inflight: HashSet<String> = HashSet::new();
 
     // Load commit history
     if let Ok(output) = run_git(&[
@@ -128,34 +140,71 @@ async fn run(
             None => break,
         }
 
-        // Load PR detail if requested
-        if let Some(number) = app.pr_detail_requested.take() {
-            let num_str = number.to_string();
-            if let Ok(output) = run_gh(&[
-                "pr",
-                "view",
-                &num_str,
-                "--json",
-                "number,title,author,state,body,additions,deletions,headRefName",
-            ])
-            .await
-                && let Ok(detail) = serde_json::from_str::<PrDetail>(&output)
-            {
-                app.pr_detail_cache.insert(detail.number, detail);
-            }
+        // Spawn PR detail load in background (non-blocking, deduplicated)
+        if let Some(number) = app.pr_detail_requested.take()
+            && !pr_inflight.contains(&number)
+        {
+            pr_inflight.insert(number);
+            let tx = tx.clone();
+            tokio::spawn(async move {
+                let num_str = number.to_string();
+                if let Ok(output) = run_gh(&[
+                    "pr",
+                    "view",
+                    &num_str,
+                    "--json",
+                    "number,title,author,state,body,additions,deletions,headRefName",
+                ])
+                .await
+                    && let Ok(detail) = serde_json::from_str::<PrDetail>(&output)
+                {
+                    let _ = tx.send(AsyncResult::PrDetail(detail));
+                } else {
+                    let _ = tx.send(AsyncResult::PrDetailError(number));
+                }
+            });
         }
 
-        // Load git status if requested for a specific worktree
+        // Spawn git status load in background (non-blocking, deduplicated)
         if let Some(wt_path) = app.git_status_requested.take()
-            && let Some(status) = data::load_git_status(&wt_path).await
+            && !status_inflight.contains(&wt_path)
         {
-            // Find the entry with this worktree path and update its git_status
-            if let Some(entry) = app
-                .entries
-                .iter_mut()
-                .find(|e| e.worktree_path() == Some(wt_path.as_str()))
-            {
-                entry.git_status = Some(status);
+            status_inflight.insert(wt_path.clone());
+            let tx = tx.clone();
+            tokio::spawn(async move {
+                if let Some(status) = data::load_git_status(&wt_path).await {
+                    let _ = tx.send(AsyncResult::GitStatus { wt_path, status });
+                } else {
+                    let _ = tx.send(AsyncResult::GitStatusError(wt_path));
+                }
+            });
+        }
+
+        // Receive completed background results (non-blocking)
+        while let Ok(result) = rx.try_recv() {
+            match result {
+                AsyncResult::PrDetail(detail) => {
+                    pr_inflight.remove(&detail.number);
+                    app.pr_detail_cache.insert(detail.number, detail);
+                }
+                AsyncResult::PrDetailError(number) => {
+                    pr_inflight.remove(&number);
+                    app.notification =
+                        Some(Notification::error(format!("Failed to load PR #{number}")));
+                }
+                AsyncResult::GitStatus { wt_path, status } => {
+                    status_inflight.remove(&wt_path);
+                    if let Some(entry) = app
+                        .entries
+                        .iter_mut()
+                        .find(|e| e.worktree_path() == Some(wt_path.as_str()))
+                    {
+                        entry.git_status = Some(status);
+                    }
+                }
+                AsyncResult::GitStatusError(wt_path) => {
+                    status_inflight.remove(&wt_path);
+                }
             }
         }
 
