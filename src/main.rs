@@ -25,6 +25,8 @@ enum AsyncResult {
     PrDetailError(u64),
     GitStatus { wt_path: String, status: GitStatus },
     GitStatusError(String),
+    UserLogin(String),
+    PrList(Vec<PullRequest>),
 }
 
 #[tokio::main]
@@ -69,7 +71,7 @@ async fn run(
     let mut pr_inflight: HashSet<u64> = HashSet::new();
     let mut status_inflight: HashSet<String> = HashSet::new();
 
-    // Load commit history
+    // Phase 1: Fast local loads (blocking, ~170ms)
     if let Ok(output) = run_git(&[
         "log",
         "--format=%h%x00%s%x00%an%x00%ad",
@@ -81,51 +83,52 @@ async fn run(
     {
         app.commits = parse_log(&output);
     }
-
-    // Load GitHub user (uses graphql viewer query which respects GHE host)
-    if let Ok(user) = run_gh(&[
-        "api",
-        "graphql",
-        "-f",
-        "query={viewer{login}}",
-        "--jq",
-        ".data.viewer.login",
-    ])
-    .await
-    {
-        app.gh_user = user.trim().to_string();
-    }
-
-    // Load PR list (open + merged)
-    let pr_fields = "number,title,author,state,headRefName,updatedAt,reviewRequests";
-    if let Ok(output) = run_gh(&["pr", "list", "--json", pr_fields, "--limit", "50"]).await
-        && let Ok(prs) = serde_json::from_str::<Vec<PullRequest>>(&output)
-    {
-        app.pull_requests = prs;
-    }
-    if let Ok(output) = run_gh(&[
-        "pr", "list", "--state", "merged", "--json", pr_fields, "--limit", "50",
-    ])
-    .await
-        && let Ok(prs) = serde_json::from_str::<Vec<PullRequest>>(&output)
-    {
-        app.pull_requests.extend(prs);
-    }
-
-    // Load worktrees
     if let Ok(output) = run_git(&["worktree", "list", "--porcelain"]).await {
         app.worktrees = parse_worktrees(&output);
     }
-
-    // Load branches
     load_branches(&mut app).await;
-
-    // Build merged entries
-    app.entries = merge_entries(&app.branches, &app.worktrees, &app.pull_requests);
+    app.entries = merge_entries(&app.branches, &app.worktrees, &[]);
     app.entries_loaded = true;
-
-    // Request details for the initial selection (lazy-loads git status and PR detail)
     app.request_details_for_selection();
+
+    // Phase 2: Slow network loads (background, non-blocking)
+    let tx_user = tx.clone();
+    tokio::spawn(async move {
+        if let Ok(user) = run_gh(&[
+            "api",
+            "graphql",
+            "-f",
+            "query={viewer{login}}",
+            "--jq",
+            ".data.viewer.login",
+        ])
+        .await
+        {
+            let _ = tx_user.send(AsyncResult::UserLogin(user.trim().to_string()));
+        }
+    });
+
+    let tx_prs = tx.clone();
+    tokio::spawn(async move {
+        let pr_fields = "number,title,author,state,headRefName,updatedAt,reviewRequests";
+        let mut prs = Vec::new();
+        if let Ok(output) = run_gh(&["pr", "list", "--json", pr_fields, "--limit", "50"]).await
+            && let Ok(open) = serde_json::from_str::<Vec<PullRequest>>(&output)
+        {
+            prs.extend(open);
+        }
+        if let Ok(output) = run_gh(&[
+            "pr", "list", "--state", "merged", "--json", pr_fields, "--limit", "50",
+        ])
+        .await
+            && let Ok(merged) = serde_json::from_str::<Vec<PullRequest>>(&output)
+        {
+            prs.extend(merged);
+        }
+        if !prs.is_empty() {
+            let _ = tx_prs.send(AsyncResult::PrList(prs));
+        }
+    });
 
     loop {
         terminal.draw(|frame| ui::draw(frame, &app))?;
@@ -204,6 +207,18 @@ async fn run(
                 }
                 AsyncResult::GitStatusError(wt_path) => {
                     status_inflight.remove(&wt_path);
+                }
+                AsyncResult::UserLogin(user) => {
+                    app.gh_user = user;
+                }
+                AsyncResult::PrList(prs) => {
+                    app.pull_requests = prs;
+                    app.entries = merge_entries(&app.branches, &app.worktrees, &app.pull_requests);
+                    let filtered_len = app.filtered_entries().len();
+                    if app.sidebar_scroll >= filtered_len && filtered_len > 0 {
+                        app.sidebar_scroll = filtered_len - 1;
+                    }
+                    app.request_details_for_selection();
                 }
             }
         }
