@@ -17,16 +17,29 @@ pub fn draw(frame: &mut Frame, area: Rect, app: &App) {
 }
 
 fn draw_filter_bar(frame: &mut Frame, area: Rect, app: &App) {
-    let label = app.main_filter.label();
-    let bar = Line::from(vec![
-        Span::styled(" Filter: ", Style::default().fg(Color::DarkGray)),
-        Span::styled(
-            label,
-            Style::default()
-                .fg(Color::Cyan)
-                .add_modifier(Modifier::BOLD),
-        ),
-    ]);
+    let bar = if app.search_active {
+        Line::from(vec![
+            Span::styled(
+                " /",
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(app.search_query.clone(), Style::default().fg(Color::White)),
+            Span::styled("_", Style::default().fg(Color::Cyan)),
+        ])
+    } else {
+        let label = app.main_filter.label();
+        Line::from(vec![
+            Span::styled(" Filter: ", Style::default().fg(Color::DarkGray)),
+            Span::styled(
+                label,
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            ),
+        ])
+    };
     frame.render_widget(
         ratatui::widgets::Paragraph::new(bar).style(Style::default().bg(Color::Black)),
         area,
