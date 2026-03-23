@@ -46,6 +46,7 @@ pub struct App {
     pub sidebar_scroll: usize,
     pub search_active: bool,
     pub search_query: String,
+    search_pre_scroll: usize, // saved scroll position before search
 
     // Raw data sources (for merge_entries and async reload)
     pub branches: Vec<Branch>,
@@ -87,6 +88,7 @@ impl App {
             sidebar_scroll: 0,
             search_active: false,
             search_query: String::new(),
+            search_pre_scroll: 0,
             branches: Vec::new(),
             worktrees: Vec::new(),
             pull_requests: Vec::new(),
@@ -301,6 +303,7 @@ impl App {
                 }
             }
             KeyCode::Char('/') => {
+                self.search_pre_scroll = self.sidebar_scroll;
                 self.search_active = true;
                 self.search_query.clear();
             }
@@ -327,7 +330,7 @@ impl App {
             KeyCode::Esc => {
                 self.search_active = false;
                 self.search_query.clear();
-                self.sidebar_scroll = 0;
+                self.sidebar_scroll = self.search_pre_scroll;
                 self.request_details_for_selection();
             }
             KeyCode::Enter => {
