@@ -34,11 +34,12 @@ impl Config {
     /// Custom dir produces `{dir}/{safe_name}`.
     pub fn worktree_path(&self, branch_name: &str) -> String {
         let safe_name = branch_name.replace('/', "-");
-        if self.worktree.dir == DEFAULT_WORKTREE_PREFIX {
+        let dir = self.worktree.dir.trim();
+        if dir.is_empty() || dir == DEFAULT_WORKTREE_PREFIX {
             // Backward compatible: ../gct-wt-{branch}
             format!("{DEFAULT_WORKTREE_PREFIX}-{safe_name}")
         } else {
-            Path::new(&self.worktree.dir)
+            Path::new(dir)
                 .join(&safe_name)
                 .to_string_lossy()
                 .to_string()
@@ -73,12 +74,13 @@ pub fn load_config() -> Config {
 }
 
 fn config_paths() -> Vec<PathBuf> {
-    let mut paths = Vec::new();
-    if let Some(home) = home_dir() {
-        paths.push(home.join(".config/gct/config.toml"));
-        paths.push(home.join(".gct.toml"));
-    }
-    paths
+    home_dir()
+        .map(|home| config_paths_for_home(&home))
+        .unwrap_or_default()
+}
+
+fn config_paths_for_home(home: &Path) -> Vec<PathBuf> {
+    vec![home.join(".config/gct/config.toml"), home.join(".gct.toml")]
 }
 
 fn home_dir() -> Option<PathBuf> {
@@ -151,10 +153,24 @@ dir = "../wt"
     }
 
     #[test]
-    fn test_config_paths() {
-        let paths = config_paths();
+    fn test_config_paths_for_home() {
+        let home = Path::new("/tmp/fakehome");
+        let paths = config_paths_for_home(home);
         assert_eq!(paths.len(), 2);
-        assert!(paths[0].ends_with(".config/gct/config.toml"));
-        assert!(paths[1].ends_with(".gct.toml"));
+        assert_eq!(paths[0], home.join(".config/gct/config.toml"));
+        assert_eq!(paths[1], home.join(".gct.toml"));
+    }
+
+    #[test]
+    fn test_empty_dir_falls_back_to_default() {
+        let config = Config {
+            worktree: WorktreeConfig {
+                dir: "  ".to_string(),
+            },
+        };
+        assert_eq!(
+            config.worktree_path("feature/auth"),
+            "../gct-wt-feature-auth"
+        );
     }
 }
