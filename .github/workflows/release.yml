@@ -87,3 +87,60 @@ jobs:
         run: gh release upload ${{ needs.create-release.outputs.version }} gct-${{ needs.create-release.outputs.version }}-${{ matrix.target }}.*
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # Update Homebrew formula after all binaries are uploaded
+  update-homebrew:
+    needs: [create-release, build]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download release archives
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ needs.create-release.outputs.version }}
+        run: |
+          gh release download "$VERSION" \
+            --repo katzkb/git-control-tower \
+            --pattern "gct-${VERSION}-aarch64-apple-darwin.tar.gz" \
+            --pattern "gct-${VERSION}-x86_64-apple-darwin.tar.gz" \
+            --pattern "gct-${VERSION}-x86_64-unknown-linux-gnu.tar.gz"
+
+      - name: Compute SHA256 hashes
+        id: sha
+        env:
+          VERSION: ${{ needs.create-release.outputs.version }}
+        run: |
+          echo "arm64=$(sha256sum gct-${VERSION}-aarch64-apple-darwin.tar.gz | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+          echo "x86_64_mac=$(sha256sum gct-${VERSION}-x86_64-apple-darwin.tar.gz | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+          echo "linux=$(sha256sum gct-${VERSION}-x86_64-unknown-linux-gnu.tar.gz | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout homebrew-tap
+        uses: actions/checkout@v4
+        with:
+          repository: katzkb/homebrew-tap
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Update formula
+        env:
+          VERSION: ${{ needs.create-release.outputs.version }}
+          SHA_ARM64: ${{ steps.sha.outputs.arm64 }}
+          SHA_X86_64_MAC: ${{ steps.sha.outputs.x86_64_mac }}
+          SHA_LINUX: ${{ steps.sha.outputs.linux }}
+        run: |
+          SEMVER="${VERSION#v}"
+          sed -i "s/version \".*\"/version \"${SEMVER}\"/" Formula/gct.rb
+          # Update SHA256 hashes in order: arm64, x86_64 mac, linux
+          sed -i "0,/sha256 \"[a-f0-9]\{64\}\"/s//sha256 \"${SHA_ARM64}\"/" Formula/gct.rb
+          sed -i "0,/sha256 \"[a-f0-9]\{64\}\"/s//sha256 \"${SHA_X86_64_MAC}\"/" Formula/gct.rb
+          sed -i "0,/sha256 \"[a-f0-9]\{64\}\"/s//sha256 \"${SHA_LINUX}\"/" Formula/gct.rb
+          echo "Updated formula:"
+          cat Formula/gct.rb
+
+      - name: Commit and push
+        env:
+          VERSION: ${{ needs.create-release.outputs.version }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add Formula/gct.rb
+          git commit -m "chore: update gct to ${VERSION}"
+          git push
