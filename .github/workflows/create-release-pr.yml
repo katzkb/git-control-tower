@@ -45,6 +45,8 @@ jobs:
           echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
           echo "Releasing: ${VERSION}"
 
+      - uses: dtolnay/rust-toolchain@stable
+
       - name: Update Cargo.toml version
         run: |
           VERSION="${{ steps.version.outputs.version }}"
