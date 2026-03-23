@@ -45,11 +45,14 @@ jobs:
           echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
           echo "Releasing: ${VERSION}"
 
+      - uses: dtolnay/rust-toolchain@stable
+
       - name: Update Cargo.toml version
         run: |
           VERSION="${{ steps.version.outputs.version }}"
           SEMVER="${VERSION#v}"
           sed -i "s/^version = \".*\"/version = \"${SEMVER}\"/" Cargo.toml
+          cargo generate-lockfile
           echo "Updated Cargo.toml to ${SEMVER}"
           grep '^version' Cargo.toml
 
