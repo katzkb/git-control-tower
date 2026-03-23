@@ -92,6 +92,8 @@ jobs:
   update-homebrew:
     needs: [create-release, build]
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
       - name: Download release archives
         env:
@@ -99,7 +101,7 @@ jobs:
           VERSION: ${{ needs.create-release.outputs.version }}
         run: |
           gh release download "$VERSION" \
-            --repo katzkb/git-control-tower \
+            --repo ${{ github.repository }} \
             --pattern "gct-${VERSION}-aarch64-apple-darwin.tar.gz" \
             --pattern "gct-${VERSION}-x86_64-apple-darwin.tar.gz" \
             --pattern "gct-${VERSION}-x86_64-unknown-linux-gnu.tar.gz"
