@@ -44,6 +44,9 @@ pub struct App {
     pub entries_loaded: bool,
     pub main_filter: MainFilter,
     pub sidebar_scroll: usize,
+    pub search_active: bool,
+    pub search_query: String,
+    search_pre_scroll: usize, // saved scroll position before search
 
     // Raw data sources (for merge_entries and async reload)
     pub branches: Vec<Branch>,
@@ -83,6 +86,9 @@ impl App {
             entries_loaded: false,
             main_filter: MainFilter::default(),
             sidebar_scroll: 0,
+            search_active: false,
+            search_query: String::new(),
+            search_pre_scroll: 0,
             branches: Vec::new(),
             worktrees: Vec::new(),
             pull_requests: Vec::new(),
@@ -103,18 +109,29 @@ impl App {
     }
 
     pub fn filtered_entries(&self) -> Vec<&BranchEntry> {
+        let search_query = if self.search_active && !self.search_query.is_empty() {
+            Some(self.search_query.to_lowercase())
+        } else {
+            None
+        };
         self.entries
             .iter()
-            .filter(|entry| match self.main_filter {
-                MainFilter::Local => entry.has_local(),
-                MainFilter::MyPr => entry
-                    .pull_request
-                    .as_ref()
-                    .is_some_and(|pr| pr.author == self.gh_user),
-                MainFilter::ReviewRequested => entry
-                    .pull_request
-                    .as_ref()
-                    .is_some_and(|pr| pr.review_requests.iter().any(|r| r.login == self.gh_user)),
+            .filter(|entry| {
+                let passes_filter = match self.main_filter {
+                    MainFilter::Local => entry.has_local(),
+                    MainFilter::MyPr => entry
+                        .pull_request
+                        .as_ref()
+                        .is_some_and(|pr| pr.author == self.gh_user),
+                    MainFilter::ReviewRequested => entry.pull_request.as_ref().is_some_and(|pr| {
+                        pr.review_requests.iter().any(|r| r.login == self.gh_user)
+                    }),
+                };
+                let passes_search = match &search_query {
+                    Some(q) => entry.name.to_lowercase().contains(q.as_str()),
+                    None => true,
+                };
+                passes_filter && passes_search
             })
             .collect()
     }
@@ -167,6 +184,12 @@ impl App {
         // Confirm dialog takes priority
         if self.confirm_dialog.is_some() {
             self.handle_confirm_key(key.code);
+            return;
+        }
+
+        // Search mode takes priority in Main view
+        if self.search_active && self.active_view == ActiveView::Main {
+            self.handle_search_key(key.code);
             return;
         }
 
@@ -279,6 +302,11 @@ impl App {
                         Some(Notification::success("Creating worktree...".to_string()));
                 }
             }
+            KeyCode::Char('/') => {
+                self.search_pre_scroll = self.sidebar_scroll;
+                self.search_active = true;
+                self.search_query.clear();
+            }
             _ => {}
         }
     }
@@ -292,6 +320,57 @@ impl App {
             }
             KeyCode::Char('k') | KeyCode::Up => {
                 self.log_scroll = self.log_scroll.saturating_sub(1);
+            }
+            _ => {}
+        }
+    }
+
+    fn handle_search_key(&mut self, code: KeyCode) {
+        match code {
+            KeyCode::Esc => {
+                self.search_active = false;
+                self.search_query.clear();
+                self.sidebar_scroll = self.search_pre_scroll;
+                self.request_details_for_selection();
+            }
+            KeyCode::Enter => {
+                let selected_name = self.selected_entry().map(|e| e.name.clone());
+                self.search_active = false;
+                self.search_query.clear();
+                if let Some(name) = selected_name {
+                    let new_idx = self
+                        .filtered_entries()
+                        .iter()
+                        .position(|e| e.name == name)
+                        .unwrap_or(0);
+                    self.sidebar_scroll = new_idx;
+                } else {
+                    self.sidebar_scroll = self.search_pre_scroll;
+                }
+                self.request_details_for_selection();
+            }
+            KeyCode::Backspace => {
+                self.search_query.pop();
+                self.sidebar_scroll = 0;
+                self.request_details_for_selection();
+            }
+            KeyCode::Char(c) => {
+                self.search_query.push(c);
+                self.sidebar_scroll = 0;
+                self.request_details_for_selection();
+            }
+            KeyCode::Down => {
+                let len = self.filtered_entries().len();
+                if len > 0 && self.sidebar_scroll + 1 < len {
+                    self.sidebar_scroll += 1;
+                    self.request_details_for_selection();
+                }
+            }
+            KeyCode::Up => {
+                if self.sidebar_scroll > 0 {
+                    self.sidebar_scroll -= 1;
+                    self.request_details_for_selection();
+                }
             }
             _ => {}
         }

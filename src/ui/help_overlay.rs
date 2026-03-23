@@ -32,6 +32,7 @@ pub fn draw(frame: &mut Frame) {
         key_line("a", "Select all merged"),
         key_line("d", "Delete branch/worktree"),
         key_line("w", "Create worktree from PR"),
+        key_line("/", "Search branches"),
         key_line("Esc", "Quit"),
         Line::from(""),
         section("Log View"),
