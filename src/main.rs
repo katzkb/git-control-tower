@@ -169,6 +169,9 @@ async fn run(
         // Create worktree from PR if requested
         if let Some((head_ref, _pr_number)) = app.wt_create_requested.take() {
             let wt_path = config.worktree_path(&head_ref);
+            if let Some(parent) = std::path::Path::new(&wt_path).parent() {
+                let _ = std::fs::create_dir_all(parent);
+            }
             match run_git(&["fetch", "origin", &head_ref]).await {
                 Ok(_) => match run_git(&["worktree", "add", &wt_path, &head_ref]).await {
                     Ok(_) => {
