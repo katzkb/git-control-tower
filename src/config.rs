@@ -82,10 +82,23 @@ fn config_paths() -> Vec<PathBuf> {
 }
 
 fn home_dir() -> Option<PathBuf> {
-    std::env::var("HOME")
-        .or_else(|_| std::env::var("USERPROFILE"))
-        .ok()
-        .map(PathBuf::from)
+    if let Some(home) = std::env::var_os("HOME") {
+        return Some(PathBuf::from(home));
+    }
+    if let Some(home) = std::env::var_os("USERPROFILE") {
+        return Some(PathBuf::from(home));
+    }
+    #[cfg(windows)]
+    {
+        let drive = std::env::var_os("HOMEDRIVE");
+        let path = std::env::var_os("HOMEPATH");
+        if let (Some(d), Some(p)) = (drive, path) {
+            let mut home = PathBuf::from(d);
+            home.push(p);
+            return Some(home);
+        }
+    }
+    None
 }
 
 #[cfg(test)]
@@ -140,10 +153,8 @@ dir = "../wt"
     #[test]
     fn test_config_paths() {
         let paths = config_paths();
-        assert!(paths.len() <= 2);
-        if let Some(home) = home_dir() {
-            assert_eq!(paths[0], home.join(".config/gct/config.toml"));
-            assert_eq!(paths[1], home.join(".gct.toml"));
-        }
+        assert_eq!(paths.len(), 2);
+        assert!(paths[0].ends_with(".config/gct/config.toml"));
+        assert!(paths[1].ends_with(".gct.toml"));
     }
 }
