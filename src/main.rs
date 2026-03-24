@@ -36,8 +36,11 @@ async fn main() -> anyhow::Result<()> {
     let config = config::load_config();
 
     let mut terminal = ratatui::init();
-    let result = run(&mut terminal, &config).await;
+    let (result, cd_path) = run(&mut terminal, &config).await;
     ratatui::restore();
+    if let Some(path) = cd_path {
+        println!("{path}");
+    }
     result
 }
 
@@ -64,7 +67,7 @@ async fn check_prerequisites() {
 async fn run(
     terminal: &mut ratatui::DefaultTerminal,
     config: &config::Config,
-) -> anyhow::Result<()> {
+) -> (anyhow::Result<()>, Option<String>) {
     let mut app = App::new();
     let mut events = EventHandler::new(Duration::from_millis(250));
     let (tx, mut rx) = mpsc::unbounded_channel::<AsyncResult>();
@@ -140,7 +143,9 @@ async fn run(
     });
 
     loop {
-        terminal.draw(|frame| ui::draw(frame, &app))?;
+        if let Err(e) = terminal.draw(|frame| ui::draw(frame, &app)) {
+            return (Err(e.into()), None);
+        }
 
         match events.next().await {
             Some(Event::Key(key)) if key.kind == KeyEventKind::Press => {
@@ -284,12 +289,18 @@ async fn run(
             refresh_entries(&mut app).await;
         }
 
+        // Open PR in browser if requested
+        if let Some(pr_number) = app.open_pr_requested.take() {
+            let _ = run_gh(&["pr", "view", &pr_number.to_string(), "--web"]).await;
+        }
+
         if app.should_quit {
             break;
         }
     }
 
-    Ok(())
+    let cd_path = app.cd_path.clone();
+    (Ok(()), cd_path)
 }
 
 async fn refresh_entries(app: &mut App) {
