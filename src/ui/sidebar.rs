@@ -62,13 +62,20 @@ fn draw_entry_list(frame: &mut Frame, area: Rect, app: &App) {
     let filtered = app.filtered_entries();
     let show_checkboxes = !app.branch_selected.is_empty();
 
-    let items: Vec<ListItem> = filtered
-        .iter()
-        .map(|entry| {
-            let is_selected = app.branch_selected.contains(&entry.name);
-            ListItem::new(format_entry_line(entry, show_checkboxes, is_selected))
-        })
-        .collect();
+    let items: Vec<ListItem> = if filtered.is_empty() && app.is_current_view_loading() {
+        vec![ListItem::new(Line::from(Span::styled(
+            "  Loading...",
+            Style::default().fg(Color::DarkGray),
+        )))]
+    } else {
+        filtered
+            .iter()
+            .map(|entry| {
+                let is_selected = app.branch_selected.contains(&entry.name);
+                ListItem::new(format_entry_line(entry, show_checkboxes, is_selected))
+            })
+            .collect()
+    };
 
     let block = Block::default()
         .borders(Borders::ALL)

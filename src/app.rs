@@ -167,6 +167,14 @@ impl App {
         }
     }
 
+    pub fn is_current_view_loading(&self) -> bool {
+        match self.main_filter {
+            MainFilter::Local => !self.local_prs_loaded,
+            MainFilter::MyPr => !self.my_prs_loaded,
+            MainFilter::ReviewRequested => !self.review_prs_loaded,
+        }
+    }
+
     pub fn rebuild_entries(&mut self) {
         self.entries =
             crate::data::merge_entries(&self.branches, &self.worktrees, self.current_prs());
