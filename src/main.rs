@@ -31,6 +31,9 @@ enum AsyncResult {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    // Initialize debug logging (GCT_DEBUG=1 enables it)
+    crate::git::command::init_debug_log();
+
     // Startup checks and config loading before TUI init (eprintln is safe here)
     check_prerequisites().await;
     let config = config::load_config();
