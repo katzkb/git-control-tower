@@ -435,7 +435,10 @@ impl App {
         if entry.worktree.is_some() && !entry.is_current() {
             items.push(ActionItem::DeleteWorktree);
         }
-        if !entry.is_current() && !Self::is_protected_branch(&entry.name) {
+        if entry.local_branch.is_some()
+            && !entry.is_current()
+            && !Self::is_protected_branch(&entry.name)
+        {
             items.push(ActionItem::DeleteBranch);
         }
         if entry.pull_request.is_some() {
