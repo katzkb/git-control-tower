@@ -167,6 +167,11 @@ impl App {
         }
     }
 
+    pub fn rebuild_entries(&mut self) {
+        self.entries =
+            crate::data::merge_entries(&self.branches, &self.worktrees, self.current_prs());
+    }
+
     pub fn filtered_entries(&self) -> Vec<&BranchEntry> {
         let search_query = if self.search_active && !self.search_query.is_empty() {
             Some(self.search_query.to_lowercase())
@@ -268,6 +273,7 @@ impl App {
                 self.main_filter = MainFilter::Local;
                 self.active_view = ActiveView::Main;
                 self.sidebar_scroll = 0;
+                self.rebuild_entries();
                 if !self.local_prs_loaded {
                     self.pr_fetch_requested = Some(MainFilter::Local);
                 }
@@ -277,6 +283,7 @@ impl App {
                 self.main_filter = MainFilter::MyPr;
                 self.active_view = ActiveView::Main;
                 self.sidebar_scroll = 0;
+                self.rebuild_entries();
                 if !self.my_prs_loaded {
                     self.pr_fetch_requested = Some(MainFilter::MyPr);
                 }
@@ -286,6 +293,7 @@ impl App {
                 self.main_filter = MainFilter::ReviewRequested;
                 self.active_view = ActiveView::Main;
                 self.sidebar_scroll = 0;
+                self.rebuild_entries();
                 if !self.review_prs_loaded {
                     self.pr_fetch_requested = Some(MainFilter::ReviewRequested);
                 }
