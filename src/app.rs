@@ -55,6 +55,7 @@ impl ActionItem {
 pub struct ActionMenu {
     pub items: Vec<ActionItem>,
     pub scroll: usize,
+    pub target_name: String, // branch name captured when menu was opened
 }
 
 pub struct App {
@@ -446,7 +447,11 @@ impl App {
         }
 
         if !items.is_empty() {
-            self.action_menu = Some(ActionMenu { items, scroll: 0 });
+            self.action_menu = Some(ActionMenu {
+                items,
+                scroll: 0,
+                target_name: entry.name.clone(),
+            });
         }
     }
 
@@ -466,8 +471,9 @@ impl App {
             }
             KeyCode::Enter => {
                 let action = menu.items[menu.scroll];
+                let target = menu.target_name.clone();
                 self.action_menu = None;
-                self.execute_action(action);
+                self.execute_action(action, &target);
             }
             KeyCode::Esc => {
                 self.action_menu = None;
@@ -476,8 +482,8 @@ impl App {
         }
     }
 
-    fn execute_action(&mut self, action: ActionItem) {
-        let entry = match self.selected_entry().cloned() {
+    fn execute_action(&mut self, action: ActionItem, target_name: &str) {
+        let entry = match self.entries.iter().find(|e| e.name == target_name).cloned() {
             Some(e) => e,
             None => return,
         };
@@ -498,6 +504,8 @@ impl App {
             ActionItem::DeleteWorktree => {
                 if let Some(wt_path) = entry.worktree_path() {
                     let path = wt_path.to_string();
+                    // Clear branch_selected to avoid confirm_key misrouting
+                    self.branch_selected.clear();
                     self.confirm_dialog = Some(ConfirmDialog::new(
                         "Delete Worktree",
                         format!("Remove worktree at {path}?"),
@@ -507,13 +515,12 @@ impl App {
             }
             ActionItem::DeleteBranch => {
                 let name = entry.name.clone();
+                self.branch_selected.clear();
+                self.branch_selected.insert(name.clone());
                 self.confirm_dialog = Some(ConfirmDialog::new(
                     "Delete Branch",
                     format!("Delete branch {name}?"),
                 ));
-                // Use a fresh set with only this branch to avoid deleting others
-                self.branch_selected.clear();
-                self.branch_selected.insert(name);
             }
             ActionItem::OpenPrInBrowser => {
                 if let Some(pr) = &entry.pull_request {
