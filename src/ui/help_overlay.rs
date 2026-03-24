@@ -7,7 +7,7 @@ use ratatui::{
 };
 
 pub fn draw(frame: &mut Frame) {
-    let area = centered_rect(60, 24, frame.area());
+    let area = centered_rect(60, 25, frame.area());
     frame.render_widget(Clear, area);
 
     let lines = vec![
@@ -32,6 +32,7 @@ pub fn draw(frame: &mut Frame) {
         key_line("a", "Select all merged"),
         key_line("d", "Delete branch/worktree"),
         key_line("w", "Create worktree from PR"),
+        key_line("m", "Toggle merged PRs (My PR / Review)"),
         key_line("Enter", "Action menu"),
         key_line("/", "Search branches"),
         key_line("Esc", "Quit"),

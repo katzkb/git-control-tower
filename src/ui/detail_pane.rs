@@ -66,12 +66,28 @@ fn section_header(title: &str) -> Line<'static> {
 }
 
 fn draw_git_status_section(lines: &mut Vec<Line<'static>>, entry: &BranchEntry) {
+    lines.push(section_header("Git Status"));
+
+    if entry.worktree.is_none() {
+        lines.push(Line::from(Span::styled(
+            "  —",
+            Style::default().fg(Color::DarkGray),
+        )));
+        lines.push(Line::from(""));
+        return;
+    }
+
     let status = match &entry.git_status {
         Some(s) => s,
-        None => return,
+        None => {
+            lines.push(Line::from(Span::styled(
+                "  Loading...",
+                Style::default().fg(Color::DarkGray),
+            )));
+            lines.push(Line::from(""));
+            return;
+        }
     };
-
-    lines.push(section_header("Git Status"));
 
     // Staged changes
     for file in &status.staged {
@@ -133,16 +149,22 @@ fn draw_git_status_section(lines: &mut Vec<Line<'static>>, entry: &BranchEntry) 
 }
 
 fn draw_worktree_section(lines: &mut Vec<Line<'static>>, entry: &BranchEntry) {
-    let wt = match &entry.worktree {
-        Some(w) => w,
-        None => return,
-    };
-
     lines.push(section_header("Worktree"));
-    lines.push(Line::from(Span::styled(
-        format!("  {}", wt.path),
-        Style::default().fg(Color::White),
-    )));
+
+    match &entry.worktree {
+        Some(wt) => {
+            lines.push(Line::from(Span::styled(
+                format!("  {}", wt.path),
+                Style::default().fg(Color::White),
+            )));
+        }
+        None => {
+            lines.push(Line::from(Span::styled(
+                "  —",
+                Style::default().fg(Color::DarkGray),
+            )));
+        }
+    }
     lines.push(Line::from(""));
 }
 
@@ -153,7 +175,15 @@ fn draw_pr_section(
 ) {
     let pr = match &entry.pull_request {
         Some(p) => p,
-        None => return,
+        None => {
+            lines.push(section_header("PR"));
+            lines.push(Line::from(Span::styled(
+                "  —",
+                Style::default().fg(Color::DarkGray),
+            )));
+            lines.push(Line::from(""));
+            return;
+        }
     };
 
     lines.push(section_header(&format!("PR #{}", pr.number)));

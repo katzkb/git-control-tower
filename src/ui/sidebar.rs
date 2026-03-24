@@ -6,7 +6,7 @@ use ratatui::{
     widgets::{Block, Borders, List, ListItem, ListState},
 };
 
-use crate::app::App;
+use crate::app::{App, MainFilter};
 use crate::git::types::BranchEntry;
 
 pub fn draw(frame: &mut Frame, area: Rect, app: &App) {
@@ -30,7 +30,7 @@ fn draw_filter_bar(frame: &mut Frame, area: Rect, app: &App) {
         ])
     } else {
         let label = app.main_filter.label();
-        Line::from(vec![
+        let mut spans = vec![
             Span::styled(" Filter: ", Style::default().fg(Color::DarkGray)),
             Span::styled(
                 label,
@@ -38,7 +38,19 @@ fn draw_filter_bar(frame: &mut Frame, area: Rect, app: &App) {
                     .fg(Color::Cyan)
                     .add_modifier(Modifier::BOLD),
             ),
-        ])
+        ];
+        // Show merged toggle indicator for My PR / Review views
+        if matches!(
+            app.main_filter,
+            MainFilter::MyPr | MainFilter::ReviewRequested
+        ) && app.show_merged
+        {
+            spans.push(Span::styled(
+                " [+merged]",
+                Style::default().fg(Color::Yellow),
+            ));
+        }
+        Line::from(spans)
     };
     frame.render_widget(
         ratatui::widgets::Paragraph::new(bar).style(Style::default().bg(Color::Black)),
@@ -50,13 +62,20 @@ fn draw_entry_list(frame: &mut Frame, area: Rect, app: &App) {
     let filtered = app.filtered_entries();
     let show_checkboxes = !app.branch_selected.is_empty();
 
-    let items: Vec<ListItem> = filtered
-        .iter()
-        .map(|entry| {
-            let is_selected = app.branch_selected.contains(&entry.name);
-            ListItem::new(format_entry_line(entry, show_checkboxes, is_selected))
-        })
-        .collect();
+    let items: Vec<ListItem> = if filtered.is_empty() && app.is_current_view_loading() {
+        vec![ListItem::new(Line::from(Span::styled(
+            "  Loading...",
+            Style::default().fg(Color::DarkGray),
+        )))]
+    } else {
+        filtered
+            .iter()
+            .map(|entry| {
+                let is_selected = app.branch_selected.contains(&entry.name);
+                ListItem::new(format_entry_line(entry, show_checkboxes, is_selected))
+            })
+            .collect()
+    };
 
     let block = Block::default()
         .borders(Borders::ALL)

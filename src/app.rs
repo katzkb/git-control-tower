@@ -78,8 +78,17 @@ pub struct App {
     // Raw data sources (for merge_entries and async reload)
     pub branches: Vec<Branch>,
     pub worktrees: Vec<Worktree>,
-    pub pull_requests: Vec<PullRequest>,
     pub gh_user: String,
+
+    // Per-view PR caches
+    pub local_prs: Vec<PullRequest>,
+    pub my_prs: Vec<PullRequest>,
+    pub review_prs: Vec<PullRequest>,
+    pub local_prs_loaded: bool,
+    pub my_prs_loaded: bool,
+    pub review_prs_loaded: bool,
+    pub show_merged: bool,
+    pub pr_fetch_requested: Option<MainFilter>,
 
     // PR Detail (for detail pane, cached by PR number)
     pub pr_detail_cache: HashMap<u64, PrDetail>,
@@ -123,8 +132,15 @@ impl App {
             search_pre_scroll: 0,
             branches: Vec::new(),
             worktrees: Vec::new(),
-            pull_requests: Vec::new(),
             gh_user: String::new(),
+            local_prs: Vec::new(),
+            my_prs: Vec::new(),
+            review_prs: Vec::new(),
+            local_prs_loaded: false,
+            my_prs_loaded: false,
+            review_prs_loaded: false,
+            show_merged: false,
+            pr_fetch_requested: None,
             pr_detail_cache: HashMap::new(),
             pr_detail_scroll: 0,
             pr_detail_requested: None,
@@ -143,6 +159,27 @@ impl App {
         }
     }
 
+    pub fn current_prs(&self) -> &[PullRequest] {
+        match self.main_filter {
+            MainFilter::Local => &self.local_prs,
+            MainFilter::MyPr => &self.my_prs,
+            MainFilter::ReviewRequested => &self.review_prs,
+        }
+    }
+
+    pub fn is_current_view_loading(&self) -> bool {
+        match self.main_filter {
+            MainFilter::Local => !self.local_prs_loaded,
+            MainFilter::MyPr => !self.my_prs_loaded,
+            MainFilter::ReviewRequested => !self.review_prs_loaded,
+        }
+    }
+
+    pub fn rebuild_entries(&mut self) {
+        self.entries =
+            crate::data::merge_entries(&self.branches, &self.worktrees, self.current_prs());
+    }
+
     pub fn filtered_entries(&self) -> Vec<&BranchEntry> {
         let search_query = if self.search_active && !self.search_query.is_empty() {
             Some(self.search_query.to_lowercase())
@@ -154,13 +191,8 @@ impl App {
             .filter(|entry| {
                 let passes_filter = match self.main_filter {
                     MainFilter::Local => entry.has_local(),
-                    MainFilter::MyPr => entry
-                        .pull_request
-                        .as_ref()
-                        .is_some_and(|pr| pr.author == self.gh_user),
-                    MainFilter::ReviewRequested => entry.pull_request.as_ref().is_some_and(|pr| {
-                        pr.review_requests.iter().any(|r| r.login == self.gh_user)
-                    }),
+                    // My PR / Review: server-side filtered, just check PR exists
+                    MainFilter::MyPr | MainFilter::ReviewRequested => entry.pull_request.is_some(),
                 };
                 let passes_search = match &search_query {
                     Some(q) => entry.name.to_lowercase().contains(q.as_str()),
@@ -249,18 +281,30 @@ impl App {
                 self.main_filter = MainFilter::Local;
                 self.active_view = ActiveView::Main;
                 self.sidebar_scroll = 0;
+                self.rebuild_entries();
+                if !self.local_prs_loaded {
+                    self.pr_fetch_requested = Some(MainFilter::Local);
+                }
                 self.request_details_for_selection();
             }
             KeyCode::Char('2') => {
                 self.main_filter = MainFilter::MyPr;
                 self.active_view = ActiveView::Main;
                 self.sidebar_scroll = 0;
+                self.rebuild_entries();
+                if !self.my_prs_loaded {
+                    self.pr_fetch_requested = Some(MainFilter::MyPr);
+                }
                 self.request_details_for_selection();
             }
             KeyCode::Char('3') => {
                 self.main_filter = MainFilter::ReviewRequested;
                 self.active_view = ActiveView::Main;
                 self.sidebar_scroll = 0;
+                self.rebuild_entries();
+                if !self.review_prs_loaded {
+                    self.pr_fetch_requested = Some(MainFilter::ReviewRequested);
+                }
                 self.request_details_for_selection();
             }
             _ => match self.active_view {
@@ -345,6 +389,22 @@ impl App {
             }
             KeyCode::Enter => {
                 self.open_action_menu();
+            }
+            KeyCode::Char('m') => {
+                if matches!(
+                    self.main_filter,
+                    MainFilter::MyPr | MainFilter::ReviewRequested
+                ) {
+                    self.show_merged = !self.show_merged;
+                    // Invalidate both caches since merged state changed
+                    self.my_prs.clear();
+                    self.my_prs_loaded = false;
+                    self.review_prs.clear();
+                    self.review_prs_loaded = false;
+                    self.rebuild_entries();
+                    self.pr_fetch_requested = Some(self.main_filter);
+                    self.sidebar_scroll = 0;
+                }
             }
             KeyCode::Char('/') => {
                 self.search_pre_scroll = self.sidebar_scroll;
