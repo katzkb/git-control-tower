@@ -40,8 +40,10 @@ fn draw_filter_bar(frame: &mut Frame, area: Rect, app: &App) {
             ),
         ];
         // Show merged toggle indicator for My PR / Review views
-        if matches!(app.main_filter, MainFilter::MyPr | MainFilter::ReviewRequested)
-            && app.show_merged
+        if matches!(
+            app.main_filter,
+            MainFilter::MyPr | MainFilter::ReviewRequested
+        ) && app.show_merged
         {
             spans.push(Span::styled(
                 " [+merged]",

@@ -214,7 +214,10 @@ fn parse_graphql_pr(node: &serde_json::Value) -> Option<PullRequest> {
     let state = node["state"].as_str()?.to_string();
     let head_ref = node["headRefName"].as_str()?.to_string();
     let updated_at = node["updatedAt"].as_str().unwrap_or_default().to_string();
-    let author = node["author"]["login"].as_str().unwrap_or_default().to_string();
+    let author = node["author"]["login"]
+        .as_str()
+        .unwrap_or_default()
+        .to_string();
 
     let review_requests = node["reviewRequests"]["nodes"]
         .as_array()
@@ -253,13 +256,24 @@ pub async fn fetch_review_prs(show_merged: bool, hostname: Option<&str>) -> Vec<
 }
 
 /// Common helper for fetching PR lists with a user filter.
-async fn fetch_pr_list(filter_flag: &str, show_merged: bool, hostname: Option<&str>) -> Vec<PullRequest> {
+async fn fetch_pr_list(
+    filter_flag: &str,
+    show_merged: bool,
+    hostname: Option<&str>,
+) -> Vec<PullRequest> {
     let pr_fields = "number,title,author,state,headRefName,updatedAt,reviewRequests";
     let mut prs = Vec::new();
 
     // Always fetch open PRs
     let mut args = vec![
-        "pr", "list", filter_flag, "@me", "--json", pr_fields, "--limit", "100",
+        "pr",
+        "list",
+        filter_flag,
+        "@me",
+        "--json",
+        pr_fields,
+        "--limit",
+        "100",
     ];
     if let Some(h) = hostname {
         args.push("--hostname");
@@ -274,8 +288,16 @@ async fn fetch_pr_list(filter_flag: &str, show_merged: bool, hostname: Option<&s
     // Optionally fetch merged PRs
     if show_merged {
         let mut args = vec![
-            "pr", "list", filter_flag, "@me", "--state", "merged",
-            "--json", pr_fields, "--limit", "50",
+            "pr",
+            "list",
+            filter_flag,
+            "@me",
+            "--state",
+            "merged",
+            "--json",
+            pr_fields,
+            "--limit",
+            "50",
         ];
         if let Some(h) = hostname {
             args.push("--hostname");

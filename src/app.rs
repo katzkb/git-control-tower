@@ -179,9 +179,7 @@ impl App {
                 let passes_filter = match self.main_filter {
                     MainFilter::Local => entry.has_local(),
                     // My PR / Review: server-side filtered, just check PR exists
-                    MainFilter::MyPr | MainFilter::ReviewRequested => {
-                        entry.pull_request.is_some()
-                    }
+                    MainFilter::MyPr | MainFilter::ReviewRequested => entry.pull_request.is_some(),
                 };
                 let passes_search = match &search_query {
                     Some(q) => entry.name.to_lowercase().contains(q.as_str()),
@@ -377,7 +375,10 @@ impl App {
                 self.open_action_menu();
             }
             KeyCode::Char('m') => {
-                if matches!(self.main_filter, MainFilter::MyPr | MainFilter::ReviewRequested) {
+                if matches!(
+                    self.main_filter,
+                    MainFilter::MyPr | MainFilter::ReviewRequested
+                ) {
                     self.show_merged = !self.show_merged;
                     // Invalidate both caches since merged state changed
                     self.my_prs.clear();

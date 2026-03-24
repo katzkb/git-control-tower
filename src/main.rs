@@ -13,11 +13,11 @@ use crossterm::event::KeyEventKind;
 use tokio::sync::mpsc;
 
 use crate::app::App;
+use crate::app::MainFilter;
 use crate::data::merge_entries;
 use crate::event::{Event, EventHandler};
 use crate::git::command::{run_gh, run_git};
 use crate::git::parser::{parse_branches, parse_log, parse_worktrees};
-use crate::app::MainFilter;
 use crate::git::types::{GitStatus, PrDetail, PullRequest};
 use crate::ui::notification::Notification;
 
@@ -281,8 +281,7 @@ async fn run(
                 AsyncResult::LocalPrList(prs) => {
                     app.local_prs = prs;
                     app.local_prs_loaded = true;
-                    app.entries =
-                        merge_entries(&app.branches, &app.worktrees, app.current_prs());
+                    app.entries = merge_entries(&app.branches, &app.worktrees, app.current_prs());
                     let filtered_len = app.filtered_entries().len();
                     if app.sidebar_scroll >= filtered_len && filtered_len > 0 {
                         app.sidebar_scroll = filtered_len - 1;
