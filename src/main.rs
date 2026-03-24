@@ -39,7 +39,7 @@ async fn main() -> anyhow::Result<()> {
     let (result, cd_path) = run(&mut terminal, &config).await;
     ratatui::restore();
     if let Some(path) = cd_path {
-        print!("{path}");
+        println!("{path}");
     }
     result
 }

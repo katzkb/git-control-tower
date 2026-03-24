@@ -503,12 +503,14 @@ impl App {
                 }
             }
             ActionItem::DeleteBranch => {
-                self.branch_selected.insert(entry.name.clone());
-                let name = &entry.name;
+                let name = entry.name.clone();
                 self.confirm_dialog = Some(ConfirmDialog::new(
                     "Delete Branch",
                     format!("Delete branch {name}?"),
                 ));
+                // Use a fresh set with only this branch to avoid deleting others
+                self.branch_selected.clear();
+                self.branch_selected.insert(name);
             }
             ActionItem::OpenPrInBrowser => {
                 if let Some(pr) = &entry.pull_request {
