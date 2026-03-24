@@ -32,7 +32,7 @@ pub fn draw(frame: &mut Frame) {
         key_line("a", "Select all merged"),
         key_line("d", "Delete branch/worktree"),
         key_line("w", "Create worktree from PR"),
-        key_line("m", "Toggle merged PRs"),
+        key_line("m", "Toggle merged PRs (My PR / Review)"),
         key_line("Enter", "Action menu"),
         key_line("/", "Search branches"),
         key_line("Esc", "Quit"),

@@ -284,12 +284,15 @@ async fn run(
                 AsyncResult::LocalPrList(prs) => {
                     app.local_prs = prs;
                     app.local_prs_loaded = true;
-                    app.entries = merge_entries(&app.branches, &app.worktrees, app.current_prs());
-                    let filtered_len = app.filtered_entries().len();
-                    if app.sidebar_scroll >= filtered_len && filtered_len > 0 {
-                        app.sidebar_scroll = filtered_len - 1;
+                    if app.main_filter == MainFilter::Local {
+                        app.entries =
+                            merge_entries(&app.branches, &app.worktrees, app.current_prs());
+                        let filtered_len = app.filtered_entries().len();
+                        if app.sidebar_scroll >= filtered_len && filtered_len > 0 {
+                            app.sidebar_scroll = filtered_len - 1;
+                        }
+                        app.request_details_for_selection();
                     }
-                    app.request_details_for_selection();
                 }
                 AsyncResult::MyPrList(prs) => {
                     app.my_prs = prs;
