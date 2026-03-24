@@ -151,6 +151,9 @@ async fn run(
                 data::fetch_local_prs(&branch_names, &owner, &repo, hostname.as_deref()).await;
             let _ = tx_local.send(AsyncResult::LocalPrList(prs));
         });
+    } else {
+        // No repo info available (no origin remote or unsupported URL format)
+        app.local_prs_loaded = true;
     }
 
     loop {

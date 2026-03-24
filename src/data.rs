@@ -137,7 +137,7 @@ pub async fn load_git_status(worktree_path: &str) -> Option<GitStatus> {
     Some(status)
 }
 
-/// Sanitize a branch name into a valid GraphQL alias (alphanumeric + underscore).
+/// Generate a deterministic, index-based GraphQL alias for a branch query.
 fn graphql_alias(index: usize) -> String {
     format!("b{index}")
 }
@@ -465,5 +465,57 @@ mod tests {
         assert_eq!(parse_ahead_behind("3\t1\n"), (3, 1));
         assert_eq!(parse_ahead_behind("0\t0\n"), (0, 0));
         assert_eq!(parse_ahead_behind(""), (0, 0));
+    }
+
+    #[test]
+    fn test_parse_graphql_pr_valid() {
+        let node = serde_json::json!({
+            "number": 42,
+            "title": "Add feature",
+            "state": "OPEN",
+            "headRefName": "feature-branch",
+            "updatedAt": "2024-01-15T00:00:00Z",
+            "author": { "login": "alice" },
+            "reviewRequests": {
+                "nodes": [
+                    { "requestedReviewer": { "login": "bob" } }
+                ]
+            }
+        });
+        let pr = parse_graphql_pr(&node).unwrap();
+        assert_eq!(pr.number, 42);
+        assert_eq!(pr.title, "Add feature");
+        assert_eq!(pr.state, "OPEN");
+        assert_eq!(pr.head_ref, "feature-branch");
+        assert_eq!(pr.author, "alice");
+        assert_eq!(pr.review_requests.len(), 1);
+        assert_eq!(pr.review_requests[0].login, "bob");
+    }
+
+    #[test]
+    fn test_parse_graphql_pr_null_author() {
+        let node = serde_json::json!({
+            "number": 10,
+            "title": "Bot PR",
+            "state": "MERGED",
+            "headRefName": "bot-branch",
+            "updatedAt": "2024-01-01T00:00:00Z",
+            "author": null,
+            "reviewRequests": { "nodes": [] }
+        });
+        let pr = parse_graphql_pr(&node).unwrap();
+        assert_eq!(pr.number, 10);
+        assert_eq!(pr.author, "");
+    }
+
+    #[test]
+    fn test_parse_graphql_pr_missing_required_field() {
+        // Missing "number" field
+        let node = serde_json::json!({
+            "title": "Incomplete",
+            "state": "OPEN",
+            "headRefName": "some-branch"
+        });
+        assert!(parse_graphql_pr(&node).is_none());
     }
 }
