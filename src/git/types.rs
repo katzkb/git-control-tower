@@ -33,11 +33,13 @@ pub struct PullRequest {
     #[allow(dead_code)]
     pub updated_at: String,
     #[serde(rename = "reviewRequests", default)]
+    #[allow(dead_code)]
     pub review_requests: Vec<ReviewRequest>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct ReviewRequest {
+    #[allow(dead_code)]
     pub login: String,
 }
 

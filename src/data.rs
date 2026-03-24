@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
-use crate::git::command::run_git;
-use crate::git::types::{Branch, BranchEntry, GitStatus, PullRequest, Worktree};
+use crate::git::command::{run_gh, run_git};
+use crate::git::types::{Branch, BranchEntry, GitStatus, PullRequest, ReviewRequest, Worktree};
 
 /// Merge local branches, worktrees, and PRs into unified BranchEntry list.
 pub fn merge_entries(
@@ -135,6 +135,160 @@ pub async fn load_git_status(worktree_path: &str) -> Option<GitStatus> {
     }
 
     Some(status)
+}
+
+/// Sanitize a branch name into a valid GraphQL alias (alphanumeric + underscore).
+fn graphql_alias(index: usize) -> String {
+    format!("b{index}")
+}
+
+/// Fetch PRs for local branches via GraphQL aliases (200 branches per request).
+/// Each branch gets an exact-match query on `headRefName`.
+pub async fn fetch_local_prs(
+    branch_names: &[String],
+    owner: &str,
+    repo: &str,
+    hostname: Option<&str>,
+) -> Vec<PullRequest> {
+    if branch_names.is_empty() {
+        return Vec::new();
+    }
+
+    let mut all_prs = Vec::new();
+
+    // Process in chunks of 200 (GraphQL query size limit)
+    for chunk in branch_names.chunks(200) {
+        let mut aliases = String::new();
+        for (i, name) in chunk.iter().enumerate() {
+            let alias = graphql_alias(i);
+            let escaped_name = name.replace('\\', "\\\\").replace('"', "\\\"");
+            aliases.push_str(&format!(
+                r#"{alias}: pullRequests(first: 1, headRefName: "{escaped_name}", states: [OPEN], orderBy: {{field: UPDATED_AT, direction: DESC}}) {{
+  nodes {{ number title state headRefName updatedAt author {{ login }}
+    reviewRequests(first: 10) {{ nodes {{ requestedReviewer {{ ... on User {{ login }} }} }} }}
+  }}
+}}
+"#
+            ));
+        }
+
+        let owner_escaped = owner.replace('\\', "\\\\").replace('"', "\\\"");
+        let repo_escaped = repo.replace('\\', "\\\\").replace('"', "\\\"");
+        let query = format!(
+            r#"{{ repository(owner: "{owner_escaped}", name: "{repo_escaped}") {{ {aliases} }} }}"#
+        );
+
+        let query_arg = format!("query={query}");
+        let mut args = vec!["api", "graphql", "-f", &query_arg];
+        let hostname_owned;
+        if let Some(h) = hostname {
+            hostname_owned = h.to_string();
+            args.push("--hostname");
+            args.push(&hostname_owned);
+        }
+
+        if let Ok(output) = run_gh(&args).await
+            && let Ok(json) = serde_json::from_str::<serde_json::Value>(&output)
+        {
+            let repo_data = &json["data"]["repository"];
+            for (i, _) in chunk.iter().enumerate() {
+                let alias = graphql_alias(i);
+                if let Some(nodes) = repo_data[&alias]["nodes"].as_array() {
+                    for node in nodes {
+                        if let Some(pr) = parse_graphql_pr(node) {
+                            all_prs.push(pr);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    all_prs
+}
+
+/// Parse a single PR node from GraphQL response into PullRequest.
+fn parse_graphql_pr(node: &serde_json::Value) -> Option<PullRequest> {
+    let number = node["number"].as_u64()?;
+    let title = node["title"].as_str()?.to_string();
+    let state = node["state"].as_str()?.to_string();
+    let head_ref = node["headRefName"].as_str()?.to_string();
+    let updated_at = node["updatedAt"].as_str().unwrap_or_default().to_string();
+    let author = node["author"]["login"].as_str().unwrap_or_default().to_string();
+
+    let review_requests = node["reviewRequests"]["nodes"]
+        .as_array()
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|r| {
+                    r["requestedReviewer"]["login"]
+                        .as_str()
+                        .map(|login| ReviewRequest {
+                            login: login.to_string(),
+                        })
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+
+    Some(PullRequest {
+        number,
+        title,
+        author,
+        state,
+        head_ref,
+        updated_at,
+        review_requests,
+    })
+}
+
+/// Fetch PRs authored by the current user (`--author @me`).
+pub async fn fetch_my_prs(show_merged: bool, hostname: Option<&str>) -> Vec<PullRequest> {
+    fetch_pr_list("--author", show_merged, hostname).await
+}
+
+/// Fetch PRs with review requested from the current user.
+pub async fn fetch_review_prs(show_merged: bool, hostname: Option<&str>) -> Vec<PullRequest> {
+    fetch_pr_list("--review-requested", show_merged, hostname).await
+}
+
+/// Common helper for fetching PR lists with a user filter.
+async fn fetch_pr_list(filter_flag: &str, show_merged: bool, hostname: Option<&str>) -> Vec<PullRequest> {
+    let pr_fields = "number,title,author,state,headRefName,updatedAt,reviewRequests";
+    let mut prs = Vec::new();
+
+    // Always fetch open PRs
+    let mut args = vec![
+        "pr", "list", filter_flag, "@me", "--json", pr_fields, "--limit", "100",
+    ];
+    if let Some(h) = hostname {
+        args.push("--hostname");
+        args.push(h);
+    }
+    if let Ok(output) = run_gh(&args).await
+        && let Ok(open) = serde_json::from_str::<Vec<PullRequest>>(&output)
+    {
+        prs.extend(open);
+    }
+
+    // Optionally fetch merged PRs
+    if show_merged {
+        let mut args = vec![
+            "pr", "list", filter_flag, "@me", "--state", "merged",
+            "--json", pr_fields, "--limit", "50",
+        ];
+        if let Some(h) = hostname {
+            args.push("--hostname");
+            args.push(h);
+        }
+        if let Ok(output) = run_gh(&args).await
+            && let Ok(merged) = serde_json::from_str::<Vec<PullRequest>>(&output)
+        {
+            prs.extend(merged);
+        }
+    }
+
+    prs
 }
 
 #[cfg(test)]

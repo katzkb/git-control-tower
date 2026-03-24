@@ -17,8 +17,15 @@ use crate::data::merge_entries;
 use crate::event::{Event, EventHandler};
 use crate::git::command::{run_gh, run_git};
 use crate::git::parser::{parse_branches, parse_log, parse_worktrees};
+use crate::app::MainFilter;
 use crate::git::types::{GitStatus, PrDetail, PullRequest};
 use crate::ui::notification::Notification;
+
+struct RepoInfo {
+    owner: String,
+    repo: String,
+    hostname: Option<String>, // None for github.com
+}
 
 enum AsyncResult {
     PrDetail(PrDetail),
@@ -26,7 +33,9 @@ enum AsyncResult {
     GitStatus { wt_path: String, status: GitStatus },
     GitStatusError(String),
     UserLogin(String),
-    PrList(Vec<PullRequest>),
+    LocalPrList(Vec<PullRequest>),
+    MyPrList(Vec<PullRequest>),
+    ReviewPrList(Vec<PullRequest>),
 }
 
 #[tokio::main]
@@ -99,16 +108,17 @@ async fn run(
         app.worktrees = parse_worktrees(&output);
     }
     load_branches(&mut app).await;
-    let gh_hostname = run_git(&["remote", "get-url", "origin"])
+    let repo_info = run_git(&["remote", "get-url", "origin"])
         .await
         .ok()
-        .and_then(|url| extract_gh_hostname(url.trim()))
-        .filter(|h| h != "github.com");
+        .and_then(|url| extract_repo_info(url.trim()));
     app.entries = merge_entries(&app.branches, &app.worktrees, &[]);
     app.entries_loaded = true;
     app.request_details_for_selection();
 
     // Phase 2: Slow network loads (background, non-blocking)
+    let gh_hostname = repo_info.as_ref().and_then(|r| r.hostname.clone());
+
     let tx_user = tx.clone();
     let hostname_for_user = gh_hostname.clone();
     tokio::spawn(async move {
@@ -129,27 +139,19 @@ async fn run(
         }
     });
 
-    let tx_prs = tx.clone();
-    tokio::spawn(async move {
-        let pr_fields = "number,title,author,state,headRefName,updatedAt,reviewRequests";
-        let mut prs = Vec::new();
-        if let Ok(output) = run_gh(&["pr", "list", "--json", pr_fields, "--limit", "50"]).await
-            && let Ok(open) = serde_json::from_str::<Vec<PullRequest>>(&output)
-        {
-            prs.extend(open);
-        }
-        if let Ok(output) = run_gh(&[
-            "pr", "list", "--state", "merged", "--json", pr_fields, "--limit", "50",
-        ])
-        .await
-            && let Ok(merged) = serde_json::from_str::<Vec<PullRequest>>(&output)
-        {
-            prs.extend(merged);
-        }
-        if !prs.is_empty() {
-            let _ = tx_prs.send(AsyncResult::PrList(prs));
-        }
-    });
+    // Fetch Local PRs via GraphQL (startup default view)
+    if let Some(ref info) = repo_info {
+        let tx_local = tx.clone();
+        let branch_names: Vec<String> = app.branches.iter().map(|b| b.name.clone()).collect();
+        let owner = info.owner.clone();
+        let repo = info.repo.clone();
+        let hostname = info.hostname.clone();
+        tokio::spawn(async move {
+            let prs =
+                data::fetch_local_prs(&branch_names, &owner, &repo, hostname.as_deref()).await;
+            let _ = tx_local.send(AsyncResult::LocalPrList(prs));
+        });
+    }
 
     loop {
         if let Err(e) = terminal.draw(|frame| ui::draw(frame, &app)) {
@@ -206,6 +208,48 @@ async fn run(
             });
         }
 
+        // Spawn PR fetch for view switch (non-blocking)
+        if let Some(filter) = app.pr_fetch_requested.take() {
+            let tx = tx.clone();
+            match filter {
+                MainFilter::Local => {
+                    if let Some(ref info) = repo_info {
+                        let branch_names: Vec<String> =
+                            app.branches.iter().map(|b| b.name.clone()).collect();
+                        let owner = info.owner.clone();
+                        let repo = info.repo.clone();
+                        let hostname = info.hostname.clone();
+                        tokio::spawn(async move {
+                            let prs = data::fetch_local_prs(
+                                &branch_names,
+                                &owner,
+                                &repo,
+                                hostname.as_deref(),
+                            )
+                            .await;
+                            let _ = tx.send(AsyncResult::LocalPrList(prs));
+                        });
+                    }
+                }
+                MainFilter::MyPr => {
+                    let show_merged = app.show_merged;
+                    let hostname = gh_hostname.clone();
+                    tokio::spawn(async move {
+                        let prs = data::fetch_my_prs(show_merged, hostname.as_deref()).await;
+                        let _ = tx.send(AsyncResult::MyPrList(prs));
+                    });
+                }
+                MainFilter::ReviewRequested => {
+                    let show_merged = app.show_merged;
+                    let hostname = gh_hostname.clone();
+                    tokio::spawn(async move {
+                        let prs = data::fetch_review_prs(show_merged, hostname.as_deref()).await;
+                        let _ = tx.send(AsyncResult::ReviewPrList(prs));
+                    });
+                }
+            }
+        }
+
         // Receive completed background results (non-blocking)
         while let Ok(result) = rx.try_recv() {
             match result {
@@ -234,14 +278,42 @@ async fn run(
                 AsyncResult::UserLogin(user) => {
                     app.gh_user = user;
                 }
-                AsyncResult::PrList(prs) => {
-                    app.pull_requests = prs;
-                    app.entries = merge_entries(&app.branches, &app.worktrees, &app.pull_requests);
+                AsyncResult::LocalPrList(prs) => {
+                    app.local_prs = prs;
+                    app.local_prs_loaded = true;
+                    app.entries =
+                        merge_entries(&app.branches, &app.worktrees, app.current_prs());
                     let filtered_len = app.filtered_entries().len();
                     if app.sidebar_scroll >= filtered_len && filtered_len > 0 {
                         app.sidebar_scroll = filtered_len - 1;
                     }
                     app.request_details_for_selection();
+                }
+                AsyncResult::MyPrList(prs) => {
+                    app.my_prs = prs;
+                    app.my_prs_loaded = true;
+                    if app.main_filter == MainFilter::MyPr {
+                        app.entries =
+                            merge_entries(&app.branches, &app.worktrees, app.current_prs());
+                        let filtered_len = app.filtered_entries().len();
+                        if app.sidebar_scroll >= filtered_len && filtered_len > 0 {
+                            app.sidebar_scroll = filtered_len - 1;
+                        }
+                        app.request_details_for_selection();
+                    }
+                }
+                AsyncResult::ReviewPrList(prs) => {
+                    app.review_prs = prs;
+                    app.review_prs_loaded = true;
+                    if app.main_filter == MainFilter::ReviewRequested {
+                        app.entries =
+                            merge_entries(&app.branches, &app.worktrees, app.current_prs());
+                        let filtered_len = app.filtered_entries().len();
+                        if app.sidebar_scroll >= filtered_len && filtered_len > 0 {
+                            app.sidebar_scroll = filtered_len - 1;
+                        }
+                        app.request_details_for_selection();
+                    }
                 }
             }
         }
@@ -317,7 +389,7 @@ async fn refresh_entries(app: &mut App) {
     if let Ok(output) = run_git(&["worktree", "list", "--porcelain"]).await {
         app.worktrees = parse_worktrees(&output);
     }
-    app.entries = merge_entries(&app.branches, &app.worktrees, &app.pull_requests);
+    app.entries = merge_entries(&app.branches, &app.worktrees, app.current_prs());
     let filtered_len = app.filtered_entries().len();
     if app.sidebar_scroll >= filtered_len && filtered_len > 0 {
         app.sidebar_scroll = filtered_len - 1;
@@ -328,6 +400,52 @@ async fn load_branches(app: &mut App) {
     let branch_output = run_git(&["branch", "-vv"]).await.unwrap_or_default();
     let merged_output = run_git(&["branch", "--merged"]).await.unwrap_or_default();
     app.branches = parse_branches(&branch_output, &merged_output);
+}
+
+/// Extract owner, repo, and hostname from a git remote URL.
+fn extract_repo_info(remote_url: &str) -> Option<RepoInfo> {
+    let hostname = extract_gh_hostname(remote_url)?;
+    let gh_hostname = if hostname == "github.com" {
+        None
+    } else {
+        Some(hostname)
+    };
+
+    // Extract org/repo path part
+    let path_part = if let Some(rest) = remote_url.strip_prefix("git@")
+        && !rest.starts_with("//")
+    {
+        // SCP-style: git@hostname:org/repo.git
+        rest.split(':').nth(1).map(|s| s.to_string())
+    } else if let Some(rest) = remote_url.strip_prefix("ssh://") {
+        // ssh://git@hostname/org/repo.git or ssh://git@hostname:port/org/repo.git
+        let after_user = rest.split('@').next_back()?;
+        // Skip hostname (and optional :port), then take the rest as path
+        let (_, path) = after_user.split_once('/')?;
+        Some(path.to_string())
+    } else if let Some(rest) = remote_url
+        .strip_prefix("https://")
+        .or_else(|| remote_url.strip_prefix("http://"))
+    {
+        // https://hostname/org/repo.git
+        let parts: Vec<&str> = rest.splitn(2, '/').collect();
+        parts.get(1).map(|s| s.to_string())
+    } else {
+        None
+    }?;
+
+    // Clean .git suffix and split into owner/repo
+    let cleaned = path_part.trim_end_matches(".git");
+    let parts: Vec<&str> = cleaned.splitn(2, '/').collect();
+    if parts.len() != 2 || parts[0].is_empty() || parts[1].is_empty() {
+        return None;
+    }
+
+    Some(RepoInfo {
+        owner: parts[0].to_string(),
+        repo: parts[1].to_string(),
+        hostname: gh_hostname,
+    })
 }
 
 /// Extract the hostname from a git remote URL.
@@ -420,5 +538,50 @@ mod tests {
     #[test]
     fn test_extract_hostname_unknown() {
         assert_eq!(extract_gh_hostname("file:///path/to/repo"), None);
+    }
+
+    #[test]
+    fn test_extract_repo_info_ssh() {
+        let info = extract_repo_info("git@github.com:katzkb/repo.git").unwrap();
+        assert_eq!(info.owner, "katzkb");
+        assert_eq!(info.repo, "repo");
+        assert!(info.hostname.is_none()); // github.com → None
+    }
+
+    #[test]
+    fn test_extract_repo_info_ghe() {
+        let info = extract_repo_info("git@ghe.company.com:org/repo.git").unwrap();
+        assert_eq!(info.owner, "org");
+        assert_eq!(info.repo, "repo");
+        assert_eq!(info.hostname.as_deref(), Some("ghe.company.com"));
+    }
+
+    #[test]
+    fn test_extract_repo_info_https() {
+        let info = extract_repo_info("https://github.com/katzkb/repo.git").unwrap();
+        assert_eq!(info.owner, "katzkb");
+        assert_eq!(info.repo, "repo");
+        assert!(info.hostname.is_none());
+    }
+
+    #[test]
+    fn test_extract_repo_info_ssh_url() {
+        let info = extract_repo_info("ssh://git@ghe.company.com/org/repo.git").unwrap();
+        assert_eq!(info.owner, "org");
+        assert_eq!(info.repo, "repo");
+        assert_eq!(info.hostname.as_deref(), Some("ghe.company.com"));
+    }
+
+    #[test]
+    fn test_extract_repo_info_ssh_url_with_port() {
+        let info = extract_repo_info("ssh://git@ghe.company.com:2222/org/repo.git").unwrap();
+        assert_eq!(info.owner, "org");
+        assert_eq!(info.repo, "repo");
+        assert_eq!(info.hostname.as_deref(), Some("ghe.company.com"));
+    }
+
+    #[test]
+    fn test_extract_repo_info_unknown() {
+        assert!(extract_repo_info("file:///path/to/repo").is_none());
     }
 }
