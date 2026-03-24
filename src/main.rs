@@ -87,23 +87,32 @@ async fn run(
         app.worktrees = parse_worktrees(&output);
     }
     load_branches(&mut app).await;
+    let gh_hostname = run_git(&["remote", "get-url", "origin"])
+        .await
+        .ok()
+        .and_then(|url| extract_gh_hostname(url.trim()))
+        .filter(|h| h != "github.com");
     app.entries = merge_entries(&app.branches, &app.worktrees, &[]);
     app.entries_loaded = true;
     app.request_details_for_selection();
 
     // Phase 2: Slow network loads (background, non-blocking)
     let tx_user = tx.clone();
+    let hostname_for_user = gh_hostname.clone();
     tokio::spawn(async move {
-        if let Ok(user) = run_gh(&[
+        let mut args = vec![
             "api",
             "graphql",
             "-f",
             "query={viewer{login}}",
             "--jq",
             ".data.viewer.login",
-        ])
-        .await
-        {
+        ];
+        if let Some(ref h) = hostname_for_user {
+            args.push("--hostname");
+            args.push(h);
+        }
+        if let Ok(user) = run_gh(&args).await {
             let _ = tx_user.send(AsyncResult::UserLogin(user.trim().to_string()));
         }
     });
@@ -299,4 +308,55 @@ async fn load_branches(app: &mut App) {
     let branch_output = run_git(&["branch", "-vv"]).await.unwrap_or_default();
     let merged_output = run_git(&["branch", "--merged"]).await.unwrap_or_default();
     app.branches = parse_branches(&branch_output, &merged_output);
+}
+
+/// Extract the hostname from a git remote URL.
+/// Returns None for unrecognized formats.
+fn extract_gh_hostname(remote_url: &str) -> Option<String> {
+    // SSH: git@hostname:org/repo.git
+    if let Some(rest) = remote_url.strip_prefix("git@") {
+        return rest.split(':').next().map(|s| s.to_string());
+    }
+    // HTTPS: https://hostname/org/repo.git
+    if let Some(rest) = remote_url
+        .strip_prefix("https://")
+        .or_else(|| remote_url.strip_prefix("http://"))
+    {
+        return rest.split('/').next().map(|s| s.to_string());
+    }
+    None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_extract_hostname_ssh() {
+        assert_eq!(
+            extract_gh_hostname("git@github.com:katzkb/repo.git"),
+            Some("github.com".to_string())
+        );
+        assert_eq!(
+            extract_gh_hostname("git@ghe.company.com:org/repo.git"),
+            Some("ghe.company.com".to_string())
+        );
+    }
+
+    #[test]
+    fn test_extract_hostname_https() {
+        assert_eq!(
+            extract_gh_hostname("https://github.com/katzkb/repo.git"),
+            Some("github.com".to_string())
+        );
+        assert_eq!(
+            extract_gh_hostname("https://ghe.company.com/org/repo.git"),
+            Some("ghe.company.com".to_string())
+        );
+    }
+
+    #[test]
+    fn test_extract_hostname_unknown() {
+        assert_eq!(extract_gh_hostname("file:///path/to/repo"), None);
+    }
 }
