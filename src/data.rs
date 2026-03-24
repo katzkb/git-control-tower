@@ -163,7 +163,7 @@ pub async fn fetch_local_prs(
             let alias = graphql_alias(i);
             let escaped_name = name.replace('\\', "\\\\").replace('"', "\\\"");
             aliases.push_str(&format!(
-                r#"{alias}: pullRequests(first: 1, headRefName: "{escaped_name}", states: [OPEN], orderBy: {{field: UPDATED_AT, direction: DESC}}) {{
+                r#"{alias}: pullRequests(first: 2, headRefName: "{escaped_name}", states: [OPEN, MERGED], orderBy: {{field: UPDATED_AT, direction: DESC}}) {{
   nodes {{ number title state headRefName updatedAt author {{ login }}
     reviewRequests(first: 10) {{ nodes {{ requestedReviewer {{ ... on User {{ login }} }} }} }}
   }}
