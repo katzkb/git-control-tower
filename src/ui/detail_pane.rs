@@ -66,12 +66,24 @@ fn section_header(title: &str) -> Line<'static> {
 }
 
 fn draw_git_status_section(lines: &mut Vec<Line<'static>>, entry: &BranchEntry) {
-    let status = match &entry.git_status {
-        Some(s) => s,
-        None => return,
-    };
+    // Only show section if entry has a worktree (status will be loaded)
+    if entry.worktree.is_none() {
+        return;
+    }
 
     lines.push(section_header("Git Status"));
+
+    let status = match &entry.git_status {
+        Some(s) => s,
+        None => {
+            lines.push(Line::from(Span::styled(
+                "  Loading...",
+                Style::default().fg(Color::DarkGray),
+            )));
+            lines.push(Line::from(""));
+            return;
+        }
+    };
 
     // Staged changes
     for file in &status.staged {
