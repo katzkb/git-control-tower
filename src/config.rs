@@ -83,7 +83,7 @@ fn config_paths_for_home(home: &Path) -> Vec<PathBuf> {
     vec![home.join(".config/gct/config.toml"), home.join(".gct.toml")]
 }
 
-fn home_dir() -> Option<PathBuf> {
+pub fn home_dir() -> Option<PathBuf> {
     if let Some(home) = std::env::var_os("HOME") {
         return Some(PathBuf::from(home));
     }

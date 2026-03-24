@@ -10,30 +10,44 @@ static DEBUG_LOG: OnceLock<Option<Mutex<File>>> = OnceLock::new();
 
 pub fn init_debug_log() {
     DEBUG_LOG.get_or_init(|| {
-        if std::env::var("GCT_DEBUG").is_ok() {
-            let path = debug_log_path();
-            if let Some(parent) = path.parent() {
-                let _ = std::fs::create_dir_all(parent);
+        let enabled = std::env::var("GCT_DEBUG")
+            .map(|v| matches!(v.as_str(), "1" | "true"))
+            .unwrap_or(false);
+        if !enabled {
+            return None;
+        }
+        let path = debug_log_path();
+        if let Some(parent) = path.parent()
+            && let Err(e) = std::fs::create_dir_all(parent)
+        {
+            eprintln!(
+                "Warning: cannot create debug log directory {}: {e}",
+                parent.display()
+            );
+            return None;
+        }
+        match OpenOptions::new()
+            .create(true)
+            .truncate(true)
+            .write(true)
+            .open(&path)
+        {
+            Ok(f) => {
+                eprintln!("Debug log: {}", path.display());
+                Some(Mutex::new(f))
             }
-            OpenOptions::new()
-                .create(true)
-                .truncate(true)
-                .write(true)
-                .open(&path)
-                .ok()
-                .map(Mutex::new)
-        } else {
-            None
+            Err(e) => {
+                eprintln!("Warning: cannot open debug log {}: {e}", path.display());
+                None
+            }
         }
     });
 }
 
 fn debug_log_path() -> PathBuf {
-    let home = std::env::var_os("HOME")
-        .or_else(|| std::env::var_os("USERPROFILE"))
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("."));
-    home.join(".config/gct/debug.log")
+    crate::config::home_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join(".config/gct/debug.log")
 }
 
 fn debug_log(msg: &str) {
