@@ -401,6 +401,7 @@ impl App {
                     self.my_prs_loaded = false;
                     self.review_prs.clear();
                     self.review_prs_loaded = false;
+                    self.rebuild_entries();
                     self.pr_fetch_requested = Some(self.main_filter);
                     self.sidebar_scroll = 0;
                 }
