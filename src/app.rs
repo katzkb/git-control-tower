@@ -31,6 +31,32 @@ impl MainFilter {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ActionItem {
+    CreateWorktree,
+    CdIntoWorktree,
+    DeleteWorktree,
+    DeleteBranch,
+    OpenPrInBrowser,
+}
+
+impl ActionItem {
+    pub fn label(&self) -> &'static str {
+        match self {
+            Self::CreateWorktree => "Create worktree",
+            Self::CdIntoWorktree => "cd into worktree",
+            Self::DeleteWorktree => "Delete worktree",
+            Self::DeleteBranch => "Delete branch",
+            Self::OpenPrInBrowser => "Open PR in browser",
+        }
+    }
+}
+
+pub struct ActionMenu {
+    pub items: Vec<ActionItem>,
+    pub scroll: usize,
+}
+
 pub struct App {
     pub active_view: ActiveView,
     pub should_quit: bool,
@@ -64,8 +90,12 @@ pub struct App {
 
     // Overlays
     pub confirm_dialog: Option<ConfirmDialog>,
+    pub action_menu: Option<ActionMenu>,
     pub notification: Option<Notification>,
     pub show_help: bool,
+
+    // Exit with cd path
+    pub cd_path: Option<String>,
 
     // Action requests
     pub wt_delete_requested: Option<String>,
@@ -73,6 +103,7 @@ pub struct App {
     pub wt_create_requested: Option<(String, u64)>,
     pub branch_selected: HashSet<String>,
     pub branch_delete_requested: bool,
+    pub open_pr_requested: Option<u64>,
 }
 
 impl App {
@@ -98,13 +129,16 @@ impl App {
             pr_detail_requested: None,
             git_status_requested: None,
             confirm_dialog: None,
+            action_menu: None,
             notification: None,
             show_help: false,
+            cd_path: None,
             wt_delete_requested: None,
             wt_delete_pending_path: None,
             wt_create_requested: None,
             branch_selected: HashSet::new(),
             branch_delete_requested: false,
+            open_pr_requested: None,
         }
     }
 
@@ -184,6 +218,12 @@ impl App {
         // Confirm dialog takes priority
         if self.confirm_dialog.is_some() {
             self.handle_confirm_key(key.code);
+            return;
+        }
+
+        // Action menu takes priority
+        if self.action_menu.is_some() {
+            self.handle_action_menu_key(key.code);
             return;
         }
 
@@ -302,6 +342,9 @@ impl App {
                         Some(Notification::success("Creating worktree...".to_string()));
                 }
             }
+            KeyCode::Enter => {
+                self.open_action_menu();
+            }
             KeyCode::Char('/') => {
                 self.search_pre_scroll = self.sidebar_scroll;
                 self.search_active = true;
@@ -373,6 +416,105 @@ impl App {
                 }
             }
             _ => {}
+        }
+    }
+
+    fn open_action_menu(&mut self) {
+        let entry = match self.selected_entry().cloned() {
+            Some(e) => e,
+            None => return,
+        };
+        let mut items = Vec::new();
+
+        if entry.pull_request.is_some() && entry.worktree.is_none() {
+            items.push(ActionItem::CreateWorktree);
+        }
+        if entry.worktree.is_some() {
+            items.push(ActionItem::CdIntoWorktree);
+        }
+        if entry.worktree.is_some() && !entry.is_current() {
+            items.push(ActionItem::DeleteWorktree);
+        }
+        if !entry.is_current() && !Self::is_protected_branch(&entry.name) {
+            items.push(ActionItem::DeleteBranch);
+        }
+        if entry.pull_request.is_some() {
+            items.push(ActionItem::OpenPrInBrowser);
+        }
+
+        if !items.is_empty() {
+            self.action_menu = Some(ActionMenu { items, scroll: 0 });
+        }
+    }
+
+    fn handle_action_menu_key(&mut self, code: KeyCode) {
+        let menu = match &mut self.action_menu {
+            Some(m) => m,
+            None => return,
+        };
+        match code {
+            KeyCode::Char('j') | KeyCode::Down => {
+                if menu.scroll + 1 < menu.items.len() {
+                    menu.scroll += 1;
+                }
+            }
+            KeyCode::Char('k') | KeyCode::Up => {
+                menu.scroll = menu.scroll.saturating_sub(1);
+            }
+            KeyCode::Enter => {
+                let action = menu.items[menu.scroll];
+                self.action_menu = None;
+                self.execute_action(action);
+            }
+            KeyCode::Esc => {
+                self.action_menu = None;
+            }
+            _ => {}
+        }
+    }
+
+    fn execute_action(&mut self, action: ActionItem) {
+        let entry = match self.selected_entry().cloned() {
+            Some(e) => e,
+            None => return,
+        };
+        match action {
+            ActionItem::CreateWorktree => {
+                if let Some(pr) = &entry.pull_request {
+                    self.wt_create_requested = Some((entry.name.clone(), pr.number));
+                    self.notification =
+                        Some(Notification::success("Creating worktree...".to_string()));
+                }
+            }
+            ActionItem::CdIntoWorktree => {
+                if let Some(path) = entry.worktree_path() {
+                    self.cd_path = Some(path.to_string());
+                    self.should_quit = true;
+                }
+            }
+            ActionItem::DeleteWorktree => {
+                if let Some(wt_path) = entry.worktree_path() {
+                    let path = wt_path.to_string();
+                    self.confirm_dialog = Some(ConfirmDialog::new(
+                        "Delete Worktree",
+                        format!("Remove worktree at {path}?"),
+                    ));
+                    self.wt_delete_pending_path = Some(path);
+                }
+            }
+            ActionItem::DeleteBranch => {
+                self.branch_selected.insert(entry.name.clone());
+                let name = &entry.name;
+                self.confirm_dialog = Some(ConfirmDialog::new(
+                    "Delete Branch",
+                    format!("Delete branch {name}?"),
+                ));
+            }
+            ActionItem::OpenPrInBrowser => {
+                if let Some(pr) = &entry.pull_request {
+                    self.open_pr_requested = Some(pr.number);
+                }
+            }
         }
     }
 
