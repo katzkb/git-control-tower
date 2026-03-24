@@ -31,6 +31,12 @@ enum AsyncResult {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    // Handle --version / -v before anything else
+    if std::env::args().any(|a| a == "--version" || a == "-v") {
+        println!("gct v{}", env!("CARGO_PKG_VERSION"));
+        return Ok(());
+    }
+
     // Initialize debug logging (GCT_DEBUG=1 enables it)
     crate::git::command::init_debug_log();
 
