@@ -327,12 +327,20 @@ fn extract_gh_hostname(remote_url: &str) -> Option<String> {
             .next()
             .map(|s| s.split(':').next().unwrap_or(s).to_string());
     }
-    // HTTPS: https://hostname/org/repo.git
+    // HTTP(S): https://hostname/org/repo.git or https://user@hostname:port/org/repo.git
     if let Some(rest) = remote_url
         .strip_prefix("https://")
         .or_else(|| remote_url.strip_prefix("http://"))
     {
-        return rest.split('/').next().map(|s| s.to_string());
+        let authority = rest.split('/').next()?;
+        let after_user = authority.split('@').next_back().unwrap_or(authority);
+        return Some(
+            after_user
+                .split(':')
+                .next()
+                .unwrap_or(after_user)
+                .to_string(),
+        );
     }
     None
 }
@@ -374,6 +382,18 @@ mod tests {
         assert_eq!(
             extract_gh_hostname("ssh://git@ghe.company.com:2222/org/repo.git"),
             Some("ghe.company.com".to_string())
+        );
+    }
+
+    #[test]
+    fn test_extract_hostname_https_with_credentials_and_port() {
+        assert_eq!(
+            extract_gh_hostname("https://token@ghe.company.com:8443/org/repo.git"),
+            Some("ghe.company.com".to_string())
+        );
+        assert_eq!(
+            extract_gh_hostname("https://user@github.com/org/repo.git"),
+            Some("github.com".to_string())
         );
     }
 
