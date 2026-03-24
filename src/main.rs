@@ -313,9 +313,19 @@ async fn load_branches(app: &mut App) {
 /// Extract the hostname from a git remote URL.
 /// Returns None for unrecognized formats.
 fn extract_gh_hostname(remote_url: &str) -> Option<String> {
-    // SSH: git@hostname:org/repo.git
-    if let Some(rest) = remote_url.strip_prefix("git@") {
+    // SCP-style SSH: git@hostname:org/repo.git
+    if let Some(rest) = remote_url.strip_prefix("git@")
+        && !rest.starts_with("//")
+    {
         return rest.split(':').next().map(|s| s.to_string());
+    }
+    // SSH URL: ssh://git@hostname/org/repo.git or ssh://git@hostname:port/org/repo.git
+    if let Some(rest) = remote_url.strip_prefix("ssh://") {
+        let after_user = rest.split('@').next_back()?;
+        return after_user
+            .split('/')
+            .next()
+            .map(|s| s.split(':').next().unwrap_or(s).to_string());
     }
     // HTTPS: https://hostname/org/repo.git
     if let Some(rest) = remote_url
@@ -351,6 +361,18 @@ mod tests {
         );
         assert_eq!(
             extract_gh_hostname("https://ghe.company.com/org/repo.git"),
+            Some("ghe.company.com".to_string())
+        );
+    }
+
+    #[test]
+    fn test_extract_hostname_ssh_url() {
+        assert_eq!(
+            extract_gh_hostname("ssh://git@ghe.company.com/org/repo.git"),
+            Some("ghe.company.com".to_string())
+        );
+        assert_eq!(
+            extract_gh_hostname("ssh://git@ghe.company.com:2222/org/repo.git"),
             Some("ghe.company.com".to_string())
         );
     }
