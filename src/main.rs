@@ -402,7 +402,10 @@ async fn refresh_entries(app: &mut App) {
 async fn load_branches(app: &mut App) {
     let branch_output = run_git(&["branch", "-vv"]).await.unwrap_or_default();
     let merged_output = run_git(&["branch", "--merged"]).await.unwrap_or_default();
-    app.branches = parse_branches(&branch_output, &merged_output);
+    let head_hash = run_git(&["rev-parse", "HEAD"])
+        .await
+        .unwrap_or_default();
+    app.branches = parse_branches(&branch_output, &merged_output, head_hash.trim());
 }
 
 /// Extract owner, repo, and hostname from a git remote URL.

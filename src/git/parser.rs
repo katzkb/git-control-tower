@@ -36,7 +36,7 @@ pub fn parse_log(output: &str) -> Vec<Commit> {
 }
 
 /// Parse output of `git branch -vv`
-pub fn parse_branches(output: &str, merged_output: &str) -> Vec<Branch> {
+pub fn parse_branches(output: &str, merged_output: &str, head_hash: &str) -> Vec<Branch> {
     let merged_names: Vec<&str> = merged_output
         .lines()
         .map(|l| l.trim().trim_start_matches("* "))
@@ -70,7 +70,11 @@ pub fn parse_branches(output: &str, merged_output: &str) -> Vec<Branch> {
                 Some(name.to_string())
             });
 
-            let is_merged = merged_names.contains(&name.as_str());
+            // A branch is merged if it's in --merged output AND its commit differs
+            // from HEAD. Branches pointing to HEAD (e.g., newly created branches)
+            // are just "at the same commit", not truly merged.
+            let commit_hash = rest.split_whitespace().nth(1).unwrap_or_default();
+            let is_merged = merged_names.contains(&name.as_str()) && commit_hash != head_hash;
 
             Some(Branch {
                 name,
@@ -149,7 +153,7 @@ mod tests {
                          feature-a  def5678 [origin/feature-a: ahead 1] wip\n\
                          old-branch ghi9012 some old work\n";
         let merged = "  old-branch\n";
-        let branches = parse_branches(output, merged);
+        let branches = parse_branches(output, merged, "abc1234");
 
         assert_eq!(branches.len(), 3);
 
@@ -165,6 +169,19 @@ mod tests {
         assert_eq!(branches[2].name, "old-branch");
         assert!(branches[2].is_merged);
         assert!(branches[2].upstream.is_none());
+    }
+
+    #[test]
+    fn test_branch_at_head_not_marked_merged() {
+        // A branch pointing to the same commit as HEAD should NOT be marked merged
+        let output = "* main       abc1234 [origin/main] latest commit\n\
+                         new-branch abc1234 starting work\n";
+        let merged = "* main\n  new-branch\n";
+        let branches = parse_branches(output, merged, "abc1234");
+
+        assert_eq!(branches.len(), 2);
+        assert!(!branches[0].is_merged); // main (current, same hash)
+        assert!(!branches[1].is_merged); // new-branch (same hash as HEAD)
     }
 
     #[test]
