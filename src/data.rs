@@ -245,34 +245,27 @@ fn parse_graphql_pr(node: &serde_json::Value) -> Option<PullRequest> {
     })
 }
 
-/// Fetch PRs authored by the current user (`--author @me`).
-/// Note: `gh pr list` auto-detects the host from the repo remote; no --hostname needed.
+/// Fetch PRs authored by the current user (`gh pr list --author @me`).
 pub async fn fetch_my_prs(show_merged: bool) -> Vec<PullRequest> {
-    fetch_pr_list("--author", show_merged).await
+    fetch_pr_list(&["--author", "@me"], show_merged).await
 }
 
-/// Fetch PRs with review requested from the current user.
-/// Note: `gh pr list` auto-detects the host from the repo remote; no --hostname needed.
+/// Fetch PRs with review requested from the current user
+/// (`gh pr list --search "review-requested:@me"`).
 pub async fn fetch_review_prs(show_merged: bool) -> Vec<PullRequest> {
-    fetch_pr_list("--review-requested", show_merged).await
+    fetch_pr_list(&["--search", "review-requested:@me"], show_merged).await
 }
 
-/// Common helper for fetching PR lists with a user filter.
-async fn fetch_pr_list(filter_flag: &str, show_merged: bool) -> Vec<PullRequest> {
+/// Common helper for fetching PR lists with a filter.
+/// `filter_args` is passed directly to `gh pr list` (e.g., `["--author", "@me"]`).
+async fn fetch_pr_list(filter_args: &[&str], show_merged: bool) -> Vec<PullRequest> {
     let pr_fields = "number,title,author,state,headRefName,updatedAt,reviewRequests";
     let mut prs = Vec::new();
 
     // Always fetch open PRs
-    let args = vec![
-        "pr",
-        "list",
-        filter_flag,
-        "@me",
-        "--json",
-        pr_fields,
-        "--limit",
-        "100",
-    ];
+    let mut args = vec!["pr", "list"];
+    args.extend_from_slice(filter_args);
+    args.extend_from_slice(&["--json", pr_fields, "--limit", "100"]);
     if let Ok(output) = run_gh(&args).await
         && let Ok(open) = serde_json::from_str::<Vec<PullRequest>>(&output)
     {
@@ -281,18 +274,9 @@ async fn fetch_pr_list(filter_flag: &str, show_merged: bool) -> Vec<PullRequest>
 
     // Optionally fetch merged PRs
     if show_merged {
-        let args = vec![
-            "pr",
-            "list",
-            filter_flag,
-            "@me",
-            "--state",
-            "merged",
-            "--json",
-            pr_fields,
-            "--limit",
-            "50",
-        ];
+        let mut args = vec!["pr", "list"];
+        args.extend_from_slice(filter_args);
+        args.extend_from_slice(&["--state", "merged", "--json", pr_fields, "--limit", "50"]);
         if let Ok(output) = run_gh(&args).await
             && let Ok(merged) = serde_json::from_str::<Vec<PullRequest>>(&output)
         {
