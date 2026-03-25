@@ -236,17 +236,15 @@ async fn run(
                 }
                 MainFilter::MyPr => {
                     let show_merged = app.show_merged;
-                    let hostname = gh_hostname.clone();
                     tokio::spawn(async move {
-                        let prs = data::fetch_my_prs(show_merged, hostname.as_deref()).await;
+                        let prs = data::fetch_my_prs(show_merged).await;
                         let _ = tx.send(AsyncResult::MyPrList(prs));
                     });
                 }
                 MainFilter::ReviewRequested => {
                     let show_merged = app.show_merged;
-                    let hostname = gh_hostname.clone();
                     tokio::spawn(async move {
-                        let prs = data::fetch_review_prs(show_merged, hostname.as_deref()).await;
+                        let prs = data::fetch_review_prs(show_merged).await;
                         let _ = tx.send(AsyncResult::ReviewPrList(prs));
                     });
                 }
