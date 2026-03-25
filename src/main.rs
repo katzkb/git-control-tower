@@ -401,11 +401,26 @@ async fn refresh_entries(app: &mut App) {
 
 async fn load_branches(app: &mut App) {
     let branch_output = run_git(&["branch", "-vv"]).await.unwrap_or_default();
-    let merged_output = run_git(&["branch", "--merged", "main"]).await.unwrap_or_default();
-    let main_hash = run_git(&["rev-parse", "main"])
+    let default_branch = detect_default_branch().await;
+    let merged_output = run_git(&["branch", "--merged", &default_branch])
         .await
         .unwrap_or_default();
-    app.branches = parse_branches(&branch_output, &merged_output, main_hash.trim());
+    let base_hash = run_git(&["rev-parse", &default_branch])
+        .await
+        .unwrap_or_default();
+    app.branches = parse_branches(&branch_output, &merged_output, base_hash.trim());
+}
+
+async fn detect_default_branch() -> String {
+    if let Ok(output) = run_git(&["symbolic-ref", "refs/remotes/origin/HEAD"]).await
+        && let Some(name) = output.trim().strip_prefix("refs/remotes/origin/")
+    {
+        return name.to_string();
+    }
+    if run_git(&["rev-parse", "--verify", "main"]).await.is_ok() {
+        return "main".to_string();
+    }
+    "master".to_string()
 }
 
 /// Extract owner, repo, and hostname from a git remote URL.
