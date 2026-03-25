@@ -74,7 +74,8 @@ pub fn parse_branches(output: &str, merged_output: &str, head_hash: &str) -> Vec
             // from HEAD. Branches pointing to HEAD (e.g., newly created branches)
             // are just "at the same commit", not truly merged.
             let commit_hash = rest.split_whitespace().nth(1).unwrap_or_default();
-            let is_merged = merged_names.contains(&name.as_str()) && commit_hash != head_hash;
+            let is_merged =
+                merged_names.contains(&name.as_str()) && !head_hash.starts_with(commit_hash);
 
             Some(Branch {
                 name,
@@ -149,11 +150,13 @@ mod tests {
 
     #[test]
     fn test_parse_branches() {
+        // head_hash is full (40 chars), branch -vv shows abbreviated (7 chars)
         let output = "* main       abc1234 [origin/main] latest commit\n\
                          feature-a  def5678 [origin/feature-a: ahead 1] wip\n\
                          old-branch ghi9012 some old work\n";
         let merged = "  old-branch\n";
-        let branches = parse_branches(output, merged, "abc1234");
+        let head_hash = "abc1234567890abcdef1234567890abcdef12345678";
+        let branches = parse_branches(output, merged, head_hash);
 
         assert_eq!(branches.len(), 3);
 
@@ -166,6 +169,7 @@ mod tests {
         assert!(!branches[1].is_current);
         assert_eq!(branches[1].upstream.as_deref(), Some("origin/feature-a"));
 
+        // old-branch has different hash (ghi9012 != abc1234...) → merged
         assert_eq!(branches[2].name, "old-branch");
         assert!(branches[2].is_merged);
         assert!(branches[2].upstream.is_none());
@@ -173,15 +177,16 @@ mod tests {
 
     #[test]
     fn test_branch_at_head_not_marked_merged() {
-        // A branch pointing to the same commit as HEAD should NOT be marked merged
+        // head_hash is full, branch hashes are abbreviated but match HEAD prefix
         let output = "* main       abc1234 [origin/main] latest commit\n\
                          new-branch abc1234 starting work\n";
         let merged = "* main\n  new-branch\n";
-        let branches = parse_branches(output, merged, "abc1234");
+        let head_hash = "abc1234567890abcdef1234567890abcdef12345678";
+        let branches = parse_branches(output, merged, head_hash);
 
         assert_eq!(branches.len(), 2);
-        assert!(!branches[0].is_merged); // main (current, same hash)
-        assert!(!branches[1].is_merged); // new-branch (same hash as HEAD)
+        assert!(!branches[0].is_merged); // main (same hash prefix as HEAD)
+        assert!(!branches[1].is_merged); // new-branch (same hash prefix as HEAD)
     }
 
     #[test]
