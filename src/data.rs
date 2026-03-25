@@ -246,26 +246,24 @@ fn parse_graphql_pr(node: &serde_json::Value) -> Option<PullRequest> {
 }
 
 /// Fetch PRs authored by the current user (`--author @me`).
-pub async fn fetch_my_prs(show_merged: bool, hostname: Option<&str>) -> Vec<PullRequest> {
-    fetch_pr_list("--author", show_merged, hostname).await
+/// Note: `gh pr list` auto-detects the host from the repo remote; no --hostname needed.
+pub async fn fetch_my_prs(show_merged: bool) -> Vec<PullRequest> {
+    fetch_pr_list("--author", show_merged).await
 }
 
 /// Fetch PRs with review requested from the current user.
-pub async fn fetch_review_prs(show_merged: bool, hostname: Option<&str>) -> Vec<PullRequest> {
-    fetch_pr_list("--review-requested", show_merged, hostname).await
+/// Note: `gh pr list` auto-detects the host from the repo remote; no --hostname needed.
+pub async fn fetch_review_prs(show_merged: bool) -> Vec<PullRequest> {
+    fetch_pr_list("--review-requested", show_merged).await
 }
 
 /// Common helper for fetching PR lists with a user filter.
-async fn fetch_pr_list(
-    filter_flag: &str,
-    show_merged: bool,
-    hostname: Option<&str>,
-) -> Vec<PullRequest> {
+async fn fetch_pr_list(filter_flag: &str, show_merged: bool) -> Vec<PullRequest> {
     let pr_fields = "number,title,author,state,headRefName,updatedAt,reviewRequests";
     let mut prs = Vec::new();
 
     // Always fetch open PRs
-    let mut args = vec![
+    let args = vec![
         "pr",
         "list",
         filter_flag,
@@ -275,10 +273,6 @@ async fn fetch_pr_list(
         "--limit",
         "100",
     ];
-    if let Some(h) = hostname {
-        args.push("--hostname");
-        args.push(h);
-    }
     if let Ok(output) = run_gh(&args).await
         && let Ok(open) = serde_json::from_str::<Vec<PullRequest>>(&output)
     {
@@ -287,7 +281,7 @@ async fn fetch_pr_list(
 
     // Optionally fetch merged PRs
     if show_merged {
-        let mut args = vec![
+        let args = vec![
             "pr",
             "list",
             filter_flag,
@@ -299,10 +293,6 @@ async fn fetch_pr_list(
             "--limit",
             "50",
         ];
-        if let Some(h) = hostname {
-            args.push("--hostname");
-            args.push(h);
-        }
         if let Ok(output) = run_gh(&args).await
             && let Ok(merged) = serde_json::from_str::<Vec<PullRequest>>(&output)
         {
