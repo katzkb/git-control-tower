@@ -36,7 +36,8 @@ pub fn parse_log(output: &str) -> Vec<Commit> {
 }
 
 /// Parse output of `git branch -vv`
-pub fn parse_branches(output: &str, merged_output: &str) -> Vec<Branch> {
+/// `base_hash` is the full commit hash of the repository's default branch (e.g., main).
+pub fn parse_branches(output: &str, merged_output: &str, base_hash: &str) -> Vec<Branch> {
     let merged_names: Vec<&str> = merged_output
         .lines()
         .map(|l| l.trim().trim_start_matches("* "))
@@ -70,7 +71,13 @@ pub fn parse_branches(output: &str, merged_output: &str) -> Vec<Branch> {
                 Some(name.to_string())
             });
 
-            let is_merged = merged_names.contains(&name.as_str());
+            // A branch is merged if it's in --merged output AND its commit differs
+            // from the default branch. Branches at the same commit as the default
+            // branch (e.g., newly created branches) are not truly merged.
+            let commit_hash = rest.split_whitespace().nth(1).unwrap_or_default();
+            let is_merged = merged_names.contains(&name.as_str())
+                && !commit_hash.is_empty()
+                && !base_hash.starts_with(commit_hash);
 
             Some(Branch {
                 name,
@@ -145,11 +152,13 @@ mod tests {
 
     #[test]
     fn test_parse_branches() {
+        // base_hash is full (40 chars), branch -vv shows abbreviated (7 chars)
         let output = "* main       abc1234 [origin/main] latest commit\n\
                          feature-a  def5678 [origin/feature-a: ahead 1] wip\n\
                          old-branch ghi9012 some old work\n";
         let merged = "  old-branch\n";
-        let branches = parse_branches(output, merged);
+        let base_hash = "abc1234567890abcdef1234567890abcdef12345678";
+        let branches = parse_branches(output, merged, base_hash);
 
         assert_eq!(branches.len(), 3);
 
@@ -162,9 +171,24 @@ mod tests {
         assert!(!branches[1].is_current);
         assert_eq!(branches[1].upstream.as_deref(), Some("origin/feature-a"));
 
+        // old-branch has different hash (ghi9012 != abc1234...) → merged
         assert_eq!(branches[2].name, "old-branch");
         assert!(branches[2].is_merged);
         assert!(branches[2].upstream.is_none());
+    }
+
+    #[test]
+    fn test_branch_at_default_not_marked_merged() {
+        // base_hash is full, branch hashes are abbreviated but match default branch prefix
+        let output = "* main       abc1234 [origin/main] latest commit\n\
+                         new-branch abc1234 starting work\n";
+        let merged = "* main\n  new-branch\n";
+        let base_hash = "abc1234567890abcdef1234567890abcdef12345678";
+        let branches = parse_branches(output, merged, base_hash);
+
+        assert_eq!(branches.len(), 2);
+        assert!(!branches[0].is_merged); // main (same commit as default branch)
+        assert!(!branches[1].is_merged); // new-branch (same commit as default branch)
     }
 
     #[test]

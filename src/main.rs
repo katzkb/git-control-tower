@@ -401,8 +401,31 @@ async fn refresh_entries(app: &mut App) {
 
 async fn load_branches(app: &mut App) {
     let branch_output = run_git(&["branch", "-vv"]).await.unwrap_or_default();
-    let merged_output = run_git(&["branch", "--merged"]).await.unwrap_or_default();
-    app.branches = parse_branches(&branch_output, &merged_output);
+    let default_branch = detect_default_branch().await;
+    let merged_output = run_git(&["branch", "--merged", &default_branch])
+        .await
+        .unwrap_or_default();
+    let base_hash = run_git(&["rev-parse", &default_branch])
+        .await
+        .unwrap_or_default();
+    app.branches = parse_branches(&branch_output, &merged_output, base_hash.trim());
+}
+
+async fn detect_default_branch() -> String {
+    // Try remote HEAD symbolic ref (most reliable)
+    if let Ok(output) = run_git(&["symbolic-ref", "refs/remotes/origin/HEAD"]).await
+        && let Some(name) = output.trim().strip_prefix("refs/remotes/origin/")
+    {
+        return name.to_string();
+    }
+    // Fallback: try main, then master, then HEAD
+    if run_git(&["rev-parse", "--verify", "main"]).await.is_ok() {
+        return "main".to_string();
+    }
+    if run_git(&["rev-parse", "--verify", "master"]).await.is_ok() {
+        return "master".to_string();
+    }
+    "HEAD".to_string()
 }
 
 /// Extract owner, repo, and hostname from a git remote URL.
