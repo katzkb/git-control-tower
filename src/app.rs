@@ -110,7 +110,7 @@ pub struct App {
     // Action requests
     pub wt_delete_requested: Option<String>,
     pub wt_delete_pending_path: Option<String>, // path stored when confirm dialog shown
-    pub wt_create_requested: Option<(String, u64)>,
+    pub wt_create_requested: Option<String>,
     pub branch_selected: HashSet<String>,
     pub branch_delete_requested: bool,
     pub open_pr_requested: Option<u64>,
@@ -380,9 +380,10 @@ impl App {
             KeyCode::Char('w') => {
                 if let Some(entry) = self.selected_entry()
                     && entry.worktree.is_none()
-                    && let Some(pr) = &entry.pull_request
+                    && !entry.is_current()
+                    && (entry.local_branch.is_some() || entry.pull_request.is_some())
                 {
-                    self.wt_create_requested = Some((entry.name.clone(), pr.number));
+                    self.wt_create_requested = Some(entry.name.clone());
                     self.notification =
                         Some(Notification::success("Creating worktree...".to_string()));
                 }
@@ -487,7 +488,10 @@ impl App {
         };
         let mut items = Vec::new();
 
-        if entry.pull_request.is_some() && entry.worktree.is_none() {
+        if entry.worktree.is_none()
+            && !entry.is_current()
+            && (entry.local_branch.is_some() || entry.pull_request.is_some())
+        {
             items.push(ActionItem::CreateWorktree);
         }
         if entry.worktree.is_some() {
@@ -549,11 +553,9 @@ impl App {
         };
         match action {
             ActionItem::CreateWorktree => {
-                if let Some(pr) = &entry.pull_request {
-                    self.wt_create_requested = Some((entry.name.clone(), pr.number));
-                    self.notification =
-                        Some(Notification::success("Creating worktree...".to_string()));
-                }
+                self.wt_create_requested = Some(entry.name.clone());
+                self.notification =
+                    Some(Notification::success("Creating worktree...".to_string()));
             }
             ActionItem::CdIntoWorktree => {
                 if let Some(path) = entry.worktree_path() {

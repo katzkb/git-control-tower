@@ -337,27 +337,32 @@ async fn run(
             refresh_entries(&mut app).await;
         }
 
-        // Create worktree from PR if requested
-        if let Some((head_ref, _pr_number)) = app.wt_create_requested.take() {
-            let wt_path = config.worktree_path(&head_ref);
+        // Create worktree if requested
+        if let Some(branch_name) = app.wt_create_requested.take() {
+            let wt_path = config.worktree_path(&branch_name);
             if let Some(parent) = std::path::Path::new(&wt_path).parent() {
                 let _ = std::fs::create_dir_all(parent);
             }
-            match run_git(&["fetch", "origin", &head_ref]).await {
-                Ok(_) => match run_git(&["worktree", "add", &wt_path, &head_ref]).await {
-                    Ok(_) => {
-                        app.notification = Some(Notification::success(format!(
-                            "Worktree created: {wt_path}"
-                        )));
-                    }
-                    Err(e) => {
-                        app.notification = Some(Notification::error(format!(
-                            "Failed to create worktree: {e}"
-                        )));
-                    }
-                },
+            let has_local = app.branches.iter().any(|b| b.name == branch_name);
+            let result = if has_local {
+                // Local branch exists — no fetch needed
+                run_git(&["worktree", "add", &wt_path, &branch_name]).await
+            } else {
+                // Remote-only branch — fetch first
+                match run_git(&["fetch", "origin", &branch_name]).await {
+                    Ok(_) => run_git(&["worktree", "add", &wt_path, &branch_name]).await,
+                    Err(e) => Err(e),
+                }
+            };
+            match result {
+                Ok(_) => {
+                    app.notification =
+                        Some(Notification::success(format!("Worktree created: {wt_path}")));
+                }
                 Err(e) => {
-                    app.notification = Some(Notification::error(format!("Failed to fetch: {e}")));
+                    app.notification = Some(Notification::error(format!(
+                        "Failed to create worktree: {e}"
+                    )));
                 }
             }
             refresh_entries(&mut app).await;
