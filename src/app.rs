@@ -554,8 +554,7 @@ impl App {
         match action {
             ActionItem::CreateWorktree => {
                 self.wt_create_requested = Some(entry.name.clone());
-                self.notification =
-                    Some(Notification::success("Creating worktree...".to_string()));
+                self.notification = Some(Notification::success("Creating worktree...".to_string()));
             }
             ActionItem::CdIntoWorktree => {
                 if let Some(path) = entry.worktree_path() {

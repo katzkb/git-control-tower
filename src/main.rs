@@ -356,8 +356,9 @@ async fn run(
             };
             match result {
                 Ok(_) => {
-                    app.notification =
-                        Some(Notification::success(format!("Worktree created: {wt_path}")));
+                    app.notification = Some(Notification::success(format!(
+                        "Worktree created: {wt_path}"
+                    )));
                 }
                 Err(e) => {
                     app.notification = Some(Notification::error(format!(
