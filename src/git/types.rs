@@ -40,7 +40,8 @@ pub struct PullRequest {
 #[derive(Debug, Clone, Deserialize)]
 pub struct ReviewRequest {
     #[allow(dead_code)]
-    pub login: String,
+    #[serde(default)]
+    pub login: Option<String>,
 }
 
 fn deserialize_author<'de, D>(deserializer: D) -> Result<String, D::Error>
