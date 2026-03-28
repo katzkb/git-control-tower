@@ -235,12 +235,10 @@ fn parse_graphql_pr(node: &serde_json::Value) -> Option<PullRequest> {
         .as_array()
         .map(|arr| {
             arr.iter()
-                .filter_map(|r| {
-                    r["requestedReviewer"]["login"]
+                .map(|r| ReviewRequest {
+                    login: r["requestedReviewer"]["login"]
                         .as_str()
-                        .map(|login| ReviewRequest {
-                            login: login.to_string(),
-                        })
+                        .map(|s| s.to_string()),
                 })
                 .collect()
         })
@@ -502,7 +500,7 @@ mod tests {
         assert_eq!(pr.head_ref, "feature-branch");
         assert_eq!(pr.author, "alice");
         assert_eq!(pr.review_requests.len(), 1);
-        assert_eq!(pr.review_requests[0].login, "bob");
+        assert_eq!(pr.review_requests[0].login.as_deref(), Some("bob"));
     }
 
     #[test]
@@ -530,5 +528,50 @@ mod tests {
             "headRefName": "some-branch"
         });
         assert!(parse_graphql_pr(&node).is_none());
+    }
+
+    #[test]
+    fn test_parse_graphql_pr_team_reviewer() {
+        // Team reviewers don't have a "login" field — should not fail
+        let node = serde_json::json!({
+            "number": 50,
+            "title": "With team review",
+            "state": "OPEN",
+            "headRefName": "feat-branch",
+            "updatedAt": "2024-01-15T00:00:00Z",
+            "author": { "login": "alice" },
+            "reviewRequests": {
+                "nodes": [
+                    { "requestedReviewer": { "login": "bob" } },
+                    { "requestedReviewer": { "__typename": "Team", "name": "backend", "slug": "backend" } }
+                ]
+            }
+        });
+        let pr = parse_graphql_pr(&node).unwrap();
+        assert_eq!(pr.review_requests.len(), 2);
+        assert_eq!(pr.review_requests[0].login.as_deref(), Some("bob"));
+        assert_eq!(pr.review_requests[1].login, None);
+    }
+
+    #[test]
+    fn test_deserialize_pr_with_team_reviewer() {
+        // Simulate gh pr list --json output with Team reviewer
+        let json = r#"[{
+            "number": 1,
+            "title": "Test PR",
+            "author": {"login": "alice"},
+            "state": "OPEN",
+            "headRefName": "test-branch",
+            "updatedAt": "2024-01-15T00:00:00Z",
+            "reviewRequests": [
+                {"__typename": "User", "login": "bob"},
+                {"__typename": "Team", "name": "backend", "slug": "backend"}
+            ]
+        }]"#;
+        let prs: Vec<PullRequest> = serde_json::from_str(json).unwrap();
+        assert_eq!(prs.len(), 1);
+        assert_eq!(prs[0].review_requests.len(), 2);
+        assert_eq!(prs[0].review_requests[0].login.as_deref(), Some("bob"));
+        assert_eq!(prs[0].review_requests[1].login, None);
     }
 }
