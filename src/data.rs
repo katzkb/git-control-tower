@@ -273,6 +273,7 @@ pub async fn fetch_review_prs(show_merged: bool) -> (Vec<PullRequest>, Vec<Strin
 /// Returns (prs, errors) where errors contains any fetch/parse failures.
 async fn fetch_pr_list(filter_args: &[&str], show_merged: bool) -> (Vec<PullRequest>, Vec<String>) {
     let pr_fields = "number,title,author,state,headRefName,updatedAt,reviewRequests";
+    let filter_label = filter_args.join(" ");
     let mut prs = Vec::new();
     let mut errors = Vec::new();
 
@@ -284,13 +285,15 @@ async fn fetch_pr_list(filter_args: &[&str], show_merged: bool) -> (Vec<PullRequ
         Ok(output) => match serde_json::from_str::<Vec<PullRequest>>(&output) {
             Ok(open) => prs.extend(open),
             Err(e) => {
-                debug_log(&format!("  → pr list JSON parse error: {e}"));
-                errors.push(format!("pr list parse error: {e}"));
+                debug_log(&format!(
+                    "  → pr list [{filter_label}] JSON parse error: {e}"
+                ));
+                errors.push(format!("pr list [{filter_label}] parse error: {e}"));
             }
         },
         Err(e) => {
-            debug_log(&format!("  → pr list fetch error: {e}"));
-            errors.push(format!("pr list failed: {e}"));
+            debug_log(&format!("  → pr list [{filter_label}] fetch error: {e}"));
+            errors.push(format!("pr list [{filter_label}] failed: {e}"));
         }
     }
 
@@ -303,13 +306,19 @@ async fn fetch_pr_list(filter_args: &[&str], show_merged: bool) -> (Vec<PullRequ
             Ok(output) => match serde_json::from_str::<Vec<PullRequest>>(&output) {
                 Ok(merged) => prs.extend(merged),
                 Err(e) => {
-                    debug_log(&format!("  → pr list (merged) JSON parse error: {e}"));
-                    errors.push(format!("pr list (merged) parse error: {e}"));
+                    debug_log(&format!(
+                        "  → pr list [{filter_label}] (merged) JSON parse error: {e}"
+                    ));
+                    errors.push(format!(
+                        "pr list [{filter_label}] (merged) parse error: {e}"
+                    ));
                 }
             },
             Err(e) => {
-                debug_log(&format!("  → pr list (merged) fetch error: {e}"));
-                errors.push(format!("pr list (merged) failed: {e}"));
+                debug_log(&format!(
+                    "  → pr list [{filter_label}] (merged) fetch error: {e}"
+                ));
+                errors.push(format!("pr list [{filter_label}] (merged) failed: {e}"));
             }
         }
     }

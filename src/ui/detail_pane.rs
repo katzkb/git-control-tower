@@ -62,11 +62,13 @@ pub fn draw(frame: &mut Frame, area: Rect, app: &App) {
 }
 
 fn section_header(title: &str) -> Line<'static> {
+    section_header_with_color(title, Color::Cyan)
+}
+
+fn section_header_with_color(title: &str, color: Color) -> Line<'static> {
     Line::from(Span::styled(
         format!("── {title} ──────────────────────"),
-        Style::default()
-            .fg(Color::Cyan)
-            .add_modifier(Modifier::BOLD),
+        Style::default().fg(color).add_modifier(Modifier::BOLD),
     ))
 }
 
@@ -255,10 +257,7 @@ fn draw_pr_section(
 }
 
 fn draw_errors_section(lines: &mut Vec<Line<'static>>, errors: &[String]) {
-    lines.push(Line::from(Span::styled(
-        "── Errors ──────────────────────",
-        Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
-    )));
+    lines.push(section_header_with_color("Errors", Color::Red));
     for err in errors {
         lines.push(Line::from(Span::styled(
             format!("  {err}"),

@@ -285,7 +285,13 @@ async fn run(
                 AsyncResult::LocalPrList(prs, errors) => {
                     app.local_prs = prs;
                     app.local_prs_loaded = true;
-                    app.verbose_errors.extend(errors);
+                    if app.verbose {
+                        for e in errors {
+                            if !app.verbose_errors.contains(&e) {
+                                app.verbose_errors.push(e);
+                            }
+                        }
+                    }
                     if app.main_filter == MainFilter::Local {
                         app.entries =
                             merge_entries(&app.branches, &app.worktrees, app.current_prs());
@@ -299,7 +305,13 @@ async fn run(
                 AsyncResult::MyPrList(prs, errors) => {
                     app.my_prs = prs;
                     app.my_prs_loaded = true;
-                    app.verbose_errors.extend(errors);
+                    if app.verbose {
+                        for e in errors {
+                            if !app.verbose_errors.contains(&e) {
+                                app.verbose_errors.push(e);
+                            }
+                        }
+                    }
                     if app.main_filter == MainFilter::MyPr {
                         app.entries =
                             merge_entries(&app.branches, &app.worktrees, app.current_prs());
@@ -313,7 +325,13 @@ async fn run(
                 AsyncResult::ReviewPrList(prs, errors) => {
                     app.review_prs = prs;
                     app.review_prs_loaded = true;
-                    app.verbose_errors.extend(errors);
+                    if app.verbose {
+                        for e in errors {
+                            if !app.verbose_errors.contains(&e) {
+                                app.verbose_errors.push(e);
+                            }
+                        }
+                    }
                     if app.main_filter == MainFilter::ReviewRequested {
                         app.entries =
                             merge_entries(&app.branches, &app.worktrees, app.current_prs());
