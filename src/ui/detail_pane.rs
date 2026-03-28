@@ -7,7 +7,7 @@ use ratatui::{
 };
 
 use crate::app::App;
-use crate::git::types::{BranchEntry, PrDetail};
+use crate::git::types::{BranchEntry, PrDetail, ReviewStatus};
 use crate::ui::markdown;
 
 pub fn draw(frame: &mut Frame, area: Rect, app: &App) {
@@ -207,6 +207,20 @@ fn draw_pr_section(
         Span::styled("  State: ", Style::default().fg(Color::DarkGray)),
         Span::styled(pr.state.clone(), Style::default().fg(state_color)),
     ]));
+
+    // Review status
+    if let Some(status) = &pr.review_status {
+        let (label, color) = match status {
+            ReviewStatus::NeedsReview => ("Needs review", Color::Red),
+            ReviewStatus::Approved => ("Approved", Color::Green),
+            ReviewStatus::ChangesRequested => ("Changes requested", Color::Yellow),
+            ReviewStatus::Commented => ("Commented", Color::Cyan),
+        };
+        lines.push(Line::from(vec![
+            Span::styled("  Review: ", Style::default().fg(Color::DarkGray)),
+            Span::styled(label, Style::default().fg(color)),
+        ]));
+    }
 
     // PR detail body (if loaded and matches)
     if let Some(detail) = pr_detail {

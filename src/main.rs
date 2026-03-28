@@ -18,7 +18,7 @@ use crate::data::merge_entries;
 use crate::event::{Event, EventHandler};
 use crate::git::command::{run_gh, run_git};
 use crate::git::parser::{parse_branches, parse_log, parse_worktrees};
-use crate::git::types::{GitStatus, PrDetail, PullRequest};
+use crate::git::types::{GitStatus, PrDetail, PullRequest, ReviewStatus};
 use crate::ui::notification::Notification;
 
 struct RepoInfo {
@@ -267,8 +267,9 @@ async fn run(
                 }
                 MainFilter::ReviewRequested => {
                     let show_merged = app.show_merged;
+                    let include_team = app.include_team_reviews;
                     tokio::spawn(async move {
-                        let (prs, errors) = data::fetch_review_prs(show_merged).await;
+                        let (prs, errors) = data::fetch_review_prs(show_merged, include_team).await;
                         let _ = tx.send(AsyncResult::ReviewPrList(prs, errors));
                     });
                 }
@@ -357,7 +358,10 @@ async fn run(
                         app.request_details_for_selection();
                     }
                 }
-                AsyncResult::ReviewPrList(prs, errors) => {
+                AsyncResult::ReviewPrList(mut prs, errors) => {
+                    for pr in &mut prs {
+                        pr.review_status = Some(compute_review_status(pr, &app.gh_user));
+                    }
                     app.review_prs = prs;
                     app.review_prs_loaded = true;
                     if app.verbose {
@@ -528,6 +532,23 @@ async fn detect_default_branch() -> String {
         return "master".to_string();
     }
     "HEAD".to_string()
+}
+
+fn compute_review_status(pr: &PullRequest, gh_user: &str) -> ReviewStatus {
+    if gh_user.is_empty() {
+        return ReviewStatus::NeedsReview;
+    }
+    for review in &pr.latest_reviews {
+        if review.author == gh_user {
+            return match review.state.as_str() {
+                "APPROVED" => ReviewStatus::Approved,
+                "CHANGES_REQUESTED" => ReviewStatus::ChangesRequested,
+                "COMMENTED" => ReviewStatus::Commented,
+                _ => ReviewStatus::Commented,
+            };
+        }
+    }
+    ReviewStatus::NeedsReview
 }
 
 /// Extract owner, repo, and hostname from a git remote URL.

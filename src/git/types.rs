@@ -1,5 +1,16 @@
 use serde::Deserialize;
 
+#[derive(Debug, Clone, PartialEq)]
+pub enum ReviewStatus {
+    NeedsReview,
+    Approved,
+    ChangesRequested,
+    Commented,
+}
+
+// label() methods are on the UI side (sidebar.rs, detail_pane.rs) to keep
+// display logic separate from data types.
+
 #[derive(Debug, Clone)]
 pub struct Commit {
     pub hash: String,
@@ -35,6 +46,10 @@ pub struct PullRequest {
     #[serde(rename = "reviewRequests", default)]
     #[allow(dead_code)]
     pub review_requests: Vec<ReviewRequest>,
+    #[serde(rename = "latestReviews", default)]
+    pub latest_reviews: Vec<LatestReview>,
+    #[serde(skip)]
+    pub review_status: Option<ReviewStatus>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -42,6 +57,13 @@ pub struct ReviewRequest {
     #[allow(dead_code)]
     #[serde(default)]
     pub login: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct LatestReview {
+    #[serde(deserialize_with = "deserialize_author")]
+    pub author: String,
+    pub state: String,
 }
 
 fn deserialize_author<'de, D>(deserializer: D) -> Result<String, D::Error>

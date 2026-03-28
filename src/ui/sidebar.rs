@@ -7,7 +7,7 @@ use ratatui::{
 };
 
 use crate::app::{App, MainFilter};
-use crate::git::types::BranchEntry;
+use crate::git::types::{BranchEntry, ReviewStatus};
 
 pub fn draw(frame: &mut Frame, area: Rect, app: &App) {
     let chunks = Layout::vertical([Constraint::Length(1), Constraint::Min(1)]).split(area);
@@ -49,6 +49,15 @@ fn draw_filter_bar(frame: &mut Frame, area: Rect, app: &App) {
                 " [+merged]",
                 Style::default().fg(Color::Yellow),
             ));
+        }
+        // Show team toggle indicator for Review view
+        if app.main_filter == MainFilter::ReviewRequested {
+            let team_label = if app.include_team_reviews {
+                " [+team]"
+            } else {
+                " [me]"
+            };
+            spans.push(Span::styled(team_label, Style::default().fg(Color::Cyan)));
         }
         Line::from(spans)
     };
@@ -134,6 +143,22 @@ fn format_entry_line(
         spans.push(Span::styled(
             format!(" #{}", pr.number),
             Style::default().fg(Color::Yellow),
+        ));
+    }
+
+    // Review status tag
+    if let Some(pr) = &entry.pull_request
+        && let Some(status) = &pr.review_status
+    {
+        let (label, color) = match status {
+            ReviewStatus::NeedsReview => ("needs review", Color::Red),
+            ReviewStatus::Approved => ("approved", Color::Green),
+            ReviewStatus::ChangesRequested => ("changes requested", Color::Yellow),
+            ReviewStatus::Commented => ("commented", Color::Cyan),
+        };
+        spans.push(Span::styled(
+            format!(" [{label}]"),
+            Style::default().fg(color),
         ));
     }
 

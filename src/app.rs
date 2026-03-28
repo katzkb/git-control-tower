@@ -88,6 +88,7 @@ pub struct App {
     pub my_prs_loaded: bool,
     pub review_prs_loaded: bool,
     pub show_merged: bool,
+    pub include_team_reviews: bool,
     pub pr_fetch_requested: Option<MainFilter>,
 
     // PR Detail (for detail pane, cached by PR number)
@@ -144,6 +145,7 @@ impl App {
             my_prs_loaded: false,
             review_prs_loaded: false,
             show_merged: false,
+            include_team_reviews: false,
             pr_fetch_requested: None,
             pr_detail_cache: HashMap::new(),
             pr_detail_scroll: 0,
@@ -410,6 +412,16 @@ impl App {
                     self.review_prs_loaded = false;
                     self.rebuild_entries();
                     self.pr_fetch_requested = Some(self.main_filter);
+                    self.sidebar_scroll = 0;
+                }
+            }
+            KeyCode::Char('t') => {
+                if self.main_filter == MainFilter::ReviewRequested {
+                    self.include_team_reviews = !self.include_team_reviews;
+                    self.review_prs.clear();
+                    self.review_prs_loaded = false;
+                    self.rebuild_entries();
+                    self.pr_fetch_requested = Some(MainFilter::ReviewRequested);
                     self.sidebar_scroll = 0;
                 }
             }
