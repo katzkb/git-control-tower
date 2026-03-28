@@ -18,7 +18,7 @@ use crate::data::merge_entries;
 use crate::event::{Event, EventHandler};
 use crate::git::command::{run_gh, run_git};
 use crate::git::parser::{parse_branches, parse_log, parse_worktrees};
-use crate::git::types::{GitStatus, PrDetail, PullRequest};
+use crate::git::types::{GitStatus, PrDetail, PullRequest, ReviewStatus};
 use crate::ui::notification::Notification;
 
 struct RepoInfo {
@@ -267,8 +267,9 @@ async fn run(
                 }
                 MainFilter::ReviewRequested => {
                     let show_merged = app.show_merged;
+                    let include_team = app.include_team_reviews;
                     tokio::spawn(async move {
-                        let (prs, errors) = data::fetch_review_prs(show_merged).await;
+                        let (prs, errors) = data::fetch_review_prs(show_merged, include_team).await;
                         let _ = tx.send(AsyncResult::ReviewPrList(prs, errors));
                     });
                 }
@@ -311,6 +312,13 @@ async fn run(
                 }
                 AsyncResult::UserLogin(user) => {
                     app.gh_user = user;
+                    // Recompute review status now that we know the user
+                    for pr in &mut app.review_prs {
+                        pr.review_status = Some(compute_review_status(pr, &app.gh_user));
+                    }
+                    if app.main_filter == MainFilter::ReviewRequested {
+                        app.rebuild_entries();
+                    }
                 }
                 AsyncResult::UserLoginError(error_msg) => {
                     if app.verbose && !app.verbose_errors.contains(&error_msg) {
@@ -357,7 +365,10 @@ async fn run(
                         app.request_details_for_selection();
                     }
                 }
-                AsyncResult::ReviewPrList(prs, errors) => {
+                AsyncResult::ReviewPrList(mut prs, errors) => {
+                    for pr in &mut prs {
+                        pr.review_status = Some(compute_review_status(pr, &app.gh_user));
+                    }
                     app.review_prs = prs;
                     app.review_prs_loaded = true;
                     if app.verbose {
@@ -528,6 +539,23 @@ async fn detect_default_branch() -> String {
         return "master".to_string();
     }
     "HEAD".to_string()
+}
+
+fn compute_review_status(pr: &PullRequest, gh_user: &str) -> ReviewStatus {
+    if gh_user.is_empty() {
+        return ReviewStatus::NeedsReview;
+    }
+    for review in &pr.latest_reviews {
+        if review.author == gh_user {
+            return match review.state.as_str() {
+                "APPROVED" => ReviewStatus::Approved,
+                "CHANGES_REQUESTED" => ReviewStatus::ChangesRequested,
+                "COMMENTED" => ReviewStatus::Commented,
+                _ => ReviewStatus::Commented,
+            };
+        }
+    }
+    ReviewStatus::NeedsReview
 }
 
 /// Extract owner, repo, and hostname from a git remote URL.
@@ -711,5 +739,87 @@ mod tests {
     #[test]
     fn test_extract_repo_info_unknown() {
         assert!(extract_repo_info("file:///path/to/repo").is_none());
+    }
+
+    #[test]
+    fn test_compute_review_status_no_user() {
+        let pr = PullRequest {
+            number: 1,
+            title: String::new(),
+            author: String::new(),
+            state: "OPEN".to_string(),
+            head_ref: String::new(),
+            updated_at: String::new(),
+            review_requests: vec![],
+            latest_reviews: vec![],
+            review_status: None,
+        };
+        assert_eq!(compute_review_status(&pr, ""), ReviewStatus::NeedsReview);
+    }
+
+    #[test]
+    fn test_compute_review_status_no_matching_review() {
+        use crate::git::types::LatestReview;
+        let pr = PullRequest {
+            number: 1,
+            title: String::new(),
+            author: String::new(),
+            state: "OPEN".to_string(),
+            head_ref: String::new(),
+            updated_at: String::new(),
+            review_requests: vec![],
+            latest_reviews: vec![LatestReview {
+                author: "other-user".to_string(),
+                state: "APPROVED".to_string(),
+            }],
+            review_status: None,
+        };
+        assert_eq!(
+            compute_review_status(&pr, "katzkb"),
+            ReviewStatus::NeedsReview
+        );
+    }
+
+    #[test]
+    fn test_compute_review_status_approved() {
+        use crate::git::types::LatestReview;
+        let pr = PullRequest {
+            number: 1,
+            title: String::new(),
+            author: String::new(),
+            state: "OPEN".to_string(),
+            head_ref: String::new(),
+            updated_at: String::new(),
+            review_requests: vec![],
+            latest_reviews: vec![LatestReview {
+                author: "katzkb".to_string(),
+                state: "APPROVED".to_string(),
+            }],
+            review_status: None,
+        };
+        assert_eq!(compute_review_status(&pr, "katzkb"), ReviewStatus::Approved);
+    }
+
+    #[test]
+    fn test_compute_review_status_changes_requested() {
+        use crate::git::types::LatestReview;
+        let pr = PullRequest {
+            number: 1,
+            title: String::new(),
+            author: String::new(),
+            state: "OPEN".to_string(),
+            head_ref: String::new(),
+            updated_at: String::new(),
+            review_requests: vec![],
+            latest_reviews: vec![LatestReview {
+                author: "katzkb".to_string(),
+                state: "CHANGES_REQUESTED".to_string(),
+            }],
+            review_status: None,
+        };
+        assert_eq!(
+            compute_review_status(&pr, "katzkb"),
+            ReviewStatus::ChangesRequested
+        );
     }
 }

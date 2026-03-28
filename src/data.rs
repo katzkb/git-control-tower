@@ -252,6 +252,8 @@ fn parse_graphql_pr(node: &serde_json::Value) -> Option<PullRequest> {
         head_ref,
         updated_at,
         review_requests,
+        latest_reviews: Vec::new(),
+        review_status: None,
     })
 }
 
@@ -260,17 +262,25 @@ pub async fn fetch_my_prs(show_merged: bool) -> (Vec<PullRequest>, Vec<String>) 
     fetch_pr_list(&["--author", "@me"], show_merged).await
 }
 
-/// Fetch PRs with review requested from the current user
-/// (`gh pr list --search "review-requested:@me"`).
-pub async fn fetch_review_prs(show_merged: bool) -> (Vec<PullRequest>, Vec<String>) {
-    fetch_pr_list(&["--search", "review-requested:@me"], show_merged).await
+/// Fetch PRs with review requested from the current user.
+/// When `include_team` is true, also includes team review requests.
+pub async fn fetch_review_prs(
+    show_merged: bool,
+    include_team: bool,
+) -> (Vec<PullRequest>, Vec<String>) {
+    let search = if include_team {
+        "team-review-requested:@me OR review-requested:@me OR reviewed-by:@me"
+    } else {
+        "review-requested:@me OR reviewed-by:@me"
+    };
+    fetch_pr_list(&["--search", search], show_merged).await
 }
 
 /// Common helper for fetching PR lists with a filter.
 /// `filter_args` is passed directly to `gh pr list` (e.g., `["--author", "@me"]`).
 /// Returns (prs, errors) where errors contains any fetch/parse failures.
 async fn fetch_pr_list(filter_args: &[&str], show_merged: bool) -> (Vec<PullRequest>, Vec<String>) {
-    let pr_fields = "number,title,author,state,headRefName,updatedAt,reviewRequests";
+    let pr_fields = "number,title,author,state,headRefName,updatedAt,reviewRequests,latestReviews";
     let filter_label = filter_args.join(" ");
     let mut prs = Vec::new();
     let mut errors = Vec::new();
@@ -372,6 +382,8 @@ mod tests {
             head_ref: "feature-a".to_string(),
             updated_at: "2024-01-15".to_string(),
             review_requests: vec![],
+            latest_reviews: vec![],
+            review_status: None,
         }];
 
         let entries = merge_entries(&branches, &worktrees, &prs);
@@ -393,6 +405,8 @@ mod tests {
             head_ref: "remote-branch".to_string(),
             updated_at: "2024-01-15".to_string(),
             review_requests: vec![],
+            latest_reviews: vec![],
+            review_status: None,
         }];
 
         let entries = merge_entries(&branches, &worktrees, &prs);
@@ -417,6 +431,8 @@ mod tests {
             head_ref: "feature-a".to_string(),
             updated_at: "2024-01-15".to_string(),
             review_requests: vec![],
+            latest_reviews: vec![],
+            review_status: None,
         }];
 
         let entries = merge_entries(&branches, &[], &prs);
@@ -443,6 +459,8 @@ mod tests {
                 head_ref: "feature-a".to_string(),
                 updated_at: "2024-01-01".to_string(),
                 review_requests: vec![],
+                latest_reviews: vec![],
+                review_status: None,
             },
             PullRequest {
                 number: 10,
@@ -452,6 +470,8 @@ mod tests {
                 head_ref: "feature-a".to_string(),
                 updated_at: "2024-01-15".to_string(),
                 review_requests: vec![],
+                latest_reviews: vec![],
+                review_status: None,
             },
         ];
 

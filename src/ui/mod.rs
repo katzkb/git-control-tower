@@ -35,8 +35,13 @@ pub fn draw(frame: &mut Frame, app: &App) {
             } else {
                 ""
             };
+            let team_hint = if app.main_filter == MainFilter::ReviewRequested {
+                "  t:Team"
+            } else {
+                ""
+            };
             format!(
-                " [{}]  1:Local  2:My PR  3:Review  Enter:Actions  /:Search{merged_hint}  l:Log  ?:Help  q:Quit",
+                " [{}]  1:Local  2:My PR  3:Review  Enter:Actions  /:Search{merged_hint}{team_hint}  l:Log  ?:Help  q:Quit",
                 app.main_filter.label()
             )
         }
