@@ -24,14 +24,15 @@ pub fn draw(frame: &mut Frame, area: Rect, app: &App) {
     let mut lines: Vec<Line> = Vec::new();
 
     if let Some(entry) = &entry {
-        // Git Status section
         draw_git_status_section(&mut lines, entry);
-
-        // Worktree section
         draw_worktree_section(&mut lines, entry);
-
-        // PR section
         draw_pr_section(&mut lines, entry, app.selected_pr_detail());
+    } else {
+        lines.push(Line::from(Span::styled(
+            " No branch selected",
+            Style::default().fg(Color::DarkGray),
+        )));
+        lines.push(Line::from(""));
     }
 
     // Errors section (verbose mode only) — always drawn, even with no entry
