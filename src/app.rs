@@ -506,14 +506,17 @@ impl App {
         };
         let mut items = Vec::new();
 
+        if entry.pull_request.is_some() {
+            items.push(ActionItem::OpenPrInBrowser);
+        }
+        if entry.worktree.is_some() {
+            items.push(ActionItem::CdIntoWorktree);
+        }
         if entry.worktree.is_none()
             && !entry.is_current()
             && (entry.local_branch.is_some() || entry.pull_request.is_some())
         {
             items.push(ActionItem::CreateWorktree);
-        }
-        if entry.worktree.is_some() {
-            items.push(ActionItem::CdIntoWorktree);
         }
         if entry.worktree.is_some() && !entry.is_current() {
             items.push(ActionItem::DeleteWorktree);
@@ -523,9 +526,6 @@ impl App {
             && !Self::is_protected_branch(&entry.name)
         {
             items.push(ActionItem::DeleteBranch);
-        }
-        if entry.pull_request.is_some() {
-            items.push(ActionItem::OpenPrInBrowser);
         }
 
         if !items.is_empty() {
