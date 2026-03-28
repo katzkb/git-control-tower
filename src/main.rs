@@ -312,6 +312,13 @@ async fn run(
                 }
                 AsyncResult::UserLogin(user) => {
                     app.gh_user = user;
+                    // Recompute review status now that we know the user
+                    for pr in &mut app.review_prs {
+                        pr.review_status = Some(compute_review_status(pr, &app.gh_user));
+                    }
+                    if app.main_filter == MainFilter::ReviewRequested {
+                        app.rebuild_entries();
+                    }
                 }
                 AsyncResult::UserLoginError(error_msg) => {
                     if app.verbose && !app.verbose_errors.contains(&error_msg) {
@@ -732,5 +739,87 @@ mod tests {
     #[test]
     fn test_extract_repo_info_unknown() {
         assert!(extract_repo_info("file:///path/to/repo").is_none());
+    }
+
+    #[test]
+    fn test_compute_review_status_no_user() {
+        let pr = PullRequest {
+            number: 1,
+            title: String::new(),
+            author: String::new(),
+            state: "OPEN".to_string(),
+            head_ref: String::new(),
+            updated_at: String::new(),
+            review_requests: vec![],
+            latest_reviews: vec![],
+            review_status: None,
+        };
+        assert_eq!(compute_review_status(&pr, ""), ReviewStatus::NeedsReview);
+    }
+
+    #[test]
+    fn test_compute_review_status_no_matching_review() {
+        use crate::git::types::LatestReview;
+        let pr = PullRequest {
+            number: 1,
+            title: String::new(),
+            author: String::new(),
+            state: "OPEN".to_string(),
+            head_ref: String::new(),
+            updated_at: String::new(),
+            review_requests: vec![],
+            latest_reviews: vec![LatestReview {
+                author: "other-user".to_string(),
+                state: "APPROVED".to_string(),
+            }],
+            review_status: None,
+        };
+        assert_eq!(
+            compute_review_status(&pr, "katzkb"),
+            ReviewStatus::NeedsReview
+        );
+    }
+
+    #[test]
+    fn test_compute_review_status_approved() {
+        use crate::git::types::LatestReview;
+        let pr = PullRequest {
+            number: 1,
+            title: String::new(),
+            author: String::new(),
+            state: "OPEN".to_string(),
+            head_ref: String::new(),
+            updated_at: String::new(),
+            review_requests: vec![],
+            latest_reviews: vec![LatestReview {
+                author: "katzkb".to_string(),
+                state: "APPROVED".to_string(),
+            }],
+            review_status: None,
+        };
+        assert_eq!(compute_review_status(&pr, "katzkb"), ReviewStatus::Approved);
+    }
+
+    #[test]
+    fn test_compute_review_status_changes_requested() {
+        use crate::git::types::LatestReview;
+        let pr = PullRequest {
+            number: 1,
+            title: String::new(),
+            author: String::new(),
+            state: "OPEN".to_string(),
+            head_ref: String::new(),
+            updated_at: String::new(),
+            review_requests: vec![],
+            latest_reviews: vec![LatestReview {
+                author: "katzkb".to_string(),
+                state: "CHANGES_REQUESTED".to_string(),
+            }],
+            review_status: None,
+        };
+        assert_eq!(
+            compute_review_status(&pr, "katzkb"),
+            ReviewStatus::ChangesRequested
+        );
     }
 }
