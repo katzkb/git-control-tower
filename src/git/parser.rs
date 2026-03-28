@@ -77,6 +77,7 @@ pub fn parse_branches(output: &str, merged_output: &str, base_hash: &str) -> Vec
             let commit_hash = rest.split_whitespace().nth(1).unwrap_or_default();
             let is_merged = merged_names.contains(&name.as_str())
                 && !commit_hash.is_empty()
+                && !base_hash.is_empty()
                 && !base_hash.starts_with(commit_hash);
 
             Some(Branch {

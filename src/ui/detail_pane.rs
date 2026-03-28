@@ -11,38 +11,31 @@ use crate::git::types::{BranchEntry, PrDetail};
 use crate::ui::markdown;
 
 pub fn draw(frame: &mut Frame, area: Rect, app: &App) {
-    let entry = match app.selected_entry() {
-        Some(e) => e,
-        None => {
-            let block = Block::default()
-                .borders(Borders::ALL)
-                .title(" Detail ")
-                .border_style(Style::default().fg(Color::DarkGray));
-            let p = Paragraph::new("No branch selected")
-                .style(Style::default().fg(Color::DarkGray))
-                .block(block);
-            frame.render_widget(p, area);
-            return;
-        }
-    };
+    let entry = app.selected_entry();
 
     let block = Block::default()
         .borders(Borders::ALL)
-        .title(format!(" {} ", entry.name))
+        .title(match &entry {
+            Some(e) => format!(" {} ", e.name),
+            None => " Detail ".to_string(),
+        })
         .border_style(Style::default().fg(Color::DarkGray));
 
     let mut lines: Vec<Line> = Vec::new();
 
-    // Git Status section
-    draw_git_status_section(&mut lines, entry);
+    if let Some(entry) = &entry {
+        draw_git_status_section(&mut lines, entry);
+        draw_worktree_section(&mut lines, entry);
+        draw_pr_section(&mut lines, entry, app.selected_pr_detail());
+    } else {
+        lines.push(Line::from(Span::styled(
+            " No branch selected",
+            Style::default().fg(Color::DarkGray),
+        )));
+        lines.push(Line::from(""));
+    }
 
-    // Worktree section
-    draw_worktree_section(&mut lines, entry);
-
-    // PR section
-    draw_pr_section(&mut lines, entry, app.selected_pr_detail());
-
-    // Errors section (verbose mode only)
+    // Errors section (verbose mode only) — always drawn, even with no entry
     if app.verbose && !app.verbose_errors.is_empty() {
         draw_errors_section(&mut lines, &app.verbose_errors);
     }

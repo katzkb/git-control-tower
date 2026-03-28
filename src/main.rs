@@ -29,10 +29,11 @@ struct RepoInfo {
 
 enum AsyncResult {
     PrDetail(PrDetail),
-    PrDetailError(u64),
+    PrDetailError(u64, String),
     GitStatus { wt_path: String, status: GitStatus },
     GitStatusError(String),
     UserLogin(String),
+    UserLoginError(String),
     LocalPrList(Vec<PullRequest>, Vec<String>),
     MyPrList(Vec<PullRequest>, Vec<String>),
     ReviewPrList(Vec<PullRequest>, Vec<String>),
@@ -137,8 +138,15 @@ async fn run(
             args.push("--hostname");
             args.push(h);
         }
-        if let Ok(user) = run_gh(&args).await {
-            let _ = tx_user.send(AsyncResult::UserLogin(user.trim().to_string()));
+        match run_gh(&args).await {
+            Ok(user) => {
+                let _ = tx_user.send(AsyncResult::UserLogin(user.trim().to_string()));
+            }
+            Err(e) => {
+                let _ = tx_user.send(AsyncResult::UserLoginError(format!(
+                    "Failed to detect GitHub user: {e}"
+                )));
+            }
         }
     });
 
@@ -182,19 +190,32 @@ async fn run(
             let tx = tx.clone();
             tokio::spawn(async move {
                 let num_str = number.to_string();
-                if let Ok(output) = run_gh(&[
+                let result = run_gh(&[
                     "pr",
                     "view",
                     &num_str,
                     "--json",
                     "number,title,author,state,body,additions,deletions,headRefName",
                 ])
-                .await
-                    && let Ok(detail) = serde_json::from_str::<PrDetail>(&output)
-                {
-                    let _ = tx.send(AsyncResult::PrDetail(detail));
-                } else {
-                    let _ = tx.send(AsyncResult::PrDetailError(number));
+                .await;
+                match result {
+                    Ok(output) => match serde_json::from_str::<PrDetail>(&output) {
+                        Ok(detail) => {
+                            let _ = tx.send(AsyncResult::PrDetail(detail));
+                        }
+                        Err(e) => {
+                            let _ = tx.send(AsyncResult::PrDetailError(
+                                number,
+                                format!("PR #{number} parse error: {e}"),
+                            ));
+                        }
+                    },
+                    Err(e) => {
+                        let _ = tx.send(AsyncResult::PrDetailError(
+                            number,
+                            format!("PR #{number} fetch failed: {e}"),
+                        ));
+                    }
                 }
             });
         }
@@ -261,10 +282,13 @@ async fn run(
                     pr_inflight.remove(&detail.number);
                     app.pr_detail_cache.insert(detail.number, detail);
                 }
-                AsyncResult::PrDetailError(number) => {
+                AsyncResult::PrDetailError(number, error_msg) => {
                     pr_inflight.remove(&number);
                     app.notification =
                         Some(Notification::error(format!("Failed to load PR #{number}")));
+                    if app.verbose && !app.verbose_errors.contains(&error_msg) {
+                        app.verbose_errors.push(error_msg);
+                    }
                 }
                 AsyncResult::GitStatus { wt_path, status } => {
                     status_inflight.remove(&wt_path);
@@ -278,9 +302,20 @@ async fn run(
                 }
                 AsyncResult::GitStatusError(wt_path) => {
                     status_inflight.remove(&wt_path);
+                    if app.verbose {
+                        let msg = format!("git status failed for {wt_path}");
+                        if !app.verbose_errors.contains(&msg) {
+                            app.verbose_errors.push(msg);
+                        }
+                    }
                 }
                 AsyncResult::UserLogin(user) => {
                     app.gh_user = user;
+                }
+                AsyncResult::UserLoginError(error_msg) => {
+                    if app.verbose && !app.verbose_errors.contains(&error_msg) {
+                        app.verbose_errors.push(error_msg);
+                    }
                 }
                 AsyncResult::LocalPrList(prs, errors) => {
                     app.local_prs = prs;
@@ -419,8 +454,16 @@ async fn run(
 
 async fn refresh_entries(app: &mut App) {
     load_branches(app).await;
-    if let Ok(output) = run_git(&["worktree", "list", "--porcelain"]).await {
-        app.worktrees = parse_worktrees(&output);
+    match run_git(&["worktree", "list", "--porcelain"]).await {
+        Ok(output) => app.worktrees = parse_worktrees(&output),
+        Err(e) => {
+            if app.verbose {
+                let msg = format!("git worktree list failed: {e}");
+                if !app.verbose_errors.contains(&msg) {
+                    app.verbose_errors.push(msg);
+                }
+            }
+        }
     }
     app.entries = merge_entries(&app.branches, &app.worktrees, app.current_prs());
     let filtered_len = app.filtered_entries().len();
@@ -430,14 +473,43 @@ async fn refresh_entries(app: &mut App) {
 }
 
 async fn load_branches(app: &mut App) {
-    let branch_output = run_git(&["branch", "-vv"]).await.unwrap_or_default();
+    let branch_output = match run_git(&["branch", "-vv"]).await {
+        Ok(output) => output,
+        Err(e) => {
+            if app.verbose {
+                let msg = format!("git branch -vv failed: {e}");
+                if !app.verbose_errors.contains(&msg) {
+                    app.verbose_errors.push(msg);
+                }
+            }
+            return;
+        }
+    };
     let default_branch = detect_default_branch().await;
-    let merged_output = run_git(&["branch", "--merged", &default_branch])
-        .await
-        .unwrap_or_default();
-    let base_hash = run_git(&["rev-parse", &default_branch])
-        .await
-        .unwrap_or_default();
+    let merged_output = match run_git(&["branch", "--merged", &default_branch]).await {
+        Ok(output) => output,
+        Err(e) => {
+            if app.verbose {
+                let msg = format!("git branch --merged failed: {e}");
+                if !app.verbose_errors.contains(&msg) {
+                    app.verbose_errors.push(msg);
+                }
+            }
+            String::new()
+        }
+    };
+    let base_hash = match run_git(&["rev-parse", &default_branch]).await {
+        Ok(output) => output,
+        Err(e) => {
+            if app.verbose {
+                let msg = format!("git rev-parse {default_branch} failed: {e}");
+                if !app.verbose_errors.contains(&msg) {
+                    app.verbose_errors.push(msg);
+                }
+            }
+            String::new()
+        }
+    };
     app.branches = parse_branches(&branch_output, &merged_output, base_hash.trim());
 }
 
