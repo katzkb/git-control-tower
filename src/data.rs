@@ -532,7 +532,8 @@ mod tests {
 
     #[test]
     fn test_parse_graphql_pr_team_reviewer() {
-        // Team reviewers don't have a "login" field — should not fail
+        // GraphQL query uses `... on User { login }`, so Team reviewers
+        // appear as empty objects or null (no login field in response)
         let node = serde_json::json!({
             "number": 50,
             "title": "With team review",
@@ -543,14 +544,16 @@ mod tests {
             "reviewRequests": {
                 "nodes": [
                     { "requestedReviewer": { "login": "bob" } },
-                    { "requestedReviewer": { "__typename": "Team", "name": "backend", "slug": "backend" } }
+                    { "requestedReviewer": {} },
+                    { "requestedReviewer": null }
                 ]
             }
         });
         let pr = parse_graphql_pr(&node).unwrap();
-        assert_eq!(pr.review_requests.len(), 2);
+        assert_eq!(pr.review_requests.len(), 3);
         assert_eq!(pr.review_requests[0].login.as_deref(), Some("bob"));
         assert_eq!(pr.review_requests[1].login, None);
+        assert_eq!(pr.review_requests[2].login, None);
     }
 
     #[test]
