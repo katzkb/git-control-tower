@@ -33,9 +33,9 @@ enum AsyncResult {
     GitStatus { wt_path: String, status: GitStatus },
     GitStatusError(String),
     UserLogin(String),
-    LocalPrList(Vec<PullRequest>),
-    MyPrList(Vec<PullRequest>),
-    ReviewPrList(Vec<PullRequest>),
+    LocalPrList(Vec<PullRequest>, Vec<String>),
+    MyPrList(Vec<PullRequest>, Vec<String>),
+    ReviewPrList(Vec<PullRequest>, Vec<String>),
 }
 
 #[tokio::main]
@@ -46,15 +46,16 @@ async fn main() -> anyhow::Result<()> {
         return Ok(());
     }
 
-    // Initialize debug logging (GCT_DEBUG=1 enables it)
-    crate::git::command::init_debug_log();
+    // Initialize debug logging (GCT_DEBUG=1 or --verbose enables it)
+    let verbose = std::env::args().any(|a| a == "--verbose");
+    crate::git::command::init_debug_log(verbose);
 
     // Startup checks and config loading before TUI init (eprintln is safe here)
     check_prerequisites().await;
     let config = config::load_config();
 
     let mut terminal = ratatui::init();
-    let (result, cd_path) = run(&mut terminal, &config).await;
+    let (result, cd_path) = run(&mut terminal, &config, verbose).await;
     ratatui::restore();
     if let Some(path) = cd_path {
         println!("{path}");
@@ -85,8 +86,10 @@ async fn check_prerequisites() {
 async fn run(
     terminal: &mut ratatui::DefaultTerminal,
     config: &config::Config,
+    verbose: bool,
 ) -> (anyhow::Result<()>, Option<String>) {
     let mut app = App::new();
+    app.verbose = verbose;
     let mut events = EventHandler::new(Duration::from_millis(250));
     let (tx, mut rx) = mpsc::unbounded_channel::<AsyncResult>();
     let mut pr_inflight: HashSet<u64> = HashSet::new();
@@ -147,9 +150,9 @@ async fn run(
         let repo = info.repo.clone();
         let hostname = info.hostname.clone();
         tokio::spawn(async move {
-            let prs =
+            let (prs, errors) =
                 data::fetch_local_prs(&branch_names, &owner, &repo, hostname.as_deref()).await;
-            let _ = tx_local.send(AsyncResult::LocalPrList(prs));
+            let _ = tx_local.send(AsyncResult::LocalPrList(prs, errors));
         });
     } else {
         // No repo info available (no origin remote or unsupported URL format)
@@ -223,29 +226,29 @@ async fn run(
                         let repo = info.repo.clone();
                         let hostname = info.hostname.clone();
                         tokio::spawn(async move {
-                            let prs = data::fetch_local_prs(
+                            let (prs, errors) = data::fetch_local_prs(
                                 &branch_names,
                                 &owner,
                                 &repo,
                                 hostname.as_deref(),
                             )
                             .await;
-                            let _ = tx.send(AsyncResult::LocalPrList(prs));
+                            let _ = tx.send(AsyncResult::LocalPrList(prs, errors));
                         });
                     }
                 }
                 MainFilter::MyPr => {
                     let show_merged = app.show_merged;
                     tokio::spawn(async move {
-                        let prs = data::fetch_my_prs(show_merged).await;
-                        let _ = tx.send(AsyncResult::MyPrList(prs));
+                        let (prs, errors) = data::fetch_my_prs(show_merged).await;
+                        let _ = tx.send(AsyncResult::MyPrList(prs, errors));
                     });
                 }
                 MainFilter::ReviewRequested => {
                     let show_merged = app.show_merged;
                     tokio::spawn(async move {
-                        let prs = data::fetch_review_prs(show_merged).await;
-                        let _ = tx.send(AsyncResult::ReviewPrList(prs));
+                        let (prs, errors) = data::fetch_review_prs(show_merged).await;
+                        let _ = tx.send(AsyncResult::ReviewPrList(prs, errors));
                     });
                 }
             }
@@ -279,9 +282,16 @@ async fn run(
                 AsyncResult::UserLogin(user) => {
                     app.gh_user = user;
                 }
-                AsyncResult::LocalPrList(prs) => {
+                AsyncResult::LocalPrList(prs, errors) => {
                     app.local_prs = prs;
                     app.local_prs_loaded = true;
+                    if app.verbose {
+                        for e in errors {
+                            if !app.verbose_errors.contains(&e) {
+                                app.verbose_errors.push(e);
+                            }
+                        }
+                    }
                     if app.main_filter == MainFilter::Local {
                         app.entries =
                             merge_entries(&app.branches, &app.worktrees, app.current_prs());
@@ -292,9 +302,16 @@ async fn run(
                         app.request_details_for_selection();
                     }
                 }
-                AsyncResult::MyPrList(prs) => {
+                AsyncResult::MyPrList(prs, errors) => {
                     app.my_prs = prs;
                     app.my_prs_loaded = true;
+                    if app.verbose {
+                        for e in errors {
+                            if !app.verbose_errors.contains(&e) {
+                                app.verbose_errors.push(e);
+                            }
+                        }
+                    }
                     if app.main_filter == MainFilter::MyPr {
                         app.entries =
                             merge_entries(&app.branches, &app.worktrees, app.current_prs());
@@ -305,9 +322,16 @@ async fn run(
                         app.request_details_for_selection();
                     }
                 }
-                AsyncResult::ReviewPrList(prs) => {
+                AsyncResult::ReviewPrList(prs, errors) => {
                     app.review_prs = prs;
                     app.review_prs_loaded = true;
+                    if app.verbose {
+                        for e in errors {
+                            if !app.verbose_errors.contains(&e) {
+                                app.verbose_errors.push(e);
+                            }
+                        }
+                    }
                     if app.main_filter == MainFilter::ReviewRequested {
                         app.entries =
                             merge_entries(&app.branches, &app.worktrees, app.current_prs());
