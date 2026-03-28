@@ -8,12 +8,12 @@ use tokio::process::Command;
 
 static DEBUG_LOG: OnceLock<Option<Mutex<File>>> = OnceLock::new();
 
-pub fn init_debug_log() {
+pub fn init_debug_log(verbose: bool) {
     DEBUG_LOG.get_or_init(|| {
-        let enabled = std::env::var("GCT_DEBUG")
+        let env_enabled = std::env::var("GCT_DEBUG")
             .map(|v| matches!(v.as_str(), "1" | "true"))
             .unwrap_or(false);
-        if !enabled {
+        if !env_enabled && !verbose {
             return None;
         }
         let path = debug_log_path();
@@ -50,7 +50,7 @@ fn debug_log_path() -> PathBuf {
         .join(".config/gct/debug.log")
 }
 
-fn debug_log(msg: &str) {
+pub fn debug_log(msg: &str) {
     if let Some(Some(file)) = DEBUG_LOG.get()
         && let Ok(mut f) = file.lock()
     {

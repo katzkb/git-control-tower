@@ -98,6 +98,10 @@ pub struct App {
     // Git status loading
     pub git_status_requested: Option<String>, // worktree path
 
+    // Verbose mode
+    pub verbose: bool,
+    pub verbose_errors: Vec<String>,
+
     // Overlays
     pub confirm_dialog: Option<ConfirmDialog>,
     pub action_menu: Option<ActionMenu>,
@@ -145,6 +149,8 @@ impl App {
             pr_detail_scroll: 0,
             pr_detail_requested: None,
             git_status_requested: None,
+            verbose: false,
+            verbose_errors: Vec::new(),
             confirm_dialog: None,
             action_menu: None,
             notification: None,

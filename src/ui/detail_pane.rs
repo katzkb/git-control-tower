@@ -42,6 +42,11 @@ pub fn draw(frame: &mut Frame, area: Rect, app: &App) {
     // PR section
     draw_pr_section(&mut lines, entry, app.selected_pr_detail());
 
+    // Errors section (verbose mode only)
+    if app.verbose && !app.verbose_errors.is_empty() {
+        draw_errors_section(&mut lines, &app.verbose_errors);
+    }
+
     if lines.is_empty() {
         lines.push(Line::from(Span::styled(
             " No additional information",
@@ -246,5 +251,19 @@ fn draw_pr_section(
         )));
     }
 
+    lines.push(Line::from(""));
+}
+
+fn draw_errors_section(lines: &mut Vec<Line<'static>>, errors: &[String]) {
+    lines.push(Line::from(Span::styled(
+        "── Errors ──────────────────────",
+        Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+    )));
+    for err in errors {
+        lines.push(Line::from(Span::styled(
+            format!("  {err}"),
+            Style::default().fg(Color::Red),
+        )));
+    }
     lines.push(Line::from(""));
 }

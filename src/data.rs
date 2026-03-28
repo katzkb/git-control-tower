@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use crate::git::command::{run_gh, run_git};
+use crate::git::command::{debug_log, run_gh, run_git};
 use crate::git::types::{Branch, BranchEntry, GitStatus, PullRequest, ReviewRequest, Worktree};
 
 /// Merge local branches, worktrees, and PRs into unified BranchEntry list.
@@ -144,17 +144,19 @@ fn graphql_alias(index: usize) -> String {
 
 /// Fetch PRs for local branches via GraphQL aliases (200 branches per request).
 /// Each branch gets an exact-match query on `headRefName`.
+/// Returns (prs, errors) where errors contains any fetch/parse failures.
 pub async fn fetch_local_prs(
     branch_names: &[String],
     owner: &str,
     repo: &str,
     hostname: Option<&str>,
-) -> Vec<PullRequest> {
+) -> (Vec<PullRequest>, Vec<String>) {
     if branch_names.is_empty() {
-        return Vec::new();
+        return (Vec::new(), Vec::new());
     }
 
     let mut all_prs = Vec::new();
+    let mut errors = Vec::new();
 
     // Process in chunks of 200 (GraphQL query size limit)
     for chunk in branch_names.chunks(200) {
@@ -187,24 +189,34 @@ pub async fn fetch_local_prs(
             args.push(&hostname_owned);
         }
 
-        if let Ok(output) = run_gh(&args).await
-            && let Ok(json) = serde_json::from_str::<serde_json::Value>(&output)
-        {
-            let repo_data = &json["data"]["repository"];
-            for (i, _) in chunk.iter().enumerate() {
-                let alias = graphql_alias(i);
-                if let Some(nodes) = repo_data[&alias]["nodes"].as_array() {
-                    for node in nodes {
-                        if let Some(pr) = parse_graphql_pr(node) {
-                            all_prs.push(pr);
+        match run_gh(&args).await {
+            Ok(output) => match serde_json::from_str::<serde_json::Value>(&output) {
+                Ok(json) => {
+                    let repo_data = &json["data"]["repository"];
+                    for (i, _) in chunk.iter().enumerate() {
+                        let alias = graphql_alias(i);
+                        if let Some(nodes) = repo_data[&alias]["nodes"].as_array() {
+                            for node in nodes {
+                                if let Some(pr) = parse_graphql_pr(node) {
+                                    all_prs.push(pr);
+                                }
+                            }
                         }
                     }
                 }
+                Err(e) => {
+                    debug_log(&format!("  → GraphQL JSON parse error: {e}"));
+                    errors.push(format!("GraphQL parse error: {e}"));
+                }
+            },
+            Err(e) => {
+                debug_log(&format!("  → GraphQL fetch error: {e}"));
+                errors.push(format!("GraphQL fetch failed: {e}"));
             }
         }
     }
 
-    all_prs
+    (all_prs, errors)
 }
 
 /// Parse a single PR node from GraphQL response into PullRequest.
@@ -246,30 +258,40 @@ fn parse_graphql_pr(node: &serde_json::Value) -> Option<PullRequest> {
 }
 
 /// Fetch PRs authored by the current user (`gh pr list --author @me`).
-pub async fn fetch_my_prs(show_merged: bool) -> Vec<PullRequest> {
+pub async fn fetch_my_prs(show_merged: bool) -> (Vec<PullRequest>, Vec<String>) {
     fetch_pr_list(&["--author", "@me"], show_merged).await
 }
 
 /// Fetch PRs with review requested from the current user
 /// (`gh pr list --search "review-requested:@me"`).
-pub async fn fetch_review_prs(show_merged: bool) -> Vec<PullRequest> {
+pub async fn fetch_review_prs(show_merged: bool) -> (Vec<PullRequest>, Vec<String>) {
     fetch_pr_list(&["--search", "review-requested:@me"], show_merged).await
 }
 
 /// Common helper for fetching PR lists with a filter.
 /// `filter_args` is passed directly to `gh pr list` (e.g., `["--author", "@me"]`).
-async fn fetch_pr_list(filter_args: &[&str], show_merged: bool) -> Vec<PullRequest> {
+/// Returns (prs, errors) where errors contains any fetch/parse failures.
+async fn fetch_pr_list(filter_args: &[&str], show_merged: bool) -> (Vec<PullRequest>, Vec<String>) {
     let pr_fields = "number,title,author,state,headRefName,updatedAt,reviewRequests";
     let mut prs = Vec::new();
+    let mut errors = Vec::new();
 
     // Always fetch open PRs
     let mut args = vec!["pr", "list"];
     args.extend_from_slice(filter_args);
     args.extend_from_slice(&["--json", pr_fields, "--limit", "100"]);
-    if let Ok(output) = run_gh(&args).await
-        && let Ok(open) = serde_json::from_str::<Vec<PullRequest>>(&output)
-    {
-        prs.extend(open);
+    match run_gh(&args).await {
+        Ok(output) => match serde_json::from_str::<Vec<PullRequest>>(&output) {
+            Ok(open) => prs.extend(open),
+            Err(e) => {
+                debug_log(&format!("  → pr list JSON parse error: {e}"));
+                errors.push(format!("pr list parse error: {e}"));
+            }
+        },
+        Err(e) => {
+            debug_log(&format!("  → pr list fetch error: {e}"));
+            errors.push(format!("pr list failed: {e}"));
+        }
     }
 
     // Optionally fetch merged PRs
@@ -277,14 +299,22 @@ async fn fetch_pr_list(filter_args: &[&str], show_merged: bool) -> Vec<PullReque
         let mut args = vec!["pr", "list"];
         args.extend_from_slice(filter_args);
         args.extend_from_slice(&["--state", "merged", "--json", pr_fields, "--limit", "50"]);
-        if let Ok(output) = run_gh(&args).await
-            && let Ok(merged) = serde_json::from_str::<Vec<PullRequest>>(&output)
-        {
-            prs.extend(merged);
+        match run_gh(&args).await {
+            Ok(output) => match serde_json::from_str::<Vec<PullRequest>>(&output) {
+                Ok(merged) => prs.extend(merged),
+                Err(e) => {
+                    debug_log(&format!("  → pr list (merged) JSON parse error: {e}"));
+                    errors.push(format!("pr list (merged) parse error: {e}"));
+                }
+            },
+            Err(e) => {
+                debug_log(&format!("  → pr list (merged) fetch error: {e}"));
+                errors.push(format!("pr list (merged) failed: {e}"));
+            }
         }
     }
 
-    prs
+    (prs, errors)
 }
 
 #[cfg(test)]
