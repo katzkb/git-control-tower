@@ -92,9 +92,9 @@ fn draw_entry_list(frame: &mut Frame, area: Rect, app: &mut App) {
         (items, count)
     };
 
-    // Adjust viewport offset so list only scrolls when cursor hits edges
+    // Adjust viewport offset and clamp scroll/offset to valid ranges
     let visible_height = area.height.saturating_sub(2) as usize;
-    app.adjust_sidebar_offset(visible_height);
+    app.adjust_sidebar_offset(visible_height, item_count);
 
     let block = Block::default()
         .borders(Borders::ALL)
@@ -107,7 +107,7 @@ fn draw_entry_list(frame: &mut Frame, area: Rect, app: &mut App) {
 
     let mut state = ListState::default();
     if item_count > 0 {
-        state.select(Some(app.sidebar_scroll.min(item_count - 1)));
+        state.select(Some(app.sidebar_scroll));
     }
     *state.offset_mut() = app.sidebar_offset;
     frame.render_stateful_widget(list, area, &mut state);

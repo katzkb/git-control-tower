@@ -177,16 +177,26 @@ impl App {
         }
     }
 
-    pub fn adjust_sidebar_offset(&mut self, visible_height: usize) {
+    pub fn adjust_sidebar_offset(&mut self, visible_height: usize, item_count: usize) {
         if visible_height == 0 {
             return;
         }
+        // Clamp scroll to valid range
+        if item_count > 0 {
+            self.sidebar_scroll = self.sidebar_scroll.min(item_count - 1);
+        } else {
+            self.sidebar_scroll = 0;
+        }
+        // Adjust offset when cursor exceeds viewport bounds
         if self.sidebar_scroll >= self.sidebar_offset + visible_height {
             self.sidebar_offset = self.sidebar_scroll - visible_height + 1;
         }
         if self.sidebar_scroll < self.sidebar_offset {
             self.sidebar_offset = self.sidebar_scroll;
         }
+        // Clamp offset so list doesn't show blank space
+        let max_offset = item_count.saturating_sub(visible_height);
+        self.sidebar_offset = self.sidebar_offset.min(max_offset);
     }
 
     pub fn is_current_view_loading(&self) -> bool {
