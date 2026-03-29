@@ -442,11 +442,22 @@ async fn run(
         // Delete selected branches if requested
         if app.branch_delete_requested {
             app.branch_delete_requested = false;
-            let selected: Vec<String> = app.branch_selected.drain().collect();
+            let selected: Vec<(String, bool)> = app
+                .branch_selected
+                .drain()
+                .map(|name| {
+                    let force = app
+                        .entries
+                        .iter()
+                        .any(|e| e.name == name && (e.is_merged() || e.pr_is_merged()));
+                    (name, force)
+                })
+                .collect();
             let mut deleted = Vec::new();
             let mut failed = Vec::new();
-            for name in &selected {
-                match run_git(&["branch", "-d", name]).await {
+            for (name, force) in &selected {
+                let flag = if *force { "-D" } else { "-d" };
+                match run_git(&["branch", flag, name]).await {
                     Ok(_) => deleted.push(name.as_str()),
                     Err(e) => failed.push(format!("{name}: {e}")),
                 }
