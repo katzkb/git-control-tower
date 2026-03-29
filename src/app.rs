@@ -125,7 +125,7 @@ pub struct App {
     pub copy_branch_requested: Option<String>,
 
     // Spinner animation
-    pub spinner_tick: usize,
+    spinner_tick: usize,
 }
 
 impl App {
