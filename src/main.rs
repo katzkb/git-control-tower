@@ -47,6 +47,14 @@ async fn main() -> anyhow::Result<()> {
         return Ok(());
     }
 
+    // Handle shell-init subcommand
+    let args: Vec<String> = std::env::args().collect();
+    if args.get(1).map(|s| s.as_str()) == Some("shell-init") {
+        let shell = args.get(2).map(|s| s.as_str()).unwrap_or("zsh");
+        print_shell_init(shell);
+        return Ok(());
+    }
+
     // Initialize debug logging (GCT_DEBUG=1 or --verbose enables it)
     let verbose = std::env::args().any(|a| a == "--verbose");
     crate::git::command::init_debug_log(verbose);
@@ -586,12 +594,60 @@ async fn detect_default_branch() -> String {
     "HEAD".to_string()
 }
 
+fn print_shell_init(shell: &str) {
+    match shell {
+        "zsh" | "bash" => {
+            print!(
+                r#"gct() {{
+    local output
+    output=$(command gct "$@")
+    local status=$?
+    if [[ $status -eq 0 && -n "$output" && -d "$output" ]]; then
+        cd "$output" || return $?
+    elif [[ -n "$output" ]]; then
+        printf '%s\n' "$output"
+    fi
+    return $status
+}}
+"#
+            );
+        }
+        "fish" => {
+            print!(
+                r#"function gct
+    set -l output (command gct $argv | string collect)
+    set -l status_code $pipestatus[1]
+    if test $status_code -eq 0 -a -n "$output" -a -d "$output"
+        cd "$output"; or return $status
+    else if test -n "$output"
+        printf '%s\n' "$output"
+    end
+    return $status_code
+end
+"#
+            );
+        }
+        _ => {
+            eprintln!("Unsupported shell: {shell}. Supported: zsh, bash, fish");
+            std::process::exit(1);
+        }
+    }
+}
+
 fn copy_to_clipboard(text: &str) {
     use base64::Engine;
     use std::io::Write;
     let encoded = base64::engine::general_purpose::STANDARD.encode(text);
-    let _ = std::io::stdout().write_all(format!("\x1b]52;c;{encoded}\x07").as_bytes());
-    let _ = std::io::stdout().flush();
+    let osc52 = format!("\x1b]52;c;{encoded}\x07");
+    // Write to /dev/tty to bypass shell function stdout capture
+    if let Ok(mut tty) = std::fs::OpenOptions::new().write(true).open("/dev/tty") {
+        let _ = tty.write_all(osc52.as_bytes());
+        let _ = tty.flush();
+    } else {
+        // Fallback to stdout
+        let _ = std::io::stdout().write_all(osc52.as_bytes());
+        let _ = std::io::stdout().flush();
+    }
 }
 
 fn compute_review_status(pr: &PullRequest, gh_user: &str) -> ReviewStatus {

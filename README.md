@@ -25,6 +25,23 @@ cd git-control-tower
 cargo install --path .
 ```
 
+## Setup
+
+To enable the "cd into worktree" feature, add the following to your shell configuration:
+
+```bash
+# zsh (~/.zshrc)
+eval "$(gct shell-init zsh)"
+
+# bash (~/.bashrc)
+eval "$(gct shell-init bash)"
+
+# fish (~/.config/fish/config.fish)
+gct shell-init fish | source
+```
+
+This wraps `gct` with a shell function that captures the worktree path and runs `cd` in your shell.
+
 ## Usage
 
 ```bash
