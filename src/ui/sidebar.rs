@@ -83,8 +83,9 @@ fn draw_entry_list(frame: &mut Frame, area: Rect, app: &mut App) {
         let filtered = app.filtered_entries();
         let count = filtered.len();
         let items = if filtered.is_empty() && is_loading {
+            let spinner = app.spinner_frame();
             vec![ListItem::new(Line::from(Span::styled(
-                "  Loading...",
+                format!("  {spinner} Loading"),
                 Style::default().fg(Color::DarkGray),
             )))]
         } else {

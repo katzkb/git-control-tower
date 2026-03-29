@@ -23,10 +23,11 @@ pub fn draw(frame: &mut Frame, area: Rect, app: &App) {
 
     let mut lines: Vec<Line> = Vec::new();
 
+    let spinner = app.spinner_frame();
     if let Some(entry) = &entry {
-        draw_git_status_section(&mut lines, entry);
+        draw_git_status_section(&mut lines, entry, spinner);
         draw_worktree_section(&mut lines, entry);
-        draw_pr_section(&mut lines, entry, app.selected_pr_detail());
+        draw_pr_section(&mut lines, entry, app.selected_pr_detail(), spinner);
     } else {
         lines.push(Line::from(Span::styled(
             " No branch selected",
@@ -65,7 +66,7 @@ fn section_header_with_color(title: &str, color: Color) -> Line<'static> {
     ))
 }
 
-fn draw_git_status_section(lines: &mut Vec<Line<'static>>, entry: &BranchEntry) {
+fn draw_git_status_section(lines: &mut Vec<Line<'static>>, entry: &BranchEntry, spinner: &str) {
     lines.push(section_header("Git Status"));
 
     if entry.worktree.is_none() {
@@ -81,7 +82,7 @@ fn draw_git_status_section(lines: &mut Vec<Line<'static>>, entry: &BranchEntry) 
         Some(s) => s,
         None => {
             lines.push(Line::from(Span::styled(
-                "  Loading...",
+                format!("  {spinner} Loading"),
                 Style::default().fg(Color::DarkGray),
             )));
             lines.push(Line::from(""));
@@ -172,6 +173,7 @@ fn draw_pr_section(
     lines: &mut Vec<Line<'static>>,
     entry: &BranchEntry,
     pr_detail: Option<&PrDetail>,
+    spinner: &str,
 ) {
     let pr = match &entry.pull_request {
         Some(p) => p,
@@ -255,7 +257,7 @@ fn draw_pr_section(
         }
     } else {
         lines.push(Line::from(Span::styled(
-            "  Loading...",
+            format!("  {spinner} Loading"),
             Style::default().fg(Color::DarkGray),
         )));
     }

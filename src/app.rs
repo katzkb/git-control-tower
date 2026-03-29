@@ -123,6 +123,9 @@ pub struct App {
     pub branch_delete_requested: bool,
     pub open_pr_requested: Option<u64>,
     pub copy_branch_requested: Option<String>,
+
+    // Spinner animation
+    spinner_tick: usize,
 }
 
 impl App {
@@ -170,6 +173,7 @@ impl App {
             branch_delete_requested: false,
             open_pr_requested: None,
             copy_branch_requested: None,
+            spinner_tick: 0,
         }
     }
 
@@ -179,6 +183,17 @@ impl App {
             MainFilter::MyPr => &self.my_prs,
             MainFilter::ReviewRequested => &self.review_prs,
         }
+    }
+
+    const SPINNER_FRAMES: &'static [&'static str] =
+        &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+
+    pub fn tick(&mut self) {
+        self.spinner_tick = self.spinner_tick.wrapping_add(1);
+    }
+
+    pub fn spinner_frame(&self) -> &'static str {
+        Self::SPINNER_FRAMES[self.spinner_tick % Self::SPINNER_FRAMES.len()]
     }
 
     pub fn adjust_sidebar_offset(&mut self, visible_height: usize, item_count: usize) {
