@@ -9,7 +9,7 @@ use ratatui::{
 use crate::app::{App, MainFilter};
 use crate::git::types::{BranchEntry, ReviewStatus};
 
-pub fn draw(frame: &mut Frame, area: Rect, app: &App) {
+pub fn draw(frame: &mut Frame, area: Rect, app: &mut App) {
     let chunks = Layout::vertical([Constraint::Length(1), Constraint::Min(1)]).split(area);
 
     draw_filter_bar(frame, chunks[0], app);
@@ -67,7 +67,7 @@ fn draw_filter_bar(frame: &mut Frame, area: Rect, app: &App) {
     );
 }
 
-fn draw_entry_list(frame: &mut Frame, area: Rect, app: &App) {
+fn draw_entry_list(frame: &mut Frame, area: Rect, app: &mut App) {
     let filtered = app.filtered_entries();
     let show_checkboxes = !app.branch_selected.is_empty();
 
@@ -86,6 +86,10 @@ fn draw_entry_list(frame: &mut Frame, area: Rect, app: &App) {
             .collect()
     };
 
+    // Adjust viewport offset so list only scrolls when cursor hits edges
+    let visible_height = area.height.saturating_sub(2) as usize; // border top + bottom
+    app.adjust_sidebar_offset(visible_height);
+
     let block = Block::default()
         .borders(Borders::ALL)
         .title(" Branches ")
@@ -97,6 +101,7 @@ fn draw_entry_list(frame: &mut Frame, area: Rect, app: &App) {
 
     let mut state = ListState::default();
     state.select(Some(app.sidebar_scroll));
+    *state.offset_mut() = app.sidebar_offset;
     frame.render_stateful_widget(list, area, &mut state);
 }
 

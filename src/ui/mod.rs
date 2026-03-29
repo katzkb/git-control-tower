@@ -16,7 +16,7 @@ use ratatui::{
 
 use crate::app::{ActiveView, App, MainFilter};
 
-pub fn draw(frame: &mut Frame, app: &App) {
+pub fn draw(frame: &mut Frame, app: &mut App) {
     let chunks = Layout::vertical([Constraint::Min(1), Constraint::Length(1)]).split(frame.area());
 
     match app.active_view {

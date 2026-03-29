@@ -71,6 +71,7 @@ pub struct App {
     pub entries_loaded: bool,
     pub main_filter: MainFilter,
     pub sidebar_scroll: usize,
+    pub sidebar_offset: usize,
     pub search_active: bool,
     pub search_query: String,
     search_pre_scroll: usize, // saved scroll position before search
@@ -132,6 +133,7 @@ impl App {
             entries_loaded: false,
             main_filter: MainFilter::default(),
             sidebar_scroll: 0,
+            sidebar_offset: 0,
             search_active: false,
             search_query: String::new(),
             search_pre_scroll: 0,
@@ -172,6 +174,18 @@ impl App {
             MainFilter::Local => &self.local_prs,
             MainFilter::MyPr => &self.my_prs,
             MainFilter::ReviewRequested => &self.review_prs,
+        }
+    }
+
+    pub fn adjust_sidebar_offset(&mut self, visible_height: usize) {
+        if visible_height == 0 {
+            return;
+        }
+        if self.sidebar_scroll >= self.sidebar_offset + visible_height {
+            self.sidebar_offset = self.sidebar_scroll - visible_height + 1;
+        }
+        if self.sidebar_scroll < self.sidebar_offset {
+            self.sidebar_offset = self.sidebar_scroll;
         }
     }
 
@@ -289,6 +303,7 @@ impl App {
                 self.main_filter = MainFilter::Local;
                 self.active_view = ActiveView::Main;
                 self.sidebar_scroll = 0;
+                self.sidebar_offset = 0;
                 self.rebuild_entries();
                 if !self.local_prs_loaded {
                     self.pr_fetch_requested = Some(MainFilter::Local);
@@ -299,6 +314,7 @@ impl App {
                 self.main_filter = MainFilter::MyPr;
                 self.active_view = ActiveView::Main;
                 self.sidebar_scroll = 0;
+                self.sidebar_offset = 0;
                 self.rebuild_entries();
                 if !self.my_prs_loaded {
                     self.pr_fetch_requested = Some(MainFilter::MyPr);
@@ -309,6 +325,7 @@ impl App {
                 self.main_filter = MainFilter::ReviewRequested;
                 self.active_view = ActiveView::Main;
                 self.sidebar_scroll = 0;
+                self.sidebar_offset = 0;
                 self.rebuild_entries();
                 if !self.review_prs_loaded {
                     self.pr_fetch_requested = Some(MainFilter::ReviewRequested);
@@ -413,6 +430,7 @@ impl App {
                     self.rebuild_entries();
                     self.pr_fetch_requested = Some(self.main_filter);
                     self.sidebar_scroll = 0;
+                    self.sidebar_offset = 0;
                 }
             }
             KeyCode::Char('t') => {
@@ -423,6 +441,7 @@ impl App {
                     self.rebuild_entries();
                     self.pr_fetch_requested = Some(MainFilter::ReviewRequested);
                     self.sidebar_scroll = 0;
+                    self.sidebar_offset = 0;
                 }
             }
             KeyCode::Char('/') => {
@@ -475,11 +494,13 @@ impl App {
             KeyCode::Backspace => {
                 self.search_query.pop();
                 self.sidebar_scroll = 0;
+                self.sidebar_offset = 0;
                 self.request_details_for_selection();
             }
             KeyCode::Char(c) => {
                 self.search_query.push(c);
                 self.sidebar_scroll = 0;
+                self.sidebar_offset = 0;
                 self.request_details_for_selection();
             }
             KeyCode::Down => {
