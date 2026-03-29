@@ -47,6 +47,14 @@ async fn main() -> anyhow::Result<()> {
         return Ok(());
     }
 
+    // Handle shell-init subcommand
+    let args: Vec<String> = std::env::args().collect();
+    if args.get(1).map(|s| s.as_str()) == Some("shell-init") {
+        let shell = args.get(2).map(|s| s.as_str()).unwrap_or("zsh");
+        print_shell_init(shell);
+        return Ok(());
+    }
+
     // Initialize debug logging (GCT_DEBUG=1 or --verbose enables it)
     let verbose = std::env::args().any(|a| a == "--verbose");
     crate::git::command::init_debug_log(verbose);
@@ -584,6 +592,42 @@ async fn detect_default_branch() -> String {
         return "master".to_string();
     }
     "HEAD".to_string()
+}
+
+fn print_shell_init(shell: &str) {
+    match shell {
+        "zsh" | "bash" => {
+            print!(
+                r#"gct() {{
+    local output
+    output=$(command gct "$@")
+    local status=$?
+    if [[ $status -eq 0 && -n "$output" ]]; then
+        cd "$output" || return $?
+    fi
+    return $status
+}}
+"#
+            );
+        }
+        "fish" => {
+            print!(
+                r#"function gct
+    set -l output (command gct $argv)
+    set -l status_code $status
+    if test $status_code -eq 0 -a -n "$output"
+        cd $output
+    end
+    return $status_code
+end
+"#
+            );
+        }
+        _ => {
+            eprintln!("Unsupported shell: {shell}. Supported: zsh, bash, fish");
+            std::process::exit(1);
+        }
+    }
 }
 
 fn copy_to_clipboard(text: &str) {
