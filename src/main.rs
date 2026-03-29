@@ -492,6 +492,11 @@ async fn run(
             let _ = run_gh(&["pr", "view", &pr_number.to_string(), "--web"]).await;
         }
 
+        // Copy branch name to clipboard if requested
+        if let Some(name) = app.copy_branch_requested.take() {
+            copy_to_clipboard(&name);
+        }
+
         if app.should_quit {
             break;
         }
@@ -577,6 +582,14 @@ async fn detect_default_branch() -> String {
         return "master".to_string();
     }
     "HEAD".to_string()
+}
+
+fn copy_to_clipboard(text: &str) {
+    use base64::Engine;
+    use std::io::Write;
+    let encoded = base64::engine::general_purpose::STANDARD.encode(text);
+    let _ = std::io::stdout().write_all(format!("\x1b]52;c;{encoded}\x07").as_bytes());
+    let _ = std::io::stdout().flush();
 }
 
 fn compute_review_status(pr: &PullRequest, gh_user: &str) -> ReviewStatus {
