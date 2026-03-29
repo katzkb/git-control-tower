@@ -50,6 +50,13 @@ fn draw_filter_bar(frame: &mut Frame, area: Rect, app: &App) {
                 Style::default().fg(Color::Yellow),
             ));
         }
+        // Show active search filter
+        if !app.search_query.is_empty() {
+            spans.push(Span::styled(
+                format!(" /{}", app.search_query),
+                Style::default().fg(Color::Cyan),
+            ));
+        }
         // Show team toggle indicator for Review view
         if app.main_filter == MainFilter::ReviewRequested {
             let team_label = if app.include_team_reviews {
@@ -81,11 +88,17 @@ fn draw_entry_list(frame: &mut Frame, area: Rect, app: &mut App) {
                 Style::default().fg(Color::DarkGray),
             )))]
         } else {
+            let search_query = &app.search_query;
             filtered
                 .iter()
                 .map(|entry| {
                     let is_selected = app.branch_selected.contains(&entry.name);
-                    ListItem::new(format_entry_line(entry, show_checkboxes, is_selected))
+                    ListItem::new(format_entry_line(
+                        entry,
+                        show_checkboxes,
+                        is_selected,
+                        search_query,
+                    ))
                 })
                 .collect()
         };
@@ -117,6 +130,7 @@ fn format_entry_line(
     entry: &BranchEntry,
     show_checkboxes: bool,
     is_selected: bool,
+    search_query: &str,
 ) -> Line<'static> {
     let mut spans: Vec<Span> = Vec::new();
 
@@ -129,7 +143,7 @@ fn format_entry_line(
         }
     }
 
-    // Branch name
+    // Branch name (with search highlight)
     let name_style = if entry.is_current() {
         Style::default()
             .fg(Color::Green)
@@ -139,7 +153,7 @@ fn format_entry_line(
     } else {
         Style::default().fg(Color::White)
     };
-    spans.push(Span::styled(format!(" {}", entry.name), name_style));
+    spans.extend(format_branch_name(&entry.name, search_query, name_style));
 
     // Current marker
     if entry.is_current() {
@@ -189,4 +203,25 @@ fn format_entry_line(
     }
 
     Line::from(spans)
+}
+
+fn format_branch_name(name: &str, search_query: &str, base_style: Style) -> Vec<Span<'static>> {
+    if search_query.is_empty() {
+        return vec![Span::styled(format!(" {name}"), base_style)];
+    }
+    let lower_name = name.to_lowercase();
+    let lower_query = search_query.to_lowercase();
+    if let Some(start) = lower_name.find(&lower_query) {
+        let end = start + lower_query.len();
+        let highlight_style = base_style
+            .add_modifier(Modifier::UNDERLINED)
+            .fg(Color::Cyan);
+        vec![
+            Span::styled(format!(" {}", &name[..start]), base_style),
+            Span::styled(name[start..end].to_string(), highlight_style),
+            Span::styled(name[end..].to_string(), base_style),
+        ]
+    } else {
+        vec![Span::styled(format!(" {name}"), base_style)]
+    }
 }
