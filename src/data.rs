@@ -288,6 +288,9 @@ pub async fn fetch_review_prs(
         }
     }
 
+    // Sort by updated_at descending for consistent ordering
+    all_prs.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+
     (all_prs, all_errors)
 }
 
