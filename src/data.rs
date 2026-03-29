@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use crate::git::command::{debug_log, run_gh, run_git};
 use crate::git::types::{Branch, BranchEntry, GitStatus, PullRequest, ReviewRequest, Worktree};
@@ -263,17 +263,35 @@ pub async fn fetch_my_prs(show_merged: bool) -> (Vec<PullRequest>, Vec<String>) 
 }
 
 /// Fetch PRs with review requested from the current user.
+/// Runs separate queries and merges results to avoid GHE `OR` incompatibility.
 /// When `include_team` is true, also includes team review requests.
 pub async fn fetch_review_prs(
     show_merged: bool,
     include_team: bool,
 ) -> (Vec<PullRequest>, Vec<String>) {
-    let search = if include_team {
-        "team-review-requested:@me OR review-requested:@me OR reviewed-by:@me"
-    } else {
-        "review-requested:@me OR reviewed-by:@me"
-    };
-    fetch_pr_list(&["--search", search], show_merged).await
+    let mut queries = vec!["review-requested:@me", "reviewed-by:@me"];
+    if include_team {
+        queries.push("team-review-requested:@me");
+    }
+
+    let mut all_prs = Vec::new();
+    let mut all_errors = Vec::new();
+    let mut seen: HashSet<u64> = HashSet::new();
+
+    for query in queries {
+        let (prs, errors) = fetch_pr_list(&["--search", query], show_merged).await;
+        all_errors.extend(errors);
+        for pr in prs {
+            if seen.insert(pr.number) {
+                all_prs.push(pr);
+            }
+        }
+    }
+
+    // Sort by updated_at descending for consistent ordering
+    all_prs.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+
+    (all_prs, all_errors)
 }
 
 /// Common helper for fetching PR lists with a filter.
