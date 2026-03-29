@@ -177,7 +177,9 @@ async fn run(
                 app.handle_key(key);
             }
             Some(Event::Resize(_, _)) => {}
-            Some(Event::Tick) => {}
+            Some(Event::Tick) => {
+                app.tick();
+            }
             Some(Event::Key(_)) => {}
             None => break,
         }
