@@ -91,7 +91,7 @@ async fn run(
 ) -> (anyhow::Result<()>, Option<String>) {
     let mut app = App::new();
     app.verbose = verbose;
-    let mut events = EventHandler::new(Duration::from_millis(250));
+    let mut events = EventHandler::new(Duration::from_millis(80));
     let (tx, mut rx) = mpsc::unbounded_channel::<AsyncResult>();
     let mut pr_inflight: HashSet<u64> = HashSet::new();
     let mut status_inflight: HashSet<String> = HashSet::new();
