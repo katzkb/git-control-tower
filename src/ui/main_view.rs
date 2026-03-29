@@ -9,7 +9,7 @@ use ratatui::{
 use crate::app::App;
 use crate::ui::{confirm_dialog, detail_pane, sidebar};
 
-pub fn draw(frame: &mut Frame, area: Rect, app: &App) {
+pub fn draw(frame: &mut Frame, area: Rect, app: &mut App) {
     let chunks =
         Layout::horizontal([Constraint::Percentage(35), Constraint::Percentage(65)]).split(area);
 

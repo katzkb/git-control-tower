@@ -9,7 +9,7 @@ use ratatui::{
 use crate::app::{App, MainFilter};
 use crate::git::types::{BranchEntry, ReviewStatus};
 
-pub fn draw(frame: &mut Frame, area: Rect, app: &App) {
+pub fn draw(frame: &mut Frame, area: Rect, app: &mut App) {
     let chunks = Layout::vertical([Constraint::Length(1), Constraint::Min(1)]).split(area);
 
     draw_filter_bar(frame, chunks[0], app);
@@ -67,24 +67,34 @@ fn draw_filter_bar(frame: &mut Frame, area: Rect, app: &App) {
     );
 }
 
-fn draw_entry_list(frame: &mut Frame, area: Rect, app: &App) {
-    let filtered = app.filtered_entries();
+fn draw_entry_list(frame: &mut Frame, area: Rect, app: &mut App) {
     let show_checkboxes = !app.branch_selected.is_empty();
+    let is_loading = app.is_current_view_loading();
 
-    let items: Vec<ListItem> = if filtered.is_empty() && app.is_current_view_loading() {
-        vec![ListItem::new(Line::from(Span::styled(
-            "  Loading...",
-            Style::default().fg(Color::DarkGray),
-        )))]
-    } else {
-        filtered
-            .iter()
-            .map(|entry| {
-                let is_selected = app.branch_selected.contains(&entry.name);
-                ListItem::new(format_entry_line(entry, show_checkboxes, is_selected))
-            })
-            .collect()
+    // Build items and capture count before mutably borrowing app
+    let (items, item_count): (Vec<ListItem>, usize) = {
+        let filtered = app.filtered_entries();
+        let count = filtered.len();
+        let items = if filtered.is_empty() && is_loading {
+            vec![ListItem::new(Line::from(Span::styled(
+                "  Loading...",
+                Style::default().fg(Color::DarkGray),
+            )))]
+        } else {
+            filtered
+                .iter()
+                .map(|entry| {
+                    let is_selected = app.branch_selected.contains(&entry.name);
+                    ListItem::new(format_entry_line(entry, show_checkboxes, is_selected))
+                })
+                .collect()
+        };
+        (items, count)
     };
+
+    // Adjust viewport offset and clamp scroll/offset to valid ranges
+    let visible_height = area.height.saturating_sub(2) as usize;
+    app.adjust_sidebar_offset(visible_height, item_count);
 
     let block = Block::default()
         .borders(Borders::ALL)
@@ -96,7 +106,10 @@ fn draw_entry_list(frame: &mut Frame, area: Rect, app: &App) {
         .highlight_style(Style::default().add_modifier(Modifier::REVERSED));
 
     let mut state = ListState::default();
-    state.select(Some(app.sidebar_scroll));
+    if item_count > 0 {
+        state.select(Some(app.sidebar_scroll));
+    }
+    *state.offset_mut() = app.sidebar_offset;
     frame.render_stateful_widget(list, area, &mut state);
 }
 

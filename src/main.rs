@@ -168,7 +168,7 @@ async fn run(
     }
 
     loop {
-        if let Err(e) = terminal.draw(|frame| ui::draw(frame, &app)) {
+        if let Err(e) = terminal.draw(|frame| ui::draw(frame, &mut app)) {
             return (Err(e.into()), None);
         }
 
