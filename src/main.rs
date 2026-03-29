@@ -452,10 +452,20 @@ async fn run(
                 }
             }
             if !failed.is_empty() {
-                let msg = format!("Failed to delete: {}", failed.join("; "));
-                app.notification = Some(Notification::error(msg.clone()));
-                if app.verbose && !app.verbose_errors.contains(&msg) {
-                    app.verbose_errors.push(msg);
+                // Show first line only in notification (git errors can be multi-line)
+                let short: Vec<String> = failed
+                    .iter()
+                    .map(|e| e.lines().next().unwrap_or(e).to_string())
+                    .collect();
+                app.notification = Some(Notification::error(format!(
+                    "Failed to delete: {}",
+                    short.join("; ")
+                )));
+                if app.verbose {
+                    let full_msg = format!("Failed to delete: {}", failed.join("; "));
+                    if !app.verbose_errors.contains(&full_msg) {
+                        app.verbose_errors.push(full_msg);
+                    }
                 }
             } else if !deleted.is_empty() {
                 app.notification = Some(Notification::success(format!(
