@@ -38,6 +38,7 @@ pub enum ActionItem {
     DeleteWorktree,
     DeleteBranch,
     OpenPrInBrowser,
+    CopyBranchName,
 }
 
 impl ActionItem {
@@ -48,6 +49,7 @@ impl ActionItem {
             Self::DeleteWorktree => "Delete worktree",
             Self::DeleteBranch => "Delete branch",
             Self::OpenPrInBrowser => "Open PR in browser",
+            Self::CopyBranchName => "Copy branch name",
         }
     }
 }
@@ -120,6 +122,7 @@ pub struct App {
     pub branch_selected: HashSet<String>,
     pub branch_delete_requested: bool,
     pub open_pr_requested: Option<u64>,
+    pub copy_branch_requested: Option<String>,
 }
 
 impl App {
@@ -166,6 +169,7 @@ impl App {
             branch_selected: HashSet::new(),
             branch_delete_requested: false,
             open_pr_requested: None,
+            copy_branch_requested: None,
         }
     }
 
@@ -537,6 +541,7 @@ impl App {
         if entry.pull_request.is_some() {
             items.push(ActionItem::OpenPrInBrowser);
         }
+        items.push(ActionItem::CopyBranchName);
         if entry.worktree.is_some() {
             items.push(ActionItem::CdIntoWorktree);
         }
@@ -633,6 +638,10 @@ impl App {
                 if let Some(pr) = &entry.pull_request {
                     self.open_pr_requested = Some(pr.number);
                 }
+            }
+            ActionItem::CopyBranchName => {
+                self.copy_branch_requested = Some(entry.name.clone());
+                self.notification = Some(Notification::success(format!("Copied: {}", entry.name)));
             }
         }
     }
