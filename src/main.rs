@@ -99,6 +99,7 @@ async fn run(
     // Phase 1: Fast local loads (blocking, ~170ms)
     if let Ok(output) = run_git(&[
         "log",
+        "--graph",
         "--format=%h%x00%s%x00%an%x00%ad",
         "--date=short",
         "-n",
