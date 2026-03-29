@@ -605,7 +605,7 @@ fn print_shell_init(shell: &str) {
     if [[ $status -eq 0 && -n "$output" && -d "$output" ]]; then
         cd "$output" || return $?
     elif [[ -n "$output" ]]; then
-        echo "$output"
+        printf '%s\n' "$output"
     fi
     return $status
 }}
@@ -620,7 +620,7 @@ fn print_shell_init(shell: &str) {
     if test $status_code -eq 0 -a -n "$output" -a -d "$output"
         cd "$output"; or return $status
     else if test -n "$output"
-        echo "$output"
+        printf '%s\n' "$output"
     end
     return $status_code
 end
