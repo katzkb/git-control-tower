@@ -602,8 +602,10 @@ fn print_shell_init(shell: &str) {
     local output
     output=$(command gct "$@")
     local status=$?
-    if [[ $status -eq 0 && -n "$output" ]]; then
+    if [[ $status -eq 0 && -n "$output" && -d "$output" ]]; then
         cd "$output" || return $?
+    elif [[ -n "$output" ]]; then
+        echo "$output"
     fi
     return $status
 }}
@@ -613,10 +615,12 @@ fn print_shell_init(shell: &str) {
         "fish" => {
             print!(
                 r#"function gct
-    set -l output (command gct $argv)
+    set -l output (command gct $argv | string collect)
     set -l status_code $status
-    if test $status_code -eq 0 -a -n "$output"
-        cd $output
+    if test $status_code -eq 0 -a -n "$output" -a -d "$output"
+        cd "$output"; or return $status
+    else if test -n "$output"
+        echo "$output"
     end
     return $status_code
 end
