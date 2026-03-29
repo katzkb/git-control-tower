@@ -616,7 +616,7 @@ fn print_shell_init(shell: &str) {
             print!(
                 r#"function gct
     set -l output (command gct $argv | string collect)
-    set -l status_code $status
+    set -l status_code $pipestatus[1]
     if test $status_code -eq 0 -a -n "$output" -a -d "$output"
         cd "$output"; or return $status
     else if test -n "$output"
@@ -638,8 +638,16 @@ fn copy_to_clipboard(text: &str) {
     use base64::Engine;
     use std::io::Write;
     let encoded = base64::engine::general_purpose::STANDARD.encode(text);
-    let _ = std::io::stdout().write_all(format!("\x1b]52;c;{encoded}\x07").as_bytes());
-    let _ = std::io::stdout().flush();
+    let osc52 = format!("\x1b]52;c;{encoded}\x07");
+    // Write to /dev/tty to bypass shell function stdout capture
+    if let Ok(mut tty) = std::fs::OpenOptions::new().write(true).open("/dev/tty") {
+        let _ = tty.write_all(osc52.as_bytes());
+        let _ = tty.flush();
+    } else {
+        // Fallback to stdout
+        let _ = std::io::stdout().write_all(osc52.as_bytes());
+        let _ = std::io::stdout().flush();
+    }
 }
 
 fn compute_review_status(pr: &PullRequest, gh_user: &str) -> ReviewStatus {
