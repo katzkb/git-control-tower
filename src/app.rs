@@ -213,7 +213,7 @@ impl App {
     }
 
     pub fn filtered_entries(&self) -> Vec<&BranchEntry> {
-        let search_query = if self.search_active && !self.search_query.is_empty() {
+        let search_query = if !self.search_query.is_empty() {
             Some(self.search_query.to_lowercase())
         } else {
             None
@@ -302,7 +302,13 @@ impl App {
             KeyCode::Char('?') => self.show_help = true,
             KeyCode::Char('q') => self.should_quit = true,
             KeyCode::Esc => {
-                if self.active_view == ActiveView::Log {
+                if !self.search_query.is_empty() {
+                    // Clear search filter and restore scroll
+                    self.search_query.clear();
+                    self.sidebar_scroll = self.search_pre_scroll;
+                    self.sidebar_offset = 0;
+                    self.request_details_for_selection();
+                } else if self.active_view == ActiveView::Log {
                     self.active_view = ActiveView::Main;
                 } else {
                     self.should_quit = true;
@@ -312,6 +318,7 @@ impl App {
             KeyCode::Char('1') => {
                 self.main_filter = MainFilter::Local;
                 self.active_view = ActiveView::Main;
+                self.search_query.clear();
                 self.sidebar_scroll = 0;
                 self.sidebar_offset = 0;
                 self.rebuild_entries();
@@ -323,6 +330,7 @@ impl App {
             KeyCode::Char('2') => {
                 self.main_filter = MainFilter::MyPr;
                 self.active_view = ActiveView::Main;
+                self.search_query.clear();
                 self.sidebar_scroll = 0;
                 self.sidebar_offset = 0;
                 self.rebuild_entries();
@@ -334,6 +342,7 @@ impl App {
             KeyCode::Char('3') => {
                 self.main_filter = MainFilter::ReviewRequested;
                 self.active_view = ActiveView::Main;
+                self.search_query.clear();
                 self.sidebar_scroll = 0;
                 self.sidebar_offset = 0;
                 self.rebuild_entries();
@@ -486,19 +495,7 @@ impl App {
                 self.request_details_for_selection();
             }
             KeyCode::Enter => {
-                let selected_name = self.selected_entry().map(|e| e.name.clone());
                 self.search_active = false;
-                self.search_query.clear();
-                if let Some(name) = selected_name {
-                    let new_idx = self
-                        .filtered_entries()
-                        .iter()
-                        .position(|e| e.name == name)
-                        .unwrap_or(0);
-                    self.sidebar_scroll = new_idx;
-                } else {
-                    self.sidebar_scroll = self.search_pre_scroll;
-                }
                 self.request_details_for_selection();
             }
             KeyCode::Backspace => {
