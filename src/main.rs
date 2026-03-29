@@ -443,8 +443,35 @@ async fn run(
         if app.branch_delete_requested {
             app.branch_delete_requested = false;
             let selected: Vec<String> = app.branch_selected.drain().collect();
+            let mut deleted = Vec::new();
+            let mut failed = Vec::new();
             for name in &selected {
-                let _ = run_git(&["branch", "-d", name]).await;
+                match run_git(&["branch", "-d", name]).await {
+                    Ok(_) => deleted.push(name.as_str()),
+                    Err(e) => failed.push(format!("{name}: {e}")),
+                }
+            }
+            if !failed.is_empty() {
+                // Show first line only in notification (git errors can be multi-line)
+                let short: Vec<String> = failed
+                    .iter()
+                    .map(|e| e.lines().next().unwrap_or(e).to_string())
+                    .collect();
+                app.notification = Some(Notification::error(format!(
+                    "Failed to delete: {}",
+                    short.join("; ")
+                )));
+                if app.verbose {
+                    let full_msg = format!("Failed to delete: {}", failed.join("; "));
+                    if !app.verbose_errors.contains(&full_msg) {
+                        app.verbose_errors.push(full_msg);
+                    }
+                }
+            } else if !deleted.is_empty() {
+                app.notification = Some(Notification::success(format!(
+                    "Deleted {} branch(es)",
+                    deleted.len()
+                )));
             }
             refresh_entries(&mut app).await;
         }
