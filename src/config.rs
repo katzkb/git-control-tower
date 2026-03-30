@@ -2,7 +2,7 @@ use serde::Deserialize;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-const DEFAULT_WORKTREE_PREFIX: &str = "..";
+const DEFAULT_WORKTREE_DIR: &str = "..";
 
 #[derive(Debug, Deserialize, Default)]
 pub struct Config {
@@ -17,7 +17,7 @@ pub struct WorktreeConfig {
 }
 
 fn default_worktree_dir() -> String {
-    DEFAULT_WORKTREE_PREFIX.to_string()
+    DEFAULT_WORKTREE_DIR.to_string()
 }
 
 impl Default for WorktreeConfig {
@@ -36,7 +36,7 @@ impl Config {
     pub fn worktree_path(&self, branch_name: &str) -> String {
         let dir = self.worktree.dir.trim();
         let base = if dir.is_empty() {
-            DEFAULT_WORKTREE_PREFIX
+            DEFAULT_WORKTREE_DIR
         } else {
             dir
         };
@@ -110,7 +110,7 @@ mod tests {
     #[test]
     fn test_default_config() {
         let config = Config::default();
-        assert_eq!(config.worktree.dir, DEFAULT_WORKTREE_PREFIX);
+        assert_eq!(config.worktree.dir, DEFAULT_WORKTREE_DIR);
     }
 
     #[test]
@@ -146,7 +146,7 @@ dir = "../wt"
     #[test]
     fn test_parse_empty_config() {
         let config: Config = toml::from_str("").unwrap();
-        assert_eq!(config.worktree.dir, DEFAULT_WORKTREE_PREFIX);
+        assert_eq!(config.worktree.dir, DEFAULT_WORKTREE_DIR);
     }
 
     #[test]
