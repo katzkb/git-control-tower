@@ -2,7 +2,7 @@ use serde::Deserialize;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-const DEFAULT_WORKTREE_PREFIX: &str = "../gct-wt";
+const DEFAULT_WORKTREE_PREFIX: &str = "..";
 
 #[derive(Debug, Deserialize, Default)]
 pub struct Config {
@@ -30,20 +30,20 @@ impl Default for WorktreeConfig {
 
 impl Config {
     /// Build the worktree path for a given branch name.
-    /// Default produces `../gct-wt-{safe_name}` for backward compatibility.
-    /// Custom dir produces `{dir}/{safe_name}`.
+    /// Default produces `../{branch_name}` (e.g. `../feature/auth`).
+    /// Custom dir produces `{dir}/{branch_name}`.
+    /// Slashes in branch names become directory separators.
     pub fn worktree_path(&self, branch_name: &str) -> String {
-        let safe_name = branch_name.replace('/', "-");
         let dir = self.worktree.dir.trim();
-        if dir.is_empty() || dir == DEFAULT_WORKTREE_PREFIX {
-            // Backward compatible: ../gct-wt-{branch}
-            format!("{DEFAULT_WORKTREE_PREFIX}-{safe_name}")
+        let base = if dir.is_empty() {
+            DEFAULT_WORKTREE_PREFIX
         } else {
-            Path::new(dir)
-                .join(&safe_name)
-                .to_string_lossy()
-                .to_string()
-        }
+            dir
+        };
+        Path::new(base)
+            .join(branch_name)
+            .to_string_lossy()
+            .to_string()
     }
 }
 
@@ -116,10 +116,7 @@ mod tests {
     #[test]
     fn test_default_worktree_path() {
         let config = Config::default();
-        assert_eq!(
-            config.worktree_path("feature/auth"),
-            "../gct-wt-feature-auth"
-        );
+        assert_eq!(config.worktree_path("feature/auth"), "../feature/auth");
     }
 
     #[test]
@@ -129,7 +126,7 @@ mod tests {
                 dir: "../wt".to_string(),
             },
         };
-        let expected = Path::new("../wt").join("feature-auth");
+        let expected = Path::new("../wt").join("feature/auth");
         assert_eq!(
             config.worktree_path("feature/auth"),
             expected.to_string_lossy()
@@ -168,9 +165,6 @@ dir = "../wt"
                 dir: "  ".to_string(),
             },
         };
-        assert_eq!(
-            config.worktree_path("feature/auth"),
-            "../gct-wt-feature-auth"
-        );
+        assert_eq!(config.worktree_path("feature/auth"), "../feature/auth");
     }
 }
