@@ -5,11 +5,19 @@ mod event;
 mod git;
 mod ui;
 
+use anyhow::Context;
 use std::collections::HashSet;
+use std::fs::OpenOptions;
 use std::process;
 use std::time::Duration;
 
 use crossterm::event::KeyEventKind;
+use crossterm::execute;
+use crossterm::terminal::{
+    EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
+};
+use ratatui::Terminal;
+use ratatui::backend::CrosstermBackend;
 use tokio::sync::mpsc;
 
 use crate::app::App;
@@ -63,9 +71,34 @@ async fn main() -> anyhow::Result<()> {
     check_prerequisites().await;
     let config = config::load_config();
 
-    let mut terminal = ratatui::init();
+    // Render TUI to /dev/tty so shell wrapper stdout capture doesn't interfere
+    let mut tty = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open("/dev/tty")
+        .context("failed to open /dev/tty — is a controlling terminal available?")?;
+    enable_raw_mode()?;
+    execute!(tty, EnterAlternateScreen)?;
+
+    // Install panic hook to restore terminal on panic
+    let original_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let _ = disable_raw_mode();
+        if let Ok(mut panic_tty) = OpenOptions::new().write(true).open("/dev/tty") {
+            let _ = crossterm::execute!(panic_tty, LeaveAlternateScreen);
+        }
+        original_hook(info);
+    }));
+
+    let backend = CrosstermBackend::new(tty);
+    let mut terminal = Terminal::new(backend)?;
+
     let (result, cd_path) = run(&mut terminal, &config, verbose).await;
-    ratatui::restore();
+
+    // Restore terminal — always disable raw mode even if LeaveAlternateScreen fails
+    let _ = execute!(terminal.backend_mut(), LeaveAlternateScreen);
+    disable_raw_mode()?;
+
     if let Some(path) = cd_path {
         println!("{path}");
     }
@@ -93,7 +126,7 @@ async fn check_prerequisites() {
 }
 
 async fn run(
-    terminal: &mut ratatui::DefaultTerminal,
+    terminal: &mut Terminal<CrosstermBackend<std::fs::File>>,
     config: &config::Config,
     verbose: bool,
 ) -> (anyhow::Result<()>, Option<String>) {
