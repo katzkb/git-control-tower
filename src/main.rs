@@ -5,6 +5,7 @@ mod event;
 mod git;
 mod ui;
 
+use anyhow::Context;
 use std::collections::HashSet;
 use std::fs::OpenOptions;
 use std::process;
@@ -75,7 +76,7 @@ async fn main() -> anyhow::Result<()> {
         .read(true)
         .write(true)
         .open("/dev/tty")
-        .expect("failed to open /dev/tty");
+        .context("failed to open /dev/tty — is a controlling terminal available?")?;
     enable_raw_mode()?;
     execute!(tty, EnterAlternateScreen)?;
 
@@ -83,7 +84,9 @@ async fn main() -> anyhow::Result<()> {
     let original_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
         let _ = disable_raw_mode();
-        let _ = crossterm::execute!(std::io::stderr(), LeaveAlternateScreen);
+        if let Ok(mut panic_tty) = OpenOptions::new().write(true).open("/dev/tty") {
+            let _ = crossterm::execute!(panic_tty, LeaveAlternateScreen);
+        }
         original_hook(info);
     }));
 
@@ -92,8 +95,8 @@ async fn main() -> anyhow::Result<()> {
 
     let (result, cd_path) = run(&mut terminal, &config, verbose).await;
 
-    // Restore terminal
-    execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
+    // Restore terminal — always disable raw mode even if LeaveAlternateScreen fails
+    let _ = execute!(terminal.backend_mut(), LeaveAlternateScreen);
     disable_raw_mode()?;
 
     if let Some(path) = cd_path {
