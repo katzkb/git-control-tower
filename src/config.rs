@@ -117,12 +117,8 @@ fn copy_dir_recursive(src: &Path, dst: &Path) -> std::io::Result<()> {
 }
 
 fn create_symlink(src: &Path, dst: &Path) -> std::io::Result<()> {
-    // Resolve to absolute path so the symlink target is valid from the new worktree
-    let abs_src = if src.is_absolute() {
-        src.to_path_buf()
-    } else {
-        std::env::current_dir()?.join(src)
-    };
+    // Resolve to absolute canonical path so the symlink target is valid from the new worktree
+    let abs_src = fs::canonicalize(src)?;
     if let Some(parent) = dst.parent() {
         fs::create_dir_all(parent)?;
     }
