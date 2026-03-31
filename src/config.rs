@@ -10,10 +10,19 @@ pub struct Config {
     pub worktree: WorktreeConfig,
 }
 
+#[derive(Debug, Deserialize, Clone)]
+#[serde(tag = "type")]
+pub enum PostCreateAction {
+    #[serde(rename = "copy")]
+    Copy { from: String, to: String },
+}
+
 #[derive(Debug, Deserialize)]
 pub struct WorktreeConfig {
     #[serde(default = "default_worktree_dir")]
     pub dir: String,
+    #[serde(default)]
+    pub post_create: Vec<PostCreateAction>,
 }
 
 fn default_worktree_dir() -> String {
@@ -24,6 +33,7 @@ impl Default for WorktreeConfig {
     fn default() -> Self {
         Self {
             dir: default_worktree_dir(),
+            post_create: Vec::new(),
         }
     }
 }
@@ -45,6 +55,56 @@ impl Config {
             .to_string_lossy()
             .to_string()
     }
+}
+
+/// Run post-create actions after worktree creation.
+/// Returns a list of error messages (empty if all succeeded).
+pub fn run_post_create(
+    actions: &[PostCreateAction],
+    repo_root: &Path,
+    wt_path: &Path,
+) -> Vec<String> {
+    let mut errors = Vec::new();
+    for action in actions {
+        match action {
+            PostCreateAction::Copy { from, to } => {
+                let src = repo_root.join(from);
+                let dst = wt_path.join(to);
+                if let Err(e) = copy_path(&src, &dst) {
+                    errors.push(format!("copy {} → {}: {e}", from, to));
+                }
+            }
+        }
+    }
+    errors
+}
+
+fn copy_path(src: &Path, dst: &Path) -> std::io::Result<()> {
+    let meta = fs::metadata(src)?;
+    if meta.is_dir() {
+        copy_dir_recursive(src, dst)
+    } else {
+        if let Some(parent) = dst.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        fs::copy(src, dst)?;
+        Ok(())
+    }
+}
+
+fn copy_dir_recursive(src: &Path, dst: &Path) -> std::io::Result<()> {
+    fs::create_dir_all(dst)?;
+    for entry in fs::read_dir(src)? {
+        let entry = entry?;
+        let src_path = entry.path();
+        let dst_path = dst.join(entry.file_name());
+        if src_path.metadata()?.is_dir() {
+            copy_dir_recursive(&src_path, &dst_path)?;
+        } else {
+            fs::copy(&src_path, &dst_path)?;
+        }
+    }
+    Ok(())
 }
 
 /// Load config from the first valid file found:
@@ -124,6 +184,7 @@ mod tests {
         let config = Config {
             worktree: WorktreeConfig {
                 dir: "../wt".to_string(),
+                ..Default::default()
             },
         };
         let expected = Path::new("../wt").join("feature/auth");
@@ -163,8 +224,95 @@ dir = "../wt"
         let config = Config {
             worktree: WorktreeConfig {
                 dir: "  ".to_string(),
+                ..Default::default()
             },
         };
         assert_eq!(config.worktree_path("feature/auth"), "../feature/auth");
+    }
+
+    #[test]
+    fn test_parse_post_create() {
+        let toml_str = r#"
+[worktree]
+dir = ".."
+
+[[worktree.post_create]]
+type = "copy"
+from = ".env"
+to = ".env"
+
+[[worktree.post_create]]
+type = "copy"
+from = ".idea"
+to = ".idea"
+"#;
+        let config: Config = toml::from_str(toml_str).unwrap();
+        assert_eq!(config.worktree.post_create.len(), 2);
+    }
+
+    #[test]
+    fn test_parse_no_post_create() {
+        let toml_str = r#"
+[worktree]
+dir = ".."
+"#;
+        let config: Config = toml::from_str(toml_str).unwrap();
+        assert!(config.worktree.post_create.is_empty());
+    }
+
+    #[test]
+    fn test_run_post_create_copy_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = tmp.path().join("repo");
+        let wt = tmp.path().join("wt");
+        fs::create_dir_all(&repo).unwrap();
+        fs::create_dir_all(&wt).unwrap();
+        fs::write(repo.join(".env"), "SECRET=123").unwrap();
+
+        let actions = vec![PostCreateAction::Copy {
+            from: ".env".to_string(),
+            to: ".env".to_string(),
+        }];
+        let errors = run_post_create(&actions, &repo, &wt);
+        assert!(errors.is_empty());
+        assert_eq!(fs::read_to_string(wt.join(".env")).unwrap(), "SECRET=123");
+    }
+
+    #[test]
+    fn test_run_post_create_copy_dir() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = tmp.path().join("repo");
+        let wt = tmp.path().join("wt");
+        fs::create_dir_all(repo.join(".idea")).unwrap();
+        fs::create_dir_all(&wt).unwrap();
+        fs::write(repo.join(".idea/workspace.xml"), "<xml/>").unwrap();
+
+        let actions = vec![PostCreateAction::Copy {
+            from: ".idea".to_string(),
+            to: ".idea".to_string(),
+        }];
+        let errors = run_post_create(&actions, &repo, &wt);
+        assert!(errors.is_empty());
+        assert_eq!(
+            fs::read_to_string(wt.join(".idea/workspace.xml")).unwrap(),
+            "<xml/>"
+        );
+    }
+
+    #[test]
+    fn test_run_post_create_missing_source() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = tmp.path().join("repo");
+        let wt = tmp.path().join("wt");
+        fs::create_dir_all(&repo).unwrap();
+        fs::create_dir_all(&wt).unwrap();
+
+        let actions = vec![PostCreateAction::Copy {
+            from: ".env".to_string(),
+            to: ".env".to_string(),
+        }];
+        let errors = run_post_create(&actions, &repo, &wt);
+        assert_eq!(errors.len(), 1);
+        assert!(errors[0].contains(".env"));
     }
 }

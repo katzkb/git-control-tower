@@ -469,9 +469,25 @@ async fn run(
             };
             match result {
                 Ok(_) => {
-                    app.notification = Some(Notification::success(format!(
-                        "Worktree created: {wt_path}"
-                    )));
+                    let repo_root = std::env::current_dir().unwrap_or_default();
+                    let copy_errors = config::run_post_create(
+                        &config.worktree.post_create,
+                        &repo_root,
+                        std::path::Path::new(&wt_path),
+                    );
+                    if copy_errors.is_empty() {
+                        app.notification = Some(Notification::success(format!(
+                            "Worktree created: {wt_path}"
+                        )));
+                    } else {
+                        app.notification = Some(Notification::success(format!(
+                            "Worktree created: {wt_path} (copy errors: {})",
+                            copy_errors.len()
+                        )));
+                        if app.verbose {
+                            app.verbose_errors.extend(copy_errors);
+                        }
+                    }
                 }
                 Err(e) => {
                     app.notification = Some(Notification::error(format!(
