@@ -15,6 +15,8 @@ pub struct Config {
 pub enum PostCreateAction {
     #[serde(rename = "copy")]
     Copy { from: String, to: String },
+    #[serde(rename = "symlink")]
+    Symlink { from: String, to: String },
 }
 
 #[derive(Debug, Deserialize)]
@@ -74,6 +76,13 @@ pub fn run_post_create(
                     errors.push(format!("copy {} → {}: {e}", from, to));
                 }
             }
+            PostCreateAction::Symlink { from, to } => {
+                let src = repo_root.join(from);
+                let dst = wt_path.join(to);
+                if let Err(e) = create_symlink(&src, &dst) {
+                    errors.push(format!("symlink {} → {}: {e}", from, to));
+                }
+            }
         }
     }
     errors
@@ -102,6 +111,27 @@ fn copy_dir_recursive(src: &Path, dst: &Path) -> std::io::Result<()> {
             copy_dir_recursive(&src_path, &dst_path)?;
         } else {
             fs::copy(&src_path, &dst_path)?;
+        }
+    }
+    Ok(())
+}
+
+fn create_symlink(src: &Path, dst: &Path) -> std::io::Result<()> {
+    // Resolve to absolute canonical path so the symlink target is valid from the new worktree
+    let abs_src = fs::canonicalize(src)?;
+    if let Some(parent) = dst.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    #[cfg(unix)]
+    {
+        std::os::unix::fs::symlink(&abs_src, dst)?;
+    }
+    #[cfg(windows)]
+    {
+        if abs_src.is_dir() {
+            std::os::windows::fs::symlink_dir(&abs_src, dst)?;
+        } else {
+            std::os::windows::fs::symlink_file(&abs_src, dst)?;
         }
     }
     Ok(())
@@ -242,9 +272,9 @@ from = ".env"
 to = ".env"
 
 [[worktree.post_create]]
-type = "copy"
-from = ".idea"
-to = ".idea"
+type = "symlink"
+from = ".bin"
+to = ".bin"
 "#;
         let config: Config = toml::from_str(toml_str).unwrap();
         assert_eq!(config.worktree.post_create.len(), 2);
@@ -314,5 +344,63 @@ dir = ".."
         let errors = run_post_create(&actions, &repo, &wt);
         assert_eq!(errors.len(), 1);
         assert!(errors[0].contains(".env"));
+    }
+
+    #[test]
+    fn test_parse_symlink_action() {
+        let toml_str = r#"
+[[worktree.post_create]]
+type = "symlink"
+from = ".bin"
+to = ".bin"
+"#;
+        let config: Config = toml::from_str(toml_str).unwrap();
+        assert_eq!(config.worktree.post_create.len(), 1);
+        assert!(matches!(
+            &config.worktree.post_create[0],
+            PostCreateAction::Symlink { from, to } if from == ".bin" && to == ".bin"
+        ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_run_post_create_symlink_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = tmp.path().join("repo");
+        let wt = tmp.path().join("wt");
+        fs::create_dir_all(&repo).unwrap();
+        fs::create_dir_all(&wt).unwrap();
+        fs::write(repo.join(".env"), "SECRET=123").unwrap();
+
+        let actions = vec![PostCreateAction::Symlink {
+            from: ".env".to_string(),
+            to: ".env".to_string(),
+        }];
+        let errors = run_post_create(&actions, &repo, &wt);
+        assert!(errors.is_empty());
+        let link = wt.join(".env");
+        assert!(link.is_symlink());
+        assert_eq!(fs::read_to_string(&link).unwrap(), "SECRET=123");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_run_post_create_symlink_dir() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = tmp.path().join("repo");
+        let wt = tmp.path().join("wt");
+        fs::create_dir_all(repo.join(".bin")).unwrap();
+        fs::create_dir_all(&wt).unwrap();
+        fs::write(repo.join(".bin/tool"), "#!/bin/sh").unwrap();
+
+        let actions = vec![PostCreateAction::Symlink {
+            from: ".bin".to_string(),
+            to: ".bin".to_string(),
+        }];
+        let errors = run_post_create(&actions, &repo, &wt);
+        assert!(errors.is_empty());
+        let link = wt.join(".bin");
+        assert!(link.is_symlink());
+        assert_eq!(fs::read_to_string(link.join("tool")).unwrap(), "#!/bin/sh");
     }
 }
