@@ -451,7 +451,9 @@ async fn run(
                             "Worktree created: {wt_path} (copy errors: {})",
                             copy_errors.len()
                         )));
-                        app.verbose_errors.extend(copy_errors);
+                        if app.verbose {
+                            app.verbose_errors.extend(copy_errors);
+                        }
                     }
                 }
                 Err(e) => {
