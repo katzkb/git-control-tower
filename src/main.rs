@@ -745,7 +745,7 @@ fn copy_via_native_command(text: &str) -> std::io::Result<()> {
 
     #[cfg(any(target_os = "macos", target_os = "linux"))]
     {
-        if let Some(stdin) = child.stdin.as_mut() {
+        if let Some(mut stdin) = child.stdin.take() {
             stdin.write_all(text.as_bytes())?;
         }
         let status = child.wait()?;
