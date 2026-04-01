@@ -708,6 +708,56 @@ end
 }
 
 fn copy_to_clipboard(text: &str) {
+    // Try platform-native clipboard commands first, fall back to OSC 52
+    if copy_via_native_command(text).is_ok() {
+        return;
+    }
+    copy_via_osc52(text);
+}
+
+fn copy_via_native_command(text: &str) -> std::io::Result<()> {
+    use std::io::Write;
+
+    #[cfg(target_os = "macos")]
+    let mut child = std::process::Command::new("pbcopy")
+        .stdin(std::process::Stdio::piped())
+        .spawn()?;
+
+    #[cfg(target_os = "linux")]
+    let mut child = {
+        std::process::Command::new("xclip")
+            .args(["-selection", "clipboard"])
+            .stdin(std::process::Stdio::piped())
+            .spawn()
+            .or_else(|_| {
+                std::process::Command::new("xsel")
+                    .args(["--clipboard", "--input"])
+                    .stdin(std::process::Stdio::piped())
+                    .spawn()
+            })?
+    };
+
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+    {
+        let _ = text;
+        return Err(std::io::Error::other("no native clipboard command"));
+    }
+
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    {
+        if let Some(mut stdin) = child.stdin.take() {
+            stdin.write_all(text.as_bytes())?;
+        }
+        let status = child.wait()?;
+        if status.success() {
+            Ok(())
+        } else {
+            Err(std::io::Error::other("clipboard command failed"))
+        }
+    }
+}
+
+fn copy_via_osc52(text: &str) {
     use base64::Engine;
     use std::io::Write;
     let encoded = base64::engine::general_purpose::STANDARD.encode(text);
@@ -716,10 +766,6 @@ fn copy_to_clipboard(text: &str) {
     if let Ok(mut tty) = std::fs::OpenOptions::new().write(true).open("/dev/tty") {
         let _ = tty.write_all(osc52.as_bytes());
         let _ = tty.flush();
-    } else {
-        // Fallback to stdout
-        let _ = std::io::stdout().write_all(osc52.as_bytes());
-        let _ = std::io::stdout().flush();
     }
 }
 
