@@ -17,6 +17,8 @@ pub enum PostCreateAction {
     Copy { from: String, to: String },
     #[serde(rename = "symlink")]
     Symlink { from: String, to: String },
+    #[serde(rename = "command")]
+    Command { command: String },
 }
 
 #[derive(Debug, Deserialize)]
@@ -83,6 +85,11 @@ pub fn run_post_create(
                     errors.push(format!("symlink {} → {}: {e}", from, to));
                 }
             }
+            PostCreateAction::Command { command } => {
+                if let Err(e) = run_command(command, wt_path) {
+                    errors.push(format!("command `{command}`: {e}"));
+                }
+            }
         }
     }
     errors
@@ -133,6 +140,26 @@ fn create_symlink(src: &Path, dst: &Path) -> std::io::Result<()> {
         } else {
             std::os::windows::fs::symlink_file(&abs_src, dst)?;
         }
+    }
+    Ok(())
+}
+
+fn run_command(command: &str, work_dir: &Path) -> std::io::Result<()> {
+    let output = std::process::Command::new("sh")
+        .args(["-c", command])
+        .current_dir(work_dir)
+        .output()?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let msg = if !stderr.trim().is_empty() {
+            stderr.trim().to_string()
+        } else if !stdout.trim().is_empty() {
+            stdout.trim().to_string()
+        } else {
+            format!("exited with {}", output.status)
+        };
+        return Err(std::io::Error::other(msg));
     }
     Ok(())
 }
@@ -402,5 +429,57 @@ to = ".bin"
         let link = wt.join(".bin");
         assert!(link.is_symlink());
         assert_eq!(fs::read_to_string(link.join("tool")).unwrap(), "#!/bin/sh");
+    }
+
+    #[test]
+    fn test_parse_command_action() {
+        let toml_str = r#"
+[[worktree.post_create]]
+type = "command"
+command = "npm ci"
+"#;
+        let config: Config = toml::from_str(toml_str).unwrap();
+        assert_eq!(config.worktree.post_create.len(), 1);
+        assert!(matches!(
+            &config.worktree.post_create[0],
+            PostCreateAction::Command { command } if command == "npm ci"
+        ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_run_post_create_command_success() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = tmp.path().join("repo");
+        let wt = tmp.path().join("wt");
+        fs::create_dir_all(&repo).unwrap();
+        fs::create_dir_all(&wt).unwrap();
+
+        let actions = vec![PostCreateAction::Command {
+            command: "echo hello > test.txt".to_string(),
+        }];
+        let errors = run_post_create(&actions, &repo, &wt);
+        assert!(errors.is_empty());
+        assert_eq!(
+            fs::read_to_string(wt.join("test.txt")).unwrap().trim(),
+            "hello"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_run_post_create_command_failure() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = tmp.path().join("repo");
+        let wt = tmp.path().join("wt");
+        fs::create_dir_all(&repo).unwrap();
+        fs::create_dir_all(&wt).unwrap();
+
+        let actions = vec![PostCreateAction::Command {
+            command: "exit 1".to_string(),
+        }];
+        let errors = run_post_create(&actions, &repo, &wt);
+        assert_eq!(errors.len(), 1);
+        assert!(errors[0].contains("exit 1"));
     }
 }
