@@ -22,33 +22,35 @@ impl ConfirmDialog {
 }
 
 pub fn draw(frame: &mut Frame, dialog: &ConfirmDialog) {
-    let area = centered_rect(50, 7, frame.area());
+    let message_lines: Vec<&str> = dialog.message.lines().collect();
+    let height = (message_lines.len() as u16) + 5; // padding + buttons + borders
+    let area = centered_rect(50, height, frame.area());
 
     frame.render_widget(Clear, area);
 
-    let lines = vec![
-        Line::from(""),
-        Line::from(Span::raw(&dialog.message)),
-        Line::from(""),
-        Line::from(vec![
-            Span::styled(
-                " y ",
-                Style::default()
-                    .fg(Color::White)
-                    .bg(Color::Red)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::raw(" Yes  "),
-            Span::styled(
-                " n ",
-                Style::default()
-                    .fg(Color::White)
-                    .bg(Color::DarkGray)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::raw(" No"),
-        ]),
-    ];
+    let mut lines = vec![Line::from("")];
+    for msg_line in &message_lines {
+        lines.push(Line::from(Span::raw(*msg_line)));
+    }
+    lines.push(Line::from(""));
+    lines.push(Line::from(vec![
+        Span::styled(
+            " y ",
+            Style::default()
+                .fg(Color::White)
+                .bg(Color::Red)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::raw(" Yes  "),
+        Span::styled(
+            " n ",
+            Style::default()
+                .fg(Color::White)
+                .bg(Color::DarkGray)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::raw(" No"),
+    ]));
 
     let block = Block::default()
         .borders(Borders::ALL)

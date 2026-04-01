@@ -441,9 +441,28 @@ async fn run(
                     app.notification =
                         Some(Notification::success(format!("Worktree removed: {path}")));
                 }
+                Err(_) => {
+                    app.confirm_dialog = Some(crate::ui::confirm_dialog::ConfirmDialog::new(
+                        "Force Delete Worktree",
+                        format!("Worktree has untracked/modified files.\nForce remove {path}?"),
+                    ));
+                    app.wt_force_delete_pending_path = Some(path);
+                }
+            }
+            refresh_entries(&mut app).await;
+        }
+
+        // Force delete worktree if confirmed
+        if let Some(path) = app.wt_force_delete_requested.take() {
+            match run_git(&["worktree", "remove", "--force", &path]).await {
+                Ok(_) => {
+                    app.notification = Some(Notification::success(format!(
+                        "Worktree force removed: {path}"
+                    )));
+                }
                 Err(e) => {
                     app.notification = Some(Notification::error(format!(
-                        "Failed to remove worktree: {e}"
+                        "Failed to force remove worktree: {e}"
                     )));
                 }
             }

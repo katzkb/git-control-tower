@@ -118,6 +118,8 @@ pub struct App {
     // Action requests
     pub wt_delete_requested: Option<String>,
     pub wt_delete_pending_path: Option<String>, // path stored when confirm dialog shown
+    pub wt_force_delete_requested: Option<String>,
+    pub wt_force_delete_pending_path: Option<String>,
     pub wt_create_requested: Option<String>,
     pub branch_selected: HashSet<String>,
     pub branch_delete_requested: bool,
@@ -168,6 +170,8 @@ impl App {
             cd_path: None,
             wt_delete_requested: None,
             wt_delete_pending_path: None,
+            wt_force_delete_requested: None,
+            wt_force_delete_pending_path: None,
             wt_create_requested: None,
             branch_selected: HashSet::new(),
             branch_delete_requested: false,
@@ -666,6 +670,8 @@ impl App {
             KeyCode::Char('y') => {
                 if !self.branch_selected.is_empty() {
                     self.branch_delete_requested = true;
+                } else if let Some(path) = self.wt_force_delete_pending_path.take() {
+                    self.wt_force_delete_requested = Some(path);
                 } else if let Some(path) = self.wt_delete_pending_path.take() {
                     self.wt_delete_requested = Some(path);
                 }
@@ -673,6 +679,7 @@ impl App {
             }
             KeyCode::Char('n') | KeyCode::Esc => {
                 self.wt_delete_pending_path = None;
+                self.wt_force_delete_pending_path = None;
                 self.confirm_dialog = None;
             }
             _ => {}
