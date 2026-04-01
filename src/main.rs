@@ -725,30 +725,35 @@ fn copy_via_native_command(text: &str) -> std::io::Result<()> {
 
     #[cfg(target_os = "linux")]
     let mut child = {
-        // Try xclip first, then xsel
         std::process::Command::new("xclip")
             .args(["-selection", "clipboard"])
             .stdin(std::process::Stdio::piped())
             .spawn()
             .or_else(|_| {
                 std::process::Command::new("xsel")
-                    .arg("--clipboard")
+                    .args(["--clipboard", "--input"])
                     .stdin(std::process::Stdio::piped())
                     .spawn()
             })?
     };
 
     #[cfg(not(any(target_os = "macos", target_os = "linux")))]
-    return Err(std::io::Error::other("no native clipboard command"));
-
-    if let Some(stdin) = child.stdin.as_mut() {
-        stdin.write_all(text.as_bytes())?;
+    {
+        let _ = text;
+        return Err(std::io::Error::other("no native clipboard command"));
     }
-    let status = child.wait()?;
-    if status.success() {
-        Ok(())
-    } else {
-        Err(std::io::Error::other("clipboard command failed"))
+
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    {
+        if let Some(stdin) = child.stdin.as_mut() {
+            stdin.write_all(text.as_bytes())?;
+        }
+        let status = child.wait()?;
+        if status.success() {
+            Ok(())
+        } else {
+            Err(std::io::Error::other("clipboard command failed"))
+        }
     }
 }
 
