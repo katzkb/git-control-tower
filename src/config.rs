@@ -151,7 +151,15 @@ fn run_command(command: &str, work_dir: &Path) -> std::io::Result<()> {
         .output()?;
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(std::io::Error::other(stderr.trim().to_string()));
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let msg = if !stderr.trim().is_empty() {
+            stderr.trim().to_string()
+        } else if !stdout.trim().is_empty() {
+            stdout.trim().to_string()
+        } else {
+            format!("exited with {}", output.status)
+        };
+        return Err(std::io::Error::other(msg));
     }
     Ok(())
 }
