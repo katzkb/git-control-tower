@@ -440,16 +440,21 @@ async fn run(
                 Ok(_) => {
                     app.notification =
                         Some(Notification::success(format!("Worktree removed: {path}")));
+                    refresh_entries(&mut app).await;
                 }
-                Err(_) => {
+                Err(e) => {
+                    let reason = format!("{e}")
+                        .lines()
+                        .next()
+                        .unwrap_or("unknown error")
+                        .to_string();
                     app.confirm_dialog = Some(crate::ui::confirm_dialog::ConfirmDialog::new(
                         "Force Delete Worktree",
-                        format!("Worktree has untracked/modified files.\nForce remove {path}?"),
+                        format!("{reason}\nForce remove {path}?"),
                     ));
                     app.wt_force_delete_pending_path = Some(path);
                 }
             }
-            refresh_entries(&mut app).await;
         }
 
         // Force delete worktree if confirmed
