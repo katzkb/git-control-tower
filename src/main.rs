@@ -464,6 +464,7 @@ async fn run(
                     app.notification = Some(Notification::success(format!(
                         "Worktree force removed: {path}"
                     )));
+                    refresh_entries(&mut app).await;
                 }
                 Err(e) => {
                     app.notification = Some(Notification::error(format!(
@@ -471,7 +472,6 @@ async fn run(
                     )));
                 }
             }
-            refresh_entries(&mut app).await;
         }
 
         // Create worktree if requested
