@@ -4,11 +4,15 @@ A terminal UI tool that acts as a "control tower" for Git/GitHub workflows. Over
 
 ## Features
 
-- **Branch-centric 2-pane view** — Left sidebar lists branches with PR and worktree indicators. Right pane shows git status, worktree path, and PR details with markdown rendering.
-- **Filter modes** — Switch between Local branches (`1`), your PRs (`2`), and review-requested PRs (`3`).
-- **Worktree management** — Create worktrees from PRs with `w` for instant code review. Delete with `d`.
-- **Branch cleanup** — Multi-select branches with `Space`, select all merged with `a`, batch delete with `d`.
+- **Branch-centric 2-pane view** — Left sidebar lists branches with PR status, review indicators, and worktree info. Right pane shows git status, PR details with markdown rendering.
+- **Filter modes** — Switch between Local branches (`1`), your PRs (`2`), and review-requested PRs (`3`). Toggle merged PRs with `m` and team reviews with `t`.
+- **Search** — Press `/` to filter branches by name. Matches are highlighted. Press `Enter` to keep the filter active.
+- **Review status** — Color-coded review indicators: needs review (red), approved (green), changes requested (yellow).
+- **Action menu** — Press `Enter` to open a context-sensitive menu: copy branch name, open PR in browser, cd into worktree, create/delete worktree, delete branch.
+- **Worktree management** — Create worktrees from branches or PRs. Auto-run post-create hooks (copy files, create symlinks, run commands). Force delete worktrees with untracked files.
+- **Branch cleanup** — Multi-select branches with `Space`, select all merged with `a`, batch delete with `d`. Force deletes squash-merged branches.
 - **Commit log** — View commit history with `l`.
+- **Verbose mode** — Run with `--verbose` to surface silenced errors for troubleshooting.
 
 ## Requirements
 
@@ -47,6 +51,12 @@ This wraps `gct` with a shell function that captures the worktree path and runs 
 ```bash
 # Run inside a git repository
 gct
+
+# Show version
+gct --version
+
+# Enable verbose error output
+gct --verbose
 ```
 
 ## Keybindings
@@ -67,10 +77,14 @@ gct
 | Key | Action |
 |-----|--------|
 | `j` / `k` | Navigate sidebar |
+| `/` | Search branches |
+| `Enter` | Action menu |
 | `Space` | Toggle branch selection |
 | `a` | Select all merged branches |
+| `w` | Create worktree |
 | `d` | Delete selected branches / worktree |
-| `w` | Create worktree from PR |
+| `m` | Toggle merged PRs (My PR / Review) |
+| `t` | Toggle team reviews (Review only) |
 
 ### Log View
 
@@ -78,6 +92,39 @@ gct
 |-----|--------|
 | `j` / `k` | Navigate commits |
 | `Esc` | Back to main view |
+
+## Configuration
+
+gct reads configuration from `~/.config/gct/config.toml` or `~/.gct.toml`.
+
+### Worktree Settings
+
+```toml
+[worktree]
+# Base directory for new worktrees (default: "..")
+# Branch name becomes the subdirectory: feature/auth → ../feature/auth
+dir = ".."
+
+# Post-create hooks run automatically after worktree creation.
+# Errors are non-fatal — the worktree is created even if hooks fail.
+
+# Copy files from the main worktree
+[[worktree.post_create]]
+type = "copy"
+from = ".env"
+to = ".env"
+
+# Create symlinks to shared directories
+[[worktree.post_create]]
+type = "symlink"
+from = "node_modules"
+to = "node_modules"
+
+# Run shell commands in the new worktree
+[[worktree.post_create]]
+type = "command"
+command = "npm ci"
+```
 
 ## License
 
