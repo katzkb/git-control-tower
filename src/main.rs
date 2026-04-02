@@ -734,13 +734,13 @@ fn print_shell_init(shell: &str) {
                 r#"gct() {{
     local output
     output=$(command gct "$@")
-    local status=$?
-    if [[ $status -eq 0 && -n "$output" && -d "$output" ]]; then
+    local exit_code=$?
+    if [[ $exit_code -eq 0 && -n "$output" && -d "$output" ]]; then
         cd "$output" || return $?
     elif [[ -n "$output" ]]; then
         printf '%s\n' "$output"
     fi
-    return $status
+    return $exit_code
 }}
 "#
             );
@@ -751,7 +751,7 @@ fn print_shell_init(shell: &str) {
     set -l output (command gct $argv | string collect)
     set -l status_code $pipestatus[1]
     if test $status_code -eq 0 -a -n "$output" -a -d "$output"
-        cd "$output"; or return $status
+        cd "$output"; or return $status_code
     else if test -n "$output"
         printf '%s\n' "$output"
     end
