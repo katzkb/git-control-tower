@@ -165,8 +165,9 @@ fn run_command(command: &str, work_dir: &Path) -> std::io::Result<()> {
 }
 
 /// Load config from the first valid file found:
-/// 1. `~/.config/gct/config.toml`
-/// 2. `~/.gct.toml`
+/// 1. `.gct.toml` (project-local, repository root)
+/// 2. `~/.config/gct/config.toml` (global)
+/// 3. `~/.gct.toml` (global)
 ///
 /// Must be called before TUI initialization (eprintln warnings).
 pub fn load_config() -> Config {
@@ -191,9 +192,14 @@ pub fn load_config() -> Config {
 }
 
 fn config_paths() -> Vec<PathBuf> {
-    home_dir()
-        .map(|home| config_paths_for_home(&home))
-        .unwrap_or_default()
+    let mut paths = Vec::new();
+    if let Ok(cwd) = std::env::current_dir() {
+        paths.push(cwd.join(".gct.toml"));
+    }
+    if let Some(home) = home_dir() {
+        paths.extend(config_paths_for_home(&home));
+    }
+    paths
 }
 
 fn config_paths_for_home(home: &Path) -> Vec<PathBuf> {
@@ -274,6 +280,15 @@ dir = "../wt"
         assert_eq!(paths.len(), 2);
         assert_eq!(paths[0], home.join(".config/gct/config.toml"));
         assert_eq!(paths[1], home.join(".gct.toml"));
+    }
+
+    #[test]
+    fn test_config_paths_includes_local() {
+        let paths = config_paths();
+        // First entry should be .gct.toml in cwd
+        assert!(paths[0].ends_with(".gct.toml"));
+        // Should also include global paths
+        assert!(paths.len() >= 3);
     }
 
     #[test]
