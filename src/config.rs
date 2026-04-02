@@ -165,7 +165,7 @@ fn run_command(command: &str, work_dir: &Path) -> std::io::Result<()> {
 }
 
 /// Load config from the first valid file found:
-/// 1. `.gct.toml` (project-local, repository root)
+/// 1. `.gct.toml` (project-local, git repository root via `git rev-parse --show-toplevel`)
 /// 2. `~/.config/gct/config.toml` (global)
 /// 3. `~/.gct.toml` (global)
 ///
@@ -193,13 +193,23 @@ pub fn load_config() -> Config {
 
 fn config_paths() -> Vec<PathBuf> {
     let mut paths = Vec::new();
-    if let Ok(cwd) = std::env::current_dir() {
-        paths.push(cwd.join(".gct.toml"));
+    if let Some(root) = git_repo_root() {
+        paths.push(root.join(".gct.toml"));
     }
     if let Some(home) = home_dir() {
         paths.extend(config_paths_for_home(&home));
     }
     paths
+}
+
+fn git_repo_root() -> Option<PathBuf> {
+    std::process::Command::new("git")
+        .args(["rev-parse", "--show-toplevel"])
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .and_then(|o| String::from_utf8(o.stdout).ok())
+        .map(|s| PathBuf::from(s.trim()))
 }
 
 fn config_paths_for_home(home: &Path) -> Vec<PathBuf> {
@@ -285,10 +295,14 @@ dir = "../wt"
     #[test]
     fn test_config_paths_includes_local() {
         let paths = config_paths();
-        // First entry should be .gct.toml in cwd
-        assert!(paths[0].ends_with(".gct.toml"));
-        // Should also include global paths
-        assert!(paths.len() >= 3);
+        // When run inside a git repo, first entry should be .gct.toml at repo root
+        if git_repo_root().is_some() {
+            assert!(paths[0].ends_with(".gct.toml"));
+        }
+        // Global paths should be present if home is available
+        if home_dir().is_some() {
+            assert!(paths.len() >= 2);
+        }
     }
 
     #[test]
