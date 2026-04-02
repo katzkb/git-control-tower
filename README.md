@@ -95,7 +95,13 @@ gct --verbose
 
 ## Configuration
 
-gct reads configuration from `~/.config/gct/config.toml` or `~/.gct.toml`.
+gct reads configuration from the first file found in this order:
+
+1. `.gct.toml` in the repository root (project-local)
+2. `~/.config/gct/config.toml` (global)
+3. `~/.gct.toml` (global)
+
+Project-local config is useful for per-repo worktree hooks (e.g. copying `.env`, running `npm ci`).
 
 ### Worktree Settings
 
