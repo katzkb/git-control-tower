@@ -115,7 +115,9 @@ async fn main() -> anyhow::Result<()> {
     disable_raw_mode()?;
 
     if let Some(path) = cd_path {
+        use std::io::Write;
         println!("{path}");
+        let _ = std::io::stdout().flush();
     }
     result
 }
