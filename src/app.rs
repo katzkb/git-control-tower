@@ -434,7 +434,8 @@ impl App {
                         "Delete Branches",
                         format!("Delete {count} branch(es)? [{preview}]"),
                     ));
-                } else if let Some(entry) = self.selected_entry().cloned()
+                } else if !self.wt_loading
+                    && let Some(entry) = self.selected_entry().cloned()
                     && let Some(wt_path) = entry.worktree_path()
                     && !entry.is_current()
                 {
@@ -447,7 +448,8 @@ impl App {
                 }
             }
             KeyCode::Char('w') => {
-                if let Some(entry) = self.selected_entry()
+                if !self.wt_loading
+                    && let Some(entry) = self.selected_entry()
                     && entry.worktree.is_none()
                     && !entry.is_current()
                     && (entry.local_branch.is_some() || entry.pull_request.is_some())
@@ -566,13 +568,14 @@ impl App {
         if entry.worktree.is_some() {
             items.push(ActionItem::CdIntoWorktree);
         }
-        if entry.worktree.is_none()
+        if !self.wt_loading
+            && entry.worktree.is_none()
             && !entry.is_current()
             && (entry.local_branch.is_some() || entry.pull_request.is_some())
         {
             items.push(ActionItem::CreateWorktree);
         }
-        if entry.worktree.is_some() && !entry.is_current() {
+        if !self.wt_loading && entry.worktree.is_some() && !entry.is_current() {
             items.push(ActionItem::DeleteWorktree);
         }
         if entry.local_branch.is_some()
