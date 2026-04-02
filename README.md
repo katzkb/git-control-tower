@@ -81,6 +81,7 @@ gct --verbose
 | `Enter` | Action menu |
 | `Space` | Toggle branch selection |
 | `a` | Select all merged branches |
+| `w` | Create worktree |
 | `d` | Delete selected branches / worktree |
 | `m` | Toggle merged PRs (My PR / Review) |
 | `t` | Toggle team reviews (Review only) |
