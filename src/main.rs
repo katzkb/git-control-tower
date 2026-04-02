@@ -38,13 +38,28 @@ struct RepoInfo {
 enum AsyncResult {
     PrDetail(PrDetail),
     PrDetailError(u64, String),
-    GitStatus { wt_path: String, status: GitStatus },
+    GitStatus {
+        wt_path: String,
+        status: GitStatus,
+    },
     GitStatusError(String),
     UserLogin(String),
     UserLoginError(String),
     LocalPrList(Vec<PullRequest>, Vec<String>),
     MyPrList(Vec<PullRequest>, Vec<String>),
     ReviewPrList(Vec<PullRequest>, Vec<String>),
+    WtCreated {
+        wt_path: String,
+        copy_errors: Vec<String>,
+    },
+    WtCreateError(String),
+    WtRemoved(String),
+    WtRemoveError {
+        path: String,
+        reason: String,
+    },
+    WtForceRemoved(String),
+    WtForceRemoveError(String),
 }
 
 #[tokio::main]
@@ -433,74 +448,11 @@ async fn run(
                         app.request_details_for_selection();
                     }
                 }
-            }
-        }
-
-        // Delete worktree if requested
-        if let Some(path) = app.wt_delete_requested.take() {
-            match run_git(&["worktree", "remove", &path]).await {
-                Ok(_) => {
-                    app.notification =
-                        Some(Notification::success(format!("Worktree removed: {path}")));
-                    refresh_entries(&mut app).await;
-                }
-                Err(e) => {
-                    let reason = format!("{e}")
-                        .lines()
-                        .next()
-                        .unwrap_or("unknown error")
-                        .to_string();
-                    app.confirm_dialog = Some(crate::ui::confirm_dialog::ConfirmDialog::new(
-                        "Force Delete Worktree",
-                        format!("{reason}\nForce remove {path}?"),
-                    ));
-                    app.wt_force_delete_pending_path = Some(path);
-                }
-            }
-        }
-
-        // Force delete worktree if confirmed
-        if let Some(path) = app.wt_force_delete_requested.take() {
-            match run_git(&["worktree", "remove", "--force", &path]).await {
-                Ok(_) => {
-                    app.notification = Some(Notification::success(format!(
-                        "Worktree force removed: {path}"
-                    )));
-                    refresh_entries(&mut app).await;
-                }
-                Err(e) => {
-                    app.notification = Some(Notification::error(format!(
-                        "Failed to force remove worktree: {e}"
-                    )));
-                }
-            }
-        }
-
-        // Create worktree if requested
-        if let Some(branch_name) = app.wt_create_requested.take() {
-            let wt_path = config.worktree_path(&branch_name);
-            if let Some(parent) = std::path::Path::new(&wt_path).parent() {
-                let _ = std::fs::create_dir_all(parent);
-            }
-            let has_local = app.branches.iter().any(|b| b.name == branch_name);
-            let result = if has_local {
-                // Local branch exists — no fetch needed
-                run_git(&["worktree", "add", &wt_path, &branch_name]).await
-            } else {
-                // Remote-only branch — fetch first
-                match run_git(&["fetch", "origin", &branch_name]).await {
-                    Ok(_) => run_git(&["worktree", "add", &wt_path, &branch_name]).await,
-                    Err(e) => Err(e),
-                }
-            };
-            match result {
-                Ok(_) => {
-                    let repo_root = std::env::current_dir().unwrap_or_default();
-                    let copy_errors = config::run_post_create(
-                        &config.worktree.post_create,
-                        &repo_root,
-                        std::path::Path::new(&wt_path),
-                    );
+                AsyncResult::WtCreated {
+                    wt_path,
+                    copy_errors,
+                } => {
+                    app.wt_loading = false;
                     if copy_errors.is_empty() {
                         app.notification = Some(Notification::success(format!(
                             "Worktree created: {wt_path}"
@@ -514,14 +466,118 @@ async fn run(
                             app.verbose_errors.extend(copy_errors);
                         }
                     }
+                    refresh_entries(&mut app).await;
                 }
-                Err(e) => {
-                    app.notification = Some(Notification::error(format!(
-                        "Failed to create worktree: {e}"
+                AsyncResult::WtCreateError(msg) => {
+                    app.wt_loading = false;
+                    app.notification = Some(Notification::error(msg));
+                }
+                AsyncResult::WtRemoved(path) => {
+                    app.wt_loading = false;
+                    app.notification =
+                        Some(Notification::success(format!("Worktree removed: {path}")));
+                    refresh_entries(&mut app).await;
+                }
+                AsyncResult::WtRemoveError { path, reason } => {
+                    app.wt_loading = false;
+                    app.confirm_dialog = Some(crate::ui::confirm_dialog::ConfirmDialog::new(
+                        "Force Delete Worktree",
+                        format!("{reason}\nForce remove {path}?"),
+                    ));
+                    app.wt_force_delete_pending_path = Some(path);
+                }
+                AsyncResult::WtForceRemoved(path) => {
+                    app.wt_loading = false;
+                    app.notification = Some(Notification::success(format!(
+                        "Worktree force removed: {path}"
                     )));
+                    refresh_entries(&mut app).await;
+                }
+                AsyncResult::WtForceRemoveError(msg) => {
+                    app.wt_loading = false;
+                    app.notification = Some(Notification::error(msg));
                 }
             }
-            refresh_entries(&mut app).await;
+        }
+
+        // Delete worktree if requested (async, non-blocking)
+        if let Some(path) = app.wt_delete_requested.take() {
+            app.wt_loading = true;
+            let tx = tx.clone();
+            tokio::spawn(async move {
+                match run_git(&["worktree", "remove", &path]).await {
+                    Ok(_) => {
+                        let _ = tx.send(AsyncResult::WtRemoved(path));
+                    }
+                    Err(e) => {
+                        let reason = format!("{e}")
+                            .lines()
+                            .next()
+                            .unwrap_or("unknown error")
+                            .to_string();
+                        let _ = tx.send(AsyncResult::WtRemoveError { path, reason });
+                    }
+                }
+            });
+        }
+
+        // Force delete worktree if confirmed (async, non-blocking)
+        if let Some(path) = app.wt_force_delete_requested.take() {
+            app.wt_loading = true;
+            let tx = tx.clone();
+            tokio::spawn(async move {
+                match run_git(&["worktree", "remove", "--force", &path]).await {
+                    Ok(_) => {
+                        let _ = tx.send(AsyncResult::WtForceRemoved(path));
+                    }
+                    Err(e) => {
+                        let _ = tx.send(AsyncResult::WtForceRemoveError(format!(
+                            "Failed to force remove worktree: {e}"
+                        )));
+                    }
+                }
+            });
+        }
+
+        // Create worktree if requested (async, non-blocking)
+        if let Some(branch_name) = app.wt_create_requested.take() {
+            app.wt_loading = true;
+            let wt_path = config.worktree_path(&branch_name);
+            if let Some(parent) = std::path::Path::new(&wt_path).parent() {
+                let _ = std::fs::create_dir_all(parent);
+            }
+            let has_local = app.branches.iter().any(|b| b.name == branch_name);
+            let post_create = config.worktree.post_create.clone();
+            let tx = tx.clone();
+            tokio::spawn(async move {
+                let result = if has_local {
+                    run_git(&["worktree", "add", &wt_path, &branch_name]).await
+                } else {
+                    match run_git(&["fetch", "origin", &branch_name]).await {
+                        Ok(_) => run_git(&["worktree", "add", &wt_path, &branch_name]).await,
+                        Err(e) => Err(e),
+                    }
+                };
+                match result {
+                    Ok(_) => {
+                        let repo_root = std::env::current_dir().unwrap_or_default();
+                        let copy_errors = config::run_post_create(
+                            &post_create,
+                            &repo_root,
+                            std::path::Path::new(&wt_path),
+                        );
+                        let _ = tx.send(AsyncResult::WtCreated {
+                            wt_path,
+                            copy_errors,
+                        });
+                    }
+                    Err(e) => {
+                        let _ = tx.send(AsyncResult::WtCreateError(format!(
+                            "Failed to create worktree: {e}"
+                        )));
+                    }
+                }
+            });
         }
 
         // Delete selected branches if requested
