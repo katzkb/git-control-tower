@@ -268,6 +268,7 @@ pub async fn fetch_my_prs(show_merged: bool) -> (Vec<PullRequest>, Vec<String>) 
 pub async fn fetch_review_prs(
     show_merged: bool,
     include_team: bool,
+    gh_user: &str,
 ) -> (Vec<PullRequest>, Vec<String>) {
     let mut queries = vec!["review-requested:@me", "reviewed-by:@me"];
     if include_team {
@@ -277,15 +278,30 @@ pub async fn fetch_review_prs(
     let mut all_prs = Vec::new();
     let mut all_errors = Vec::new();
     let mut seen: HashSet<u64> = HashSet::new();
+    let mut reviewed_numbers: HashSet<u64> = HashSet::new();
 
-    for query in queries {
+    for query in &queries {
         let (prs, errors) = fetch_pr_list(&["--search", query], show_merged).await;
         all_errors.extend(errors);
         for pr in prs {
+            if *query == "reviewed-by:@me" {
+                reviewed_numbers.insert(pr.number);
+            }
             if seen.insert(pr.number) {
                 all_prs.push(pr);
             }
         }
+    }
+
+    // When me-only, exclude PRs that only have team review requests
+    if !include_team && !gh_user.is_empty() {
+        all_prs.retain(|pr| {
+            reviewed_numbers.contains(&pr.number)
+                || pr
+                    .review_requests
+                    .iter()
+                    .any(|r| r.login.as_deref() == Some(gh_user))
+        });
     }
 
     // Sort by updated_at descending for consistent ordering
