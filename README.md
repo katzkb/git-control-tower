@@ -69,7 +69,6 @@ gct --verbose
 | `2` | Filter: My PRs |
 | `3` | Filter: Review requested |
 | `l` | Log view |
-| `/` | Search branches |
 | `?` | Help |
 | `q` | Quit |
 
@@ -78,6 +77,7 @@ gct --verbose
 | Key | Action |
 |-----|--------|
 | `j` / `k` | Navigate sidebar |
+| `/` | Search branches |
 | `Enter` | Action menu |
 | `Space` | Toggle branch selection |
 | `a` | Select all merged branches |
