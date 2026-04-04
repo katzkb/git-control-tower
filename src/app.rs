@@ -196,7 +196,10 @@ impl App {
 
     pub fn tick(&mut self) {
         self.spinner_tick = self.spinner_tick.wrapping_add(1);
-        if let Some(ref mut n) = self.notification {
+        // Don't auto-dismiss while a worktree operation is in progress
+        if !self.wt_loading
+            && let Some(ref mut n) = self.notification
+        {
             if n.ticks_remaining > 0 {
                 n.ticks_remaining -= 1;
             } else {
