@@ -166,7 +166,7 @@ pub async fn fetch_local_prs(
             let escaped_name = name.replace('\\', "\\\\").replace('"', "\\\"");
             aliases.push_str(&format!(
                 r#"{alias}: pullRequests(first: 2, headRefName: "{escaped_name}", states: [OPEN, MERGED], orderBy: {{field: UPDATED_AT, direction: DESC}}) {{
-  nodes {{ number title state headRefName updatedAt author {{ login }}
+  nodes {{ number title state headRefName updatedAt isDraft author {{ login }}
     reviewRequests(first: 10) {{ nodes {{ requestedReviewer {{ ... on User {{ login }} }} }} }}
   }}
 }}
@@ -231,6 +231,8 @@ fn parse_graphql_pr(node: &serde_json::Value) -> Option<PullRequest> {
         .unwrap_or_default()
         .to_string();
 
+    let is_draft = node["isDraft"].as_bool().unwrap_or(false);
+
     let review_requests = node["reviewRequests"]["nodes"]
         .as_array()
         .map(|arr| {
@@ -251,6 +253,7 @@ fn parse_graphql_pr(node: &serde_json::Value) -> Option<PullRequest> {
         state,
         head_ref,
         updated_at,
+        is_draft,
         review_requests,
         latest_reviews: Vec::new(),
         review_status: None,
@@ -314,7 +317,8 @@ pub async fn fetch_review_prs(
 /// `filter_args` is passed directly to `gh pr list` (e.g., `["--author", "@me"]`).
 /// Returns (prs, errors) where errors contains any fetch/parse failures.
 async fn fetch_pr_list(filter_args: &[&str], show_merged: bool) -> (Vec<PullRequest>, Vec<String>) {
-    let pr_fields = "number,title,author,state,headRefName,updatedAt,reviewRequests,latestReviews";
+    let pr_fields =
+        "number,title,author,state,headRefName,updatedAt,isDraft,reviewRequests,latestReviews";
     let filter_label = filter_args.join(" ");
     let mut prs = Vec::new();
     let mut errors = Vec::new();
@@ -416,6 +420,7 @@ mod tests {
             head_ref: "feature-a".to_string(),
             updated_at: "2024-01-15".to_string(),
             review_requests: vec![],
+            is_draft: false,
             latest_reviews: vec![],
             review_status: None,
         }];
@@ -439,6 +444,7 @@ mod tests {
             head_ref: "remote-branch".to_string(),
             updated_at: "2024-01-15".to_string(),
             review_requests: vec![],
+            is_draft: false,
             latest_reviews: vec![],
             review_status: None,
         }];
@@ -465,6 +471,7 @@ mod tests {
             head_ref: "feature-a".to_string(),
             updated_at: "2024-01-15".to_string(),
             review_requests: vec![],
+            is_draft: false,
             latest_reviews: vec![],
             review_status: None,
         }];
@@ -493,6 +500,7 @@ mod tests {
                 head_ref: "feature-a".to_string(),
                 updated_at: "2024-01-01".to_string(),
                 review_requests: vec![],
+                is_draft: false,
                 latest_reviews: vec![],
                 review_status: None,
             },
@@ -504,6 +512,7 @@ mod tests {
                 head_ref: "feature-a".to_string(),
                 updated_at: "2024-01-15".to_string(),
                 review_requests: vec![],
+                is_draft: false,
                 latest_reviews: vec![],
                 review_status: None,
             },

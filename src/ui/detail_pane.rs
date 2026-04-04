@@ -197,17 +197,22 @@ fn draw_pr_section(
     )));
 
     // Author + State
-    let state_color = match pr.state.as_str() {
-        "OPEN" => Color::Green,
-        "CLOSED" => Color::Red,
-        "MERGED" => Color::Magenta,
-        _ => Color::White,
+    let (state_str, state_color) = if pr.is_draft {
+        ("DRAFT".to_string(), Color::DarkGray)
+    } else {
+        let color = match pr.state.as_str() {
+            "OPEN" => Color::Green,
+            "CLOSED" => Color::Red,
+            "MERGED" => Color::Magenta,
+            _ => Color::White,
+        };
+        (pr.state.clone(), color)
     };
     lines.push(Line::from(vec![
         Span::styled("  Author: ", Style::default().fg(Color::DarkGray)),
         Span::styled(pr.author.clone(), Style::default().fg(Color::White)),
         Span::styled("  State: ", Style::default().fg(Color::DarkGray)),
-        Span::styled(pr.state.clone(), Style::default().fg(state_color)),
+        Span::styled(state_str, Style::default().fg(state_color)),
     ]));
 
     // Review status
