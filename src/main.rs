@@ -1039,6 +1039,7 @@ mod tests {
             head_ref: String::new(),
             updated_at: String::new(),
             review_requests: vec![],
+            is_draft: false,
             latest_reviews: vec![],
             review_status: None,
         };
@@ -1056,6 +1057,7 @@ mod tests {
             head_ref: String::new(),
             updated_at: String::new(),
             review_requests: vec![],
+            is_draft: false,
             latest_reviews: vec![LatestReview {
                 author: "other-user".to_string(),
                 state: "APPROVED".to_string(),
@@ -1079,6 +1081,7 @@ mod tests {
             head_ref: String::new(),
             updated_at: String::new(),
             review_requests: vec![],
+            is_draft: false,
             latest_reviews: vec![LatestReview {
                 author: "katzkb".to_string(),
                 state: "APPROVED".to_string(),
@@ -1099,6 +1102,7 @@ mod tests {
             head_ref: String::new(),
             updated_at: String::new(),
             review_requests: vec![],
+            is_draft: false,
             latest_reviews: vec![LatestReview {
                 author: "katzkb".to_string(),
                 state: "CHANGES_REQUESTED".to_string(),

@@ -174,6 +174,16 @@ fn format_entry_line(
         ));
     }
 
+    // Draft tag
+    if let Some(pr) = &entry.pull_request
+        && pr.is_draft
+    {
+        spans.push(Span::styled(
+            " [draft]",
+            Style::default().fg(Color::DarkGray),
+        ));
+    }
+
     // Review status tag
     if let Some(pr) = &entry.pull_request
         && let Some(status) = &pr.review_status

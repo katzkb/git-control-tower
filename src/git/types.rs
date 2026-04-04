@@ -46,6 +46,8 @@ pub struct PullRequest {
     #[serde(rename = "reviewRequests", default)]
     #[allow(dead_code)]
     pub review_requests: Vec<ReviewRequest>,
+    #[serde(rename = "isDraft", default)]
+    pub is_draft: bool,
     #[serde(rename = "latestReviews", default)]
     pub latest_reviews: Vec<LatestReview>,
     #[serde(skip)]
