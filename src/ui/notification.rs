@@ -5,10 +5,14 @@ use ratatui::{
     widgets::{Block, Borders, Clear, Paragraph, Wrap},
 };
 
+const SUCCESS_TICKS: u32 = 38; // ~3 seconds at 80ms tick
+const ERROR_TICKS: u32 = 63; // ~5 seconds at 80ms tick
+
 #[derive(Debug, Clone)]
 pub struct Notification {
     pub message: String,
     pub is_error: bool,
+    pub ticks_remaining: u32,
 }
 
 impl Notification {
@@ -16,6 +20,7 @@ impl Notification {
         Self {
             message: message.into(),
             is_error: false,
+            ticks_remaining: SUCCESS_TICKS,
         }
     }
 
@@ -23,6 +28,7 @@ impl Notification {
         Self {
             message: message.into(),
             is_error: true,
+            ticks_remaining: ERROR_TICKS,
         }
     }
 }
