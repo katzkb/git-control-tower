@@ -147,8 +147,28 @@ mod tests {
         assert_eq!(commits[0].message, "fix bug");
         assert_eq!(commits[0].author, "Alice");
         assert_eq!(commits[0].date, "2024-01-15");
+        assert_eq!(commits[0].graph, "* ");
         assert_eq!(commits[1].hash, "def5678");
         assert_eq!(commits[1].message, "add feature");
+        assert_eq!(commits[1].graph, "* ");
+    }
+
+    #[test]
+    fn test_parse_log_with_graph_branches() {
+        let output = "* abc1234\x00merge branch\x00Alice\x002024-01-15\n\
+                       |\\ \n\
+                       | * def5678\x00feature work\x00Bob\x002024-01-14\n\
+                       |/ \n\
+                       * ghi9012\x00initial commit\x00Alice\x002024-01-13\n";
+        let commits = parse_log(output);
+        // Graph-only lines (|\ and |/) are skipped, only commit lines are parsed
+        assert_eq!(commits.len(), 3);
+        assert_eq!(commits[0].graph, "* ");
+        assert_eq!(commits[0].hash, "abc1234");
+        assert_eq!(commits[1].graph, "| * ");
+        assert_eq!(commits[1].hash, "def5678");
+        assert_eq!(commits[2].graph, "* ");
+        assert_eq!(commits[2].hash, "ghi9012");
     }
 
     #[test]
