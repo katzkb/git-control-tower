@@ -422,7 +422,7 @@ impl App {
             }
             KeyCode::Char('a') => {
                 for entry in &self.entries {
-                    if entry.is_merged()
+                    if (entry.is_merged() || entry.pr_is_merged())
                         && !entry.is_current()
                         && !Self::is_protected_branch(&entry.name)
                     {
