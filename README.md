@@ -132,6 +132,20 @@ type = "command"
 command = "npm ci"
 ```
 
+### Protected Branches
+
+Protected branches are excluded from the `[merged]` label, yellow name color, and all deletion actions (`space`, `a`, action menu). Default: `["main", "master", "develop"]`.
+
+```toml
+# Override the default list — useful if your team uses `staging`, `release`, etc.
+protected_branches = ["main", "develop", "staging"]
+
+# Or disable protection entirely
+# protected_branches = []
+```
+
+Branch names are matched case-sensitively.
+
 ## License
 
 Licensed under either of

@@ -425,15 +425,17 @@ impl App {
                 }
             }
             KeyCode::Char('a') => {
-                let protected = &self.config.protected_branches;
-                for entry in &self.entries {
-                    if (entry.is_merged() || entry.pr_is_merged())
-                        && !entry.is_current()
-                        && !protected.iter().any(|b| b == &entry.name)
-                    {
-                        self.branch_selected.insert(entry.name.clone());
-                    }
-                }
+                let to_select: Vec<String> = self
+                    .entries
+                    .iter()
+                    .filter(|e| {
+                        (e.is_merged() || e.pr_is_merged())
+                            && !e.is_current()
+                            && !self.is_protected_branch(&e.name)
+                    })
+                    .map(|e| e.name.clone())
+                    .collect();
+                self.branch_selected.extend(to_select);
             }
             KeyCode::Char('d') => {
                 if !self.branch_selected.is_empty() {
