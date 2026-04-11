@@ -29,6 +29,15 @@ use crate::git::parser::{parse_branches, parse_log, parse_worktrees};
 use crate::git::types::{GitStatus, PrDetail, PullRequest, ReviewStatus};
 use crate::ui::notification::Notification;
 
+/// Args used for fetching commits in the Log view (startup + `r` refresh).
+const LOG_ARGS: &[&str] = &[
+    "log",
+    "--format=%h%x00%s%x00%an%x00%ad",
+    "--date=short",
+    "-n",
+    "200",
+];
+
 struct RepoInfo {
     owner: String,
     repo: String,
@@ -161,15 +170,7 @@ async fn run(
     let mut status_inflight: HashSet<String> = HashSet::new();
 
     // Phase 1: Fast local loads (blocking, ~170ms)
-    if let Ok(output) = run_git(&[
-        "log",
-        "--format=%h%x00%s%x00%an%x00%ad",
-        "--date=short",
-        "-n",
-        "200",
-    ])
-    .await
-    {
+    if let Ok(output) = run_git(LOG_ARGS).await {
         app.commits = parse_log(&output);
     }
     if let Ok(output) = run_git(&["worktree", "list", "--porcelain"]).await {
@@ -295,15 +296,7 @@ async fn run(
         // Reload commits on `r` refresh from Log view
         if app.commits_reload_requested {
             app.commits_reload_requested = false;
-            if let Ok(output) = run_git(&[
-                "log",
-                "--format=%h%x00%s%x00%an%x00%ad",
-                "--date=short",
-                "-n",
-                "200",
-            ])
-            .await
-            {
+            if let Ok(output) = run_git(LOG_ARGS).await {
                 app.commits = parse_log(&output);
             }
         }

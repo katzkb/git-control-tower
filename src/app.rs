@@ -413,7 +413,9 @@ impl App {
                             self.review_prs_loaded = false;
                         }
                     }
-                    // Stale PR detail bodies should also reload
+                    // Clear PR detail cache for ALL filters, not just the current
+                    // one — stale detail bodies are risky after a refresh, and the
+                    // detail pane will refetch on the next selection.
                     self.pr_detail_cache.clear();
                     // Signal branches/worktrees reload + PR fetch
                     self.branches_reload_requested = true;
