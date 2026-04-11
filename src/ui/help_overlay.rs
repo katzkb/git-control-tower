@@ -7,7 +7,7 @@ use ratatui::{
 };
 
 pub fn draw(frame: &mut Frame) {
-    let area = centered_rect(60, 26, frame.area());
+    let area = centered_rect(60, 27, frame.area());
     frame.render_widget(Clear, area);
 
     let lines = vec![
@@ -23,6 +23,7 @@ pub fn draw(frame: &mut Frame) {
         key_line("2", "Filter: My PR"),
         key_line("3", "Filter: Review"),
         key_line("l", "Log View"),
+        key_line("r", "Refresh current view"),
         key_line("?", "Toggle this help"),
         key_line("q", "Quit"),
         Line::from(""),

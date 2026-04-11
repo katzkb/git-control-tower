@@ -127,6 +127,8 @@ pub struct App {
     pub branch_delete_requested: bool,
     pub open_pr_requested: Option<u64>,
     pub copy_branch_requested: Option<String>,
+    pub branches_reload_requested: bool,
+    pub commits_reload_requested: bool,
 
     // Spinner animation
     spinner_tick: usize,
@@ -184,6 +186,8 @@ impl App {
             branch_delete_requested: false,
             open_pr_requested: None,
             copy_branch_requested: None,
+            branches_reload_requested: false,
+            commits_reload_requested: false,
             spinner_tick: 0,
             config,
         }
@@ -392,6 +396,37 @@ impl App {
                 }
                 self.request_details_for_selection();
             }
+            KeyCode::Char('r') => match self.active_view {
+                ActiveView::Main => {
+                    // Invalidate current filter's PR cache so the fetch is forced
+                    match self.main_filter {
+                        MainFilter::Local => {
+                            self.local_prs.clear();
+                            self.local_prs_loaded = false;
+                        }
+                        MainFilter::MyPr => {
+                            self.my_prs.clear();
+                            self.my_prs_loaded = false;
+                        }
+                        MainFilter::ReviewRequested => {
+                            self.review_prs.clear();
+                            self.review_prs_loaded = false;
+                        }
+                    }
+                    // Clear PR detail cache for ALL filters, not just the current
+                    // one — stale detail bodies are risky after a refresh, and the
+                    // detail pane will refetch on the next selection.
+                    self.pr_detail_cache.clear();
+                    // Signal branches/worktrees reload + PR fetch
+                    self.branches_reload_requested = true;
+                    self.pr_fetch_requested = Some(self.main_filter);
+                    self.notification = Some(Notification::success("Refreshing…"));
+                }
+                ActiveView::Log => {
+                    self.commits_reload_requested = true;
+                    self.notification = Some(Notification::success("Refreshing…"));
+                }
+            },
             _ => match self.active_view {
                 ActiveView::Main => self.handle_main_key(key.code),
                 ActiveView::Log => self.handle_log_key(key.code),
