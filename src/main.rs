@@ -326,14 +326,23 @@ async fn run(
                     });
                 }
                 MainFilter::ReviewRequested => {
-                    let show_merged = app.show_merged;
-                    let include_team = app.include_team_reviews;
-                    let gh_user = app.gh_user.clone();
-                    tokio::spawn(async move {
-                        let (prs, errors) =
-                            data::fetch_review_prs(show_merged, include_team, &gh_user).await;
-                        let _ = tx.send(AsyncResult::ReviewPrList(prs, errors));
-                    });
+                    // Defer until gh_user is known — GitHub's `review-requested:@me`
+                    // search expands to team memberships, and the post-fetch filter
+                    // in fetch_review_prs only runs when gh_user is non-empty. Without
+                    // this guard, switching to Review right after startup can show
+                    // team PRs even in me-only mode.
+                    if app.gh_user.is_empty() && !app.include_team_reviews {
+                        app.pr_fetch_requested = Some(MainFilter::ReviewRequested);
+                    } else {
+                        let show_merged = app.show_merged;
+                        let include_team = app.include_team_reviews;
+                        let gh_user = app.gh_user.clone();
+                        tokio::spawn(async move {
+                            let (prs, errors) =
+                                data::fetch_review_prs(show_merged, include_team, &gh_user).await;
+                            let _ = tx.send(AsyncResult::ReviewPrList(prs, errors));
+                        });
+                    }
                 }
             }
         }
