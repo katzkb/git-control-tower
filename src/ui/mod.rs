@@ -1,6 +1,7 @@
 pub mod confirm_dialog;
 mod detail_pane;
 mod help_overlay;
+mod history_view;
 mod log_view;
 mod main_view;
 pub mod markdown;
@@ -22,6 +23,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     match app.active_view {
         ActiveView::Main => main_view::draw(frame, chunks[0], app),
         ActiveView::Log => log_view::draw(frame, chunks[0], app),
+        ActiveView::History => history_view::draw(frame, chunks[0], app),
     }
 
     // Status bar
@@ -46,6 +48,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
             )
         }
         ActiveView::Log => " [Log]  1:Local  2:My PR  3:Review  l:Log  ?:Help  q:Quit".to_string(),
+        ActiveView::History => " [History]  j/k:Scroll  Esc:Back  ?:Help  q:Quit".to_string(),
     };
     let status =
         Paragraph::new(status_text).style(Style::default().fg(Color::White).bg(Color::DarkGray));

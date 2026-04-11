@@ -11,6 +11,7 @@ pub enum ActiveView {
     #[default]
     Main,
     Log,
+    History,
 }
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -67,6 +68,9 @@ pub struct App {
     // Log View
     pub commits: Vec<Commit>,
     pub log_scroll: usize,
+
+    // History View
+    pub history_scroll: usize,
 
     // Main View — unified entries
     pub entries: Vec<BranchEntry>,
@@ -144,6 +148,7 @@ impl App {
             should_quit: false,
             commits: Vec::new(),
             log_scroll: 0,
+            history_scroll: 0,
             entries: Vec::new(),
             entries_loaded: false,
             main_filter: MainFilter::default(),
@@ -353,13 +358,17 @@ impl App {
                     self.sidebar_scroll = self.search_pre_scroll;
                     self.sidebar_offset = 0;
                     self.request_details_for_selection();
-                } else if self.active_view == ActiveView::Log {
+                } else if matches!(self.active_view, ActiveView::Log | ActiveView::History) {
                     self.active_view = ActiveView::Main;
                 } else {
                     self.should_quit = true;
                 }
             }
             KeyCode::Char('l') => self.active_view = ActiveView::Log,
+            KeyCode::Char('h') => {
+                self.active_view = ActiveView::History;
+                self.history_scroll = 0;
+            }
             KeyCode::Char('1') => {
                 self.main_filter = MainFilter::Local;
                 self.active_view = ActiveView::Main;
@@ -426,10 +435,14 @@ impl App {
                     self.commits_reload_requested = true;
                     self.notification = Some(Notification::success("Refreshing…"));
                 }
+                ActiveView::History => {
+                    // History updates live as commands run — no manual refresh needed.
+                }
             },
             _ => match self.active_view {
                 ActiveView::Main => self.handle_main_key(key.code),
                 ActiveView::Log => self.handle_log_key(key.code),
+                ActiveView::History => self.handle_history_key(key.code),
             },
         }
     }
@@ -562,6 +575,21 @@ impl App {
             }
             KeyCode::Char('k') | KeyCode::Up => {
                 self.log_scroll = self.log_scroll.saturating_sub(1);
+            }
+            _ => {}
+        }
+    }
+
+    fn handle_history_key(&mut self, code: KeyCode) {
+        let len = crate::git::command::command_history_snapshot().len();
+        match code {
+            KeyCode::Char('j') | KeyCode::Down => {
+                if len > 0 && self.history_scroll + 1 < len {
+                    self.history_scroll += 1;
+                }
+            }
+            KeyCode::Char('k') | KeyCode::Up => {
+                self.history_scroll = self.history_scroll.saturating_sub(1);
             }
             _ => {}
         }
