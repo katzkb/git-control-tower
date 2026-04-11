@@ -70,6 +70,12 @@ async fn main() -> anyhow::Result<()> {
         return Ok(());
     }
 
+    // Handle --help / -h before any prerequisite checks so it works outside a git repo
+    if std::env::args().any(|a| a == "--help" || a == "-h") {
+        print_help();
+        return Ok(());
+    }
+
     // Handle shell-init subcommand
     let args: Vec<String> = std::env::args().collect();
     if args.get(1).map(|s| s.as_str()) == Some("shell-init") {
@@ -739,6 +745,34 @@ async fn detect_default_branch() -> String {
         return "master".to_string();
     }
     "HEAD".to_string()
+}
+
+fn print_help() {
+    print!(
+        "gct — Git Control Tower
+A terminal TUI for Git/GitHub branch, PR, and worktree management.
+
+USAGE:
+    gct [OPTIONS]
+    gct shell-init <SHELL>
+
+OPTIONS:
+    -h, --help        Print this help message and exit
+    -v, --version     Print version and exit
+        --verbose     Surface silenced errors for troubleshooting
+
+SUBCOMMANDS:
+    shell-init <SHELL>
+        Print shell wrapper code for `cd into worktree` support.
+        SHELL is one of: zsh, bash, fish (default: zsh).
+        Example: eval \"$(gct shell-init zsh)\"
+
+Run `gct` with no arguments inside a git repository to launch the TUI.
+
+CONFIG:
+    .gct.toml (repo root) → ~/.config/gct/config.toml → ~/.gct.toml
+"
+    );
 }
 
 fn print_shell_init(shell: &str) {
