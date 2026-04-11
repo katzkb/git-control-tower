@@ -94,10 +94,12 @@ fn draw_entry_list(frame: &mut Frame, area: Rect, app: &mut App) {
                 .iter()
                 .map(|entry| {
                     let is_selected = app.branch_selected.contains(&entry.name);
+                    let is_protected = app.is_protected_branch(&entry.name);
                     ListItem::new(format_entry_line(
                         entry,
                         show_checkboxes,
                         is_selected,
+                        is_protected,
                         search_query,
                     ))
                 })
@@ -131,6 +133,7 @@ fn format_entry_line(
     entry: &BranchEntry,
     show_checkboxes: bool,
     is_selected: bool,
+    is_protected: bool,
     search_query: &str,
 ) -> Line<'static> {
     let mut spans: Vec<Span> = Vec::new();
@@ -149,7 +152,7 @@ fn format_entry_line(
         Style::default()
             .fg(Color::Green)
             .add_modifier(Modifier::BOLD)
-    } else if entry.is_merged() || entry.pr_is_merged() {
+    } else if (entry.is_merged() || entry.pr_is_merged()) && !is_protected {
         Style::default().fg(Color::Yellow)
     } else {
         Style::default().fg(Color::White)
@@ -206,7 +209,7 @@ fn format_entry_line(
     }
 
     // Merged tag
-    if (entry.is_merged() || entry.pr_is_merged()) && !entry.is_current() {
+    if (entry.is_merged() || entry.pr_is_merged()) && !entry.is_current() && !is_protected {
         spans.push(Span::styled(
             " [merged]",
             Style::default().fg(Color::Yellow),

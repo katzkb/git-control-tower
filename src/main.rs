@@ -108,7 +108,7 @@ async fn main() -> anyhow::Result<()> {
     let backend = CrosstermBackend::new(tty);
     let mut terminal = Terminal::new(backend)?;
 
-    let (result, cd_path) = run(&mut terminal, &config, verbose).await;
+    let (result, cd_path) = run(&mut terminal, config, verbose).await;
 
     // Restore terminal — always disable raw mode even if LeaveAlternateScreen fails
     let _ = execute!(terminal.backend_mut(), LeaveAlternateScreen);
@@ -144,10 +144,10 @@ async fn check_prerequisites() {
 
 async fn run(
     terminal: &mut Terminal<CrosstermBackend<std::fs::File>>,
-    config: &config::Config,
+    config: config::Config,
     verbose: bool,
 ) -> (anyhow::Result<()>, Option<String>) {
-    let mut app = App::new();
+    let mut app = App::new(config);
     app.verbose = verbose;
     let mut events = EventHandler::new(Duration::from_millis(80));
     let (tx, mut rx) = mpsc::unbounded_channel::<AsyncResult>();
@@ -544,12 +544,12 @@ async fn run(
         // Create worktree if requested (async, non-blocking)
         if let Some(branch_name) = app.wt_create_requested.take() {
             app.wt_loading = true;
-            let wt_path = config.worktree_path(&branch_name);
+            let wt_path = app.config.worktree_path(&branch_name);
             if let Some(parent) = std::path::Path::new(&wt_path).parent() {
                 let _ = std::fs::create_dir_all(parent);
             }
             let has_local = app.branches.iter().any(|b| b.name == branch_name);
-            let post_create = config.worktree.post_create.clone();
+            let post_create = app.config.worktree.post_create.clone();
             let tx = tx.clone();
             tokio::spawn(async move {
                 let result = if has_local {
