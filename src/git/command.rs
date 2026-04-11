@@ -89,6 +89,7 @@ pub struct CommandRecord {
     pub args: Vec<String>,
     pub success: bool,
     pub duration: Duration,
+    /// stdout bytes on success, stderr bytes on failure.
     pub output_bytes: usize,
     pub error: Option<String>,
 }

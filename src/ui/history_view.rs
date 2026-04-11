@@ -35,7 +35,8 @@ pub fn draw(frame: &mut Frame, area: Rect, app: &App) {
     let mut state = ListState::default();
     if app.history_scroll < records.len() {
         state.select(Some(app.history_scroll));
-    } else if !records.is_empty() {
+    } else {
+        // records is guaranteed non-empty here by the early return above
         state.select(Some(records.len() - 1));
     }
 
