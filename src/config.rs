@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 
 const DEFAULT_WORKTREE_DIR: &str = "..";
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Clone)]
 pub struct Config {
     #[serde(default)]
     pub worktree: WorktreeConfig,
@@ -36,7 +36,7 @@ pub enum PostCreateAction {
     Command { command: String },
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Clone)]
 pub struct WorktreeConfig {
     #[serde(default = "default_worktree_dir")]
     pub dir: String,
