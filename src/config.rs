@@ -4,10 +4,25 @@ use std::path::{Path, PathBuf};
 
 const DEFAULT_WORKTREE_DIR: &str = "..";
 
-#[derive(Debug, Deserialize, Default)]
+#[derive(Debug, Deserialize)]
 pub struct Config {
     #[serde(default)]
     pub worktree: WorktreeConfig,
+    #[serde(default = "default_protected_branches")]
+    pub protected_branches: Vec<String>,
+}
+
+fn default_protected_branches() -> Vec<String> {
+    vec!["main".into(), "master".into(), "develop".into()]
+}
+
+impl Default for Config {
+    fn default() -> Self {
+        Self {
+            worktree: WorktreeConfig::default(),
+            protected_branches: default_protected_branches(),
+        }
+    }
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -259,6 +274,7 @@ mod tests {
                 dir: "../wt".to_string(),
                 ..Default::default()
             },
+            ..Default::default()
         };
         let expected = Path::new("../wt").join("feature/auth");
         assert_eq!(
@@ -312,8 +328,51 @@ dir = "../wt"
                 dir: "  ".to_string(),
                 ..Default::default()
             },
+            ..Default::default()
         };
         assert_eq!(config.worktree_path("feature/auth"), "../feature/auth");
+    }
+
+    #[test]
+    fn test_default_protected_branches() {
+        let config = Config::default();
+        assert_eq!(
+            config.protected_branches,
+            vec![
+                "main".to_string(),
+                "master".to_string(),
+                "develop".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn test_parse_protected_branches() {
+        let toml_str = r#"
+protected_branches = ["main", "develop", "staging"]
+"#;
+        let config: Config = toml::from_str(toml_str).unwrap();
+        assert_eq!(
+            config.protected_branches,
+            vec![
+                "main".to_string(),
+                "develop".to_string(),
+                "staging".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn test_parse_config_uses_default_protected() {
+        let config: Config = toml::from_str("").unwrap();
+        assert_eq!(
+            config.protected_branches,
+            vec![
+                "main".to_string(),
+                "master".to_string(),
+                "develop".to_string()
+            ]
+        );
     }
 
     #[test]

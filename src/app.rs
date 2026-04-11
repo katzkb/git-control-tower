@@ -129,10 +129,13 @@ pub struct App {
 
     // Spinner animation
     spinner_tick: usize,
+
+    // Loaded TOML config (protected_branches, worktree, …)
+    pub config: crate::config::Config,
 }
 
 impl App {
-    pub fn new() -> Self {
+    pub fn new(config: crate::config::Config) -> Self {
         Self {
             active_view: ActiveView::default(),
             should_quit: false,
@@ -180,6 +183,7 @@ impl App {
             open_pr_requested: None,
             copy_branch_requested: None,
             spinner_tick: 0,
+            config,
         }
     }
 
@@ -409,22 +413,23 @@ impl App {
                 }
             }
             KeyCode::Char(' ') => {
-                if let Some(entry) = self.selected_entry() {
-                    let name = entry.name.clone();
-                    if !entry.is_current() && !Self::is_protected_branch(&name) {
-                        if self.branch_selected.contains(&name) {
-                            self.branch_selected.remove(&name);
-                        } else {
-                            self.branch_selected.insert(name);
-                        }
+                if let Some(entry) = self.selected_entry().cloned()
+                    && !entry.is_current()
+                    && !self.is_protected_branch(&entry.name)
+                {
+                    if self.branch_selected.contains(&entry.name) {
+                        self.branch_selected.remove(&entry.name);
+                    } else {
+                        self.branch_selected.insert(entry.name);
                     }
                 }
             }
             KeyCode::Char('a') => {
+                let protected = &self.config.protected_branches;
                 for entry in &self.entries {
                     if (entry.is_merged() || entry.pr_is_merged())
                         && !entry.is_current()
-                        && !Self::is_protected_branch(&entry.name)
+                        && !protected.iter().any(|b| b == &entry.name)
                     {
                         self.branch_selected.insert(entry.name.clone());
                     }
@@ -590,7 +595,7 @@ impl App {
         }
         if entry.local_branch.is_some()
             && !entry.is_current()
-            && !Self::is_protected_branch(&entry.name)
+            && !self.is_protected_branch(&entry.name)
         {
             items.push(ActionItem::DeleteBranch);
         }
@@ -701,7 +706,7 @@ impl App {
         }
     }
 
-    pub fn is_protected_branch(name: &str) -> bool {
-        matches!(name, "main" | "master")
+    pub fn is_protected_branch(&self, name: &str) -> bool {
+        self.config.protected_branches.iter().any(|b| b == name)
     }
 }
