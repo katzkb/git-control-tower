@@ -330,8 +330,12 @@ async fn run(
                     // search expands to team memberships, and the post-fetch filter
                     // in fetch_review_prs only runs when gh_user is non-empty. Without
                     // this guard, switching to Review right after startup can show
-                    // team PRs even in me-only mode.
-                    if app.gh_user.is_empty() && !app.include_team_reviews {
+                    // team PRs even in me-only mode. If the user-login fetch failed,
+                    // proceed anyway — no point in spinning forever.
+                    if app.gh_user.is_empty()
+                        && !app.include_team_reviews
+                        && !app.gh_user_load_failed
+                    {
                         app.pr_fetch_requested = Some(MainFilter::ReviewRequested);
                     } else {
                         let show_merged = app.show_merged;
@@ -392,6 +396,7 @@ async fn run(
                     }
                 }
                 AsyncResult::UserLoginError(error_msg) => {
+                    app.gh_user_load_failed = true;
                     if app.verbose && !app.verbose_errors.contains(&error_msg) {
                         app.verbose_errors.push(error_msg);
                     }

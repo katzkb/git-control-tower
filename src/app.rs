@@ -82,6 +82,7 @@ pub struct App {
     pub branches: Vec<Branch>,
     pub worktrees: Vec<Worktree>,
     pub gh_user: String,
+    pub gh_user_load_failed: bool,
 
     // Per-view PR caches
     pub local_prs: Vec<PullRequest>,
@@ -152,6 +153,7 @@ impl App {
             branches: Vec::new(),
             worktrees: Vec::new(),
             gh_user: String::new(),
+            gh_user_load_failed: false,
             local_prs: Vec::new(),
             my_prs: Vec::new(),
             review_prs: Vec::new(),
