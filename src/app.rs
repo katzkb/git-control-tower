@@ -366,8 +366,10 @@ impl App {
             }
             KeyCode::Char('l') => self.active_view = ActiveView::Log,
             KeyCode::Char('h') => {
-                self.active_view = ActiveView::History;
-                self.history_scroll = 0;
+                if self.active_view != ActiveView::History {
+                    self.active_view = ActiveView::History;
+                    self.history_scroll = 0;
+                }
             }
             KeyCode::Char('1') => {
                 self.main_filter = MainFilter::Local;
@@ -581,7 +583,7 @@ impl App {
     }
 
     fn handle_history_key(&mut self, code: KeyCode) {
-        let len = crate::git::command::command_history_snapshot().len();
+        let len = crate::git::command::command_history_len();
         match code {
             KeyCode::Char('j') | KeyCode::Down => {
                 if len > 0 && self.history_scroll + 1 < len {

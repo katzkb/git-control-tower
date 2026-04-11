@@ -114,6 +114,12 @@ pub fn command_history_snapshot() -> Vec<CommandRecord> {
         .unwrap_or_default()
 }
 
+/// Cheap count of recorded commands — avoids cloning the whole buffer
+/// when only the length is needed (e.g. for scroll-bound checks).
+pub fn command_history_len() -> usize {
+    history().lock().map(|b| b.len()).unwrap_or(0)
+}
+
 // ---- Command execution ----
 
 pub async fn run_git(args: &[&str]) -> Result<String> {

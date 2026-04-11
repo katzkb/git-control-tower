@@ -43,11 +43,13 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
                 ""
             };
             format!(
-                " [{}]  1:Local  2:My PR  3:Review  Enter:Actions  /:Search{merged_hint}{team_hint}  l:Log  ?:Help  q:Quit",
+                " [{}]  1:Local  2:My PR  3:Review  Enter:Actions  /:Search{merged_hint}{team_hint}  l:Log  h:History  ?:Help  q:Quit",
                 app.main_filter.label()
             )
         }
-        ActiveView::Log => " [Log]  1:Local  2:My PR  3:Review  l:Log  ?:Help  q:Quit".to_string(),
+        ActiveView::Log => {
+            " [Log]  1:Local  2:My PR  3:Review  l:Log  h:History  ?:Help  q:Quit".to_string()
+        }
         ActiveView::History => " [History]  j/k:Scroll  Esc:Back  ?:Help  q:Quit".to_string(),
     };
     let status =

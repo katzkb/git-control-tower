@@ -66,7 +66,7 @@ fn format_record(record: &CommandRecord) -> ListItem<'static> {
         Span::styled(format!("{} ", record.executable), exec_style),
         Span::raw(record.args.join(" ")),
         Span::raw("  "),
-        Span::styled(status.to_string(), status_style),
+        Span::styled(status, status_style),
         Span::styled(format!("  {size:>7}  {duration:>6}"), meta_style),
     ];
 
