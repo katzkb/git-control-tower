@@ -286,6 +286,28 @@ async fn run(
             });
         }
 
+        // Reload branches/worktrees on `r` refresh from Main view
+        if app.branches_reload_requested {
+            app.branches_reload_requested = false;
+            refresh_entries(&mut app).await;
+        }
+
+        // Reload commits on `r` refresh from Log view
+        if app.commits_reload_requested {
+            app.commits_reload_requested = false;
+            if let Ok(output) = run_git(&[
+                "log",
+                "--format=%h%x00%s%x00%an%x00%ad",
+                "--date=short",
+                "-n",
+                "200",
+            ])
+            .await
+            {
+                app.commits = parse_log(&output);
+            }
+        }
+
         // Spawn git status load in background (non-blocking, deduplicated)
         if let Some(wt_path) = app.git_status_requested.take()
             && !status_inflight.contains(&wt_path)
