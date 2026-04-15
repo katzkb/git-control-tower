@@ -31,7 +31,7 @@ brew install katzkb/tap/gct
 Upgrade:
 
 ```bash
-brew update && brew upgrade gct
+brew update && brew upgrade katzkb/tap/gct
 ```
 
 Supported platforms: macOS (Apple Silicon / Intel), Linux (x86_64).
