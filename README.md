@@ -22,8 +22,23 @@ A terminal UI tool that acts as a "control tower" for Git/GitHub workflows. Over
 
 ## Installation
 
+### Homebrew (macOS / Linux)
+
 ```bash
-# From source
+brew install katzkb/tap/gct
+```
+
+Upgrade:
+
+```bash
+brew update && brew upgrade katzkb/tap/gct
+```
+
+Supported platforms: macOS (Apple Silicon / Intel), Linux (x86_64).
+
+### From source
+
+```bash
 git clone https://github.com/katzkb/git-control-tower.git
 cd git-control-tower
 cargo install --path .
