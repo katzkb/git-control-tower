@@ -516,10 +516,23 @@ impl App {
                     } else {
                         format!("{} and {} more", names[..2].join(", "), count - 2)
                     };
-                    self.confirm_dialog = Some(ConfirmDialog::new(
-                        "Delete Branches",
-                        format!("Delete {count} branch(es)? [{preview}]"),
-                    ));
+                    let unmerged_count = self
+                        .branch_selected
+                        .iter()
+                        .filter(|name| {
+                            self.entries
+                                .iter()
+                                .any(|e| e.name == **name && !e.is_merged() && !e.pr_is_merged())
+                        })
+                        .count();
+                    let msg = if unmerged_count > 0 {
+                        format!(
+                            "Delete {count} branch(es)? ({unmerged_count} unmerged — will force delete)\n[{preview}]"
+                        )
+                    } else {
+                        format!("Delete {count} branch(es)? [{preview}]")
+                    };
+                    self.confirm_dialog = Some(ConfirmDialog::new("Delete Branches", msg));
                 } else if !self.wt_loading
                     && let Some(entry) = self.selected_entry().cloned()
                     && let Some(wt_path) = entry.worktree_path()
@@ -761,12 +774,15 @@ impl App {
             }
             ActionItem::DeleteBranch => {
                 let name = entry.name.clone();
+                let is_unmerged = !entry.is_merged() && !entry.pr_is_merged();
                 self.branch_selected.clear();
                 self.branch_selected.insert(name.clone());
-                self.confirm_dialog = Some(ConfirmDialog::new(
-                    "Delete Branch",
-                    format!("Delete branch {name}?"),
-                ));
+                let msg = if is_unmerged {
+                    format!("Delete branch {name}? (unmerged — will force delete)")
+                } else {
+                    format!("Delete branch {name}?")
+                };
+                self.confirm_dialog = Some(ConfirmDialog::new("Delete Branch", msg));
             }
             ActionItem::OpenPrInBrowser => {
                 if let Some(pr) = &entry.pull_request {
