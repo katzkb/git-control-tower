@@ -525,12 +525,13 @@ impl App {
                                 .any(|e| e.name == **name && !e.is_merged() && !e.pr_is_merged())
                         })
                         .count();
+                    let label = if count == 1 { "branch" } else { "branches" };
                     let msg = if unmerged_count > 0 {
                         format!(
-                            "Delete {count} branch(es)? ({unmerged_count} unmerged — will force delete)\n[{preview}]"
+                            "Delete {count} {label}? ({unmerged_count} unmerged — will force delete)\n[{preview}]"
                         )
                     } else {
-                        format!("Delete {count} branch(es)? [{preview}]")
+                        format!("Delete {count} {label}? [{preview}]")
                     };
                     self.confirm_dialog = Some(ConfirmDialog::new("Delete Branches", msg));
                 } else if !self.wt_loading
