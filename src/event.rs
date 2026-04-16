@@ -23,15 +23,9 @@ impl EventHandler {
             loop {
                 if event::poll(tick_rate).unwrap_or(false) {
                     match event::read() {
-                        Ok(CtEvent::Key(key)) => {
-                            if tx.send(Event::Key(key)).is_err() {
-                                return;
-                            }
-                        }
-                        Ok(CtEvent::Resize(w, h)) => {
-                            if tx.send(Event::Resize(w, h)).is_err() {
-                                return;
-                            }
+                        Ok(CtEvent::Key(key)) if tx.send(Event::Key(key)).is_err() => return,
+                        Ok(CtEvent::Resize(w, h)) if tx.send(Event::Resize(w, h)).is_err() => {
+                            return;
                         }
                         _ => {}
                     }

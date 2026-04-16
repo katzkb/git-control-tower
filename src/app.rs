@@ -469,17 +469,15 @@ impl App {
     fn handle_main_key(&mut self, code: KeyCode) {
         let filtered_len = self.filtered_entries().len();
         match code {
-            KeyCode::Char('j') | KeyCode::Down => {
-                if filtered_len > 0 && self.sidebar_scroll + 1 < filtered_len {
-                    self.sidebar_scroll += 1;
-                    self.request_details_for_selection();
-                }
+            KeyCode::Char('j') | KeyCode::Down
+                if filtered_len > 0 && self.sidebar_scroll + 1 < filtered_len =>
+            {
+                self.sidebar_scroll += 1;
+                self.request_details_for_selection();
             }
-            KeyCode::Char('k') | KeyCode::Up => {
-                if self.sidebar_scroll > 0 {
-                    self.sidebar_scroll = self.sidebar_scroll.saturating_sub(1);
-                    self.request_details_for_selection();
-                }
+            KeyCode::Char('k') | KeyCode::Up if self.sidebar_scroll > 0 => {
+                self.sidebar_scroll = self.sidebar_scroll.saturating_sub(1);
+                self.request_details_for_selection();
             }
             KeyCode::Char(' ') => {
                 if let Some(entry) = self.selected_entry().cloned()
@@ -579,16 +577,14 @@ impl App {
                     self.sidebar_offset = 0;
                 }
             }
-            KeyCode::Char('t') => {
-                if self.main_filter == MainFilter::ReviewRequested {
-                    self.include_team_reviews = !self.include_team_reviews;
-                    self.review_prs.clear();
-                    self.review_prs_loaded = false;
-                    self.rebuild_entries();
-                    self.pr_fetch_requested = Some(MainFilter::ReviewRequested);
-                    self.sidebar_scroll = 0;
-                    self.sidebar_offset = 0;
-                }
+            KeyCode::Char('t') if self.main_filter == MainFilter::ReviewRequested => {
+                self.include_team_reviews = !self.include_team_reviews;
+                self.review_prs.clear();
+                self.review_prs_loaded = false;
+                self.rebuild_entries();
+                self.pr_fetch_requested = Some(MainFilter::ReviewRequested);
+                self.sidebar_scroll = 0;
+                self.sidebar_offset = 0;
             }
             KeyCode::Char('/') => {
                 self.search_pre_scroll = self.sidebar_scroll;
@@ -601,10 +597,8 @@ impl App {
 
     fn handle_log_key(&mut self, code: KeyCode) {
         match code {
-            KeyCode::Char('j') | KeyCode::Down => {
-                if self.log_scroll + 1 < self.commits.len() {
-                    self.log_scroll += 1;
-                }
+            KeyCode::Char('j') | KeyCode::Down if self.log_scroll + 1 < self.commits.len() => {
+                self.log_scroll += 1;
             }
             KeyCode::Char('k') | KeyCode::Up => {
                 self.log_scroll = self.log_scroll.saturating_sub(1);
@@ -616,10 +610,8 @@ impl App {
     fn handle_history_key(&mut self, code: KeyCode) {
         let len = crate::git::command::command_history_len();
         match code {
-            KeyCode::Char('j') | KeyCode::Down => {
-                if len > 0 && self.history_scroll + 1 < len {
-                    self.history_scroll += 1;
-                }
+            KeyCode::Char('j') | KeyCode::Down if len > 0 && self.history_scroll + 1 < len => {
+                self.history_scroll += 1;
             }
             KeyCode::Char('k') | KeyCode::Up => {
                 self.history_scroll = self.history_scroll.saturating_sub(1);
@@ -660,11 +652,9 @@ impl App {
                     self.request_details_for_selection();
                 }
             }
-            KeyCode::Up => {
-                if self.sidebar_scroll > 0 {
-                    self.sidebar_scroll -= 1;
-                    self.request_details_for_selection();
-                }
+            KeyCode::Up if self.sidebar_scroll > 0 => {
+                self.sidebar_scroll -= 1;
+                self.request_details_for_selection();
             }
             _ => {}
         }
@@ -719,10 +709,8 @@ impl App {
             None => return,
         };
         match code {
-            KeyCode::Char('j') | KeyCode::Down => {
-                if menu.scroll + 1 < menu.items.len() {
-                    menu.scroll += 1;
-                }
+            KeyCode::Char('j') | KeyCode::Down if menu.scroll + 1 < menu.items.len() => {
+                menu.scroll += 1;
             }
             KeyCode::Char('k') | KeyCode::Up => {
                 menu.scroll = menu.scroll.saturating_sub(1);
@@ -807,13 +795,11 @@ impl App {
             KeyCode::Esc => {
                 self.branch_create_input = None;
             }
-            KeyCode::Enter => {
-                if !input.name.is_empty() {
-                    let source = input.source.clone();
-                    let name = input.name.clone();
-                    self.branch_create_input = None;
-                    self.branch_create_requested = Some((source, name));
-                }
+            KeyCode::Enter if !input.name.is_empty() => {
+                let source = input.source.clone();
+                let name = input.name.clone();
+                self.branch_create_input = None;
+                self.branch_create_requested = Some((source, name));
             }
             KeyCode::Backspace => {
                 input.name.pop();
