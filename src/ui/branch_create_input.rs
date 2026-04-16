@@ -17,9 +17,10 @@ pub fn draw(frame: &mut Frame, input: &BranchCreateInput) {
     // When the value is wider than this, we keep the trailing portion
     // visible (the typing position) and mark the hidden head with "…".
     let inner = area.width.saturating_sub(2) as usize;
-    let prefix = "  Name: ".len();
-    let from_max = inner.saturating_sub(prefix);
-    let name_max = inner.saturating_sub(prefix + 1);
+    let from_prefix = "  From: ".len();
+    let name_prefix = "  Name: ".len();
+    let from_max = inner.saturating_sub(from_prefix);
+    let name_max = inner.saturating_sub(name_prefix + 1);
 
     let source_display = truncate_head(&input.source, from_max);
     let name_display = truncate_head(&input.name, name_max);
