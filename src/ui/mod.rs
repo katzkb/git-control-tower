@@ -1,3 +1,4 @@
+mod branch_create_input;
 pub mod confirm_dialog;
 mod detail_pane;
 mod help_overlay;
@@ -55,6 +56,11 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     let status =
         Paragraph::new(status_text).style(Style::default().fg(Color::White).bg(Color::DarkGray));
     frame.render_widget(status, chunks[1]);
+
+    // Branch-create input modal
+    if let Some(input) = &app.branch_create_input {
+        branch_create_input::draw(frame, input);
+    }
 
     // Notification overlay
     if let Some(notif) = &app.notification {
