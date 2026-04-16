@@ -37,6 +37,7 @@ pub enum ActionItem {
     CreateWorktree,
     CdIntoWorktree,
     DeleteWorktree,
+    CreateBranch,
     DeleteBranch,
     OpenPrInBrowser,
     CopyBranchName,
@@ -48,6 +49,7 @@ impl ActionItem {
             Self::CreateWorktree => "Create worktree",
             Self::CdIntoWorktree => "cd into worktree",
             Self::DeleteWorktree => "Delete worktree",
+            Self::CreateBranch => "Create branch from this",
             Self::DeleteBranch => "Delete branch",
             Self::OpenPrInBrowser => "Open PR in browser",
             Self::CopyBranchName => "Copy branch name",
@@ -59,6 +61,11 @@ pub struct ActionMenu {
     pub items: Vec<ActionItem>,
     pub scroll: usize,
     pub target_name: String, // branch name captured when menu was opened
+}
+
+pub struct BranchCreateInput {
+    pub source: String,
+    pub name: String,
 }
 
 pub struct App {
@@ -114,6 +121,7 @@ pub struct App {
     // Overlays
     pub confirm_dialog: Option<ConfirmDialog>,
     pub action_menu: Option<ActionMenu>,
+    pub branch_create_input: Option<BranchCreateInput>,
     pub notification: Option<Notification>,
     pub show_help: bool,
 
@@ -131,6 +139,7 @@ pub struct App {
     pub branch_delete_requested: bool,
     pub open_pr_requested: Option<u64>,
     pub copy_branch_requested: Option<String>,
+    pub branch_create_requested: Option<(String, String)>, // (source, name)
     pub branches_reload_requested: bool,
     pub commits_reload_requested: bool,
 
@@ -178,6 +187,7 @@ impl App {
             verbose_errors: Vec::new(),
             confirm_dialog: None,
             action_menu: None,
+            branch_create_input: None,
             notification: None,
             show_help: false,
             cd_path: None,
@@ -191,6 +201,7 @@ impl App {
             branch_delete_requested: false,
             open_pr_requested: None,
             copy_branch_requested: None,
+            branch_create_requested: None,
             branches_reload_requested: false,
             commits_reload_requested: false,
             spinner_tick: 0,
@@ -339,6 +350,12 @@ impl App {
         // Action menu takes priority
         if self.action_menu.is_some() {
             self.handle_action_menu_key(key.code);
+            return;
+        }
+
+        // Branch-create input modal takes priority
+        if self.branch_create_input.is_some() {
+            self.handle_branch_create_input_key(key.code);
             return;
         }
 
@@ -662,6 +679,9 @@ impl App {
         if !self.wt_loading && entry.worktree.is_some() && !entry.is_current() {
             items.push(ActionItem::DeleteWorktree);
         }
+        if entry.local_branch.is_some() {
+            items.push(ActionItem::CreateBranch);
+        }
         if entry.local_branch.is_some()
             && !entry.is_current()
             && !self.is_protected_branch(&entry.name)
@@ -733,6 +753,12 @@ impl App {
                     self.wt_delete_pending_path = Some(path);
                 }
             }
+            ActionItem::CreateBranch => {
+                self.branch_create_input = Some(BranchCreateInput {
+                    source: entry.name.clone(),
+                    name: String::new(),
+                });
+            }
             ActionItem::DeleteBranch => {
                 let name = entry.name.clone();
                 self.branch_selected.clear();
@@ -751,6 +777,33 @@ impl App {
                 self.copy_branch_requested = Some(entry.name.clone());
                 self.notification = Some(Notification::success(format!("Copied: {}", entry.name)));
             }
+        }
+    }
+
+    fn handle_branch_create_input_key(&mut self, code: KeyCode) {
+        let input = match &mut self.branch_create_input {
+            Some(i) => i,
+            None => return,
+        };
+        match code {
+            KeyCode::Esc => {
+                self.branch_create_input = None;
+            }
+            KeyCode::Enter => {
+                if !input.name.is_empty() {
+                    let source = input.source.clone();
+                    let name = input.name.clone();
+                    self.branch_create_input = None;
+                    self.branch_create_requested = Some((source, name));
+                }
+            }
+            KeyCode::Backspace => {
+                input.name.pop();
+            }
+            KeyCode::Char(c) => {
+                input.name.push(c);
+            }
+            _ => {}
         }
     }
 

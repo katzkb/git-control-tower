@@ -665,6 +665,26 @@ async fn run(
             refresh_entries(&mut app).await;
         }
 
+        // Create a new branch from the selected branch if requested
+        if let Some((source, name)) = app.branch_create_requested.take() {
+            match run_git(&["branch", "--", &name, &source]).await {
+                Ok(_) => {
+                    app.notification = Some(Notification::success(format!(
+                        "Created branch '{name}' from '{source}'"
+                    )));
+                    refresh_entries(&mut app).await;
+                }
+                Err(e) => {
+                    let err_str = e.to_string();
+                    let short = err_str.lines().next().unwrap_or(&err_str).to_string();
+                    app.notification = Some(Notification::error(short));
+                    if app.verbose && !app.verbose_errors.contains(&err_str) {
+                        app.verbose_errors.push(err_str);
+                    }
+                }
+            }
+        }
+
         // Open PR in browser if requested
         if let Some(pr_number) = app.open_pr_requested.take() {
             let _ = run_gh(&["pr", "view", &pr_number.to_string(), "--web"]).await;
