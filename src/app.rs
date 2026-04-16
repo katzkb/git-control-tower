@@ -639,6 +639,7 @@ impl App {
             KeyCode::Enter => {
                 self.search_active = false;
                 self.request_details_for_selection();
+                self.open_action_menu();
             }
             KeyCode::Backspace => {
                 self.search_query.pop();
