@@ -22,18 +22,13 @@ impl EventHandler {
         tokio::spawn(async move {
             loop {
                 if event::poll(tick_rate).unwrap_or(false) {
-                    match event::read() {
-                        Ok(CtEvent::Key(key)) => {
-                            if tx.send(Event::Key(key)).is_err() {
-                                return;
-                            }
-                        }
-                        Ok(CtEvent::Resize(w, h)) => {
-                            if tx.send(Event::Resize(w, h)).is_err() {
-                                return;
-                            }
-                        }
-                        _ => {}
+                    let send_result = match event::read() {
+                        Ok(CtEvent::Key(key)) => tx.send(Event::Key(key)),
+                        Ok(CtEvent::Resize(w, h)) => tx.send(Event::Resize(w, h)),
+                        _ => continue,
+                    };
+                    if send_result.is_err() {
+                        return;
                     }
                 } else if tx.send(Event::Tick).is_err() {
                     return;
