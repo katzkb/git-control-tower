@@ -808,10 +808,8 @@ impl App {
             KeyCode::Left => {
                 input.cursor = input.cursor.saturating_sub(1);
             }
-            KeyCode::Right => {
-                if input.cursor < char_len {
-                    input.cursor += 1;
-                }
+            KeyCode::Right if input.cursor < char_len => {
+                input.cursor += 1;
             }
             KeyCode::Home => {
                 input.cursor = 0;
@@ -819,16 +817,12 @@ impl App {
             KeyCode::End => {
                 input.cursor = char_len;
             }
-            KeyCode::Backspace => {
-                if input.cursor > 0 {
-                    remove_char_at(&mut input.name, input.cursor - 1);
-                    input.cursor -= 1;
-                }
+            KeyCode::Backspace if input.cursor > 0 => {
+                remove_char_at(&mut input.name, input.cursor - 1);
+                input.cursor -= 1;
             }
-            KeyCode::Delete => {
-                if input.cursor < char_len {
-                    remove_char_at(&mut input.name, input.cursor);
-                }
+            KeyCode::Delete if input.cursor < char_len => {
+                remove_char_at(&mut input.name, input.cursor);
             }
             KeyCode::Char(c) => {
                 insert_char_at(&mut input.name, input.cursor, c);
