@@ -66,6 +66,7 @@ pub struct ActionMenu {
 pub struct BranchCreateInput {
     pub source: String,
     pub name: String,
+    pub cursor: usize,
 }
 
 pub struct App {
@@ -760,6 +761,7 @@ impl App {
                 self.branch_create_input = Some(BranchCreateInput {
                     source: entry.name.clone(),
                     name: String::new(),
+                    cursor: 0,
                 });
             }
             ActionItem::DeleteBranch => {
@@ -791,6 +793,8 @@ impl App {
             Some(i) => i,
             None => return,
         };
+        let char_len = input.name.chars().count();
+        input.cursor = input.cursor.min(char_len);
         match code {
             KeyCode::Esc => {
                 self.branch_create_input = None;
@@ -801,11 +805,34 @@ impl App {
                 self.branch_create_input = None;
                 self.branch_create_requested = Some((source, name));
             }
+            KeyCode::Left => {
+                input.cursor = input.cursor.saturating_sub(1);
+            }
+            KeyCode::Right => {
+                if input.cursor < char_len {
+                    input.cursor += 1;
+                }
+            }
+            KeyCode::Home => {
+                input.cursor = 0;
+            }
+            KeyCode::End => {
+                input.cursor = char_len;
+            }
             KeyCode::Backspace => {
-                input.name.pop();
+                if input.cursor > 0 {
+                    remove_char_at(&mut input.name, input.cursor - 1);
+                    input.cursor -= 1;
+                }
+            }
+            KeyCode::Delete => {
+                if input.cursor < char_len {
+                    remove_char_at(&mut input.name, input.cursor);
+                }
             }
             KeyCode::Char(c) => {
-                input.name.push(c);
+                insert_char_at(&mut input.name, input.cursor, c);
+                input.cursor += 1;
             }
             _ => {}
         }
@@ -834,5 +861,85 @@ impl App {
 
     pub fn is_protected_branch(&self, name: &str) -> bool {
         self.config.protected_branches.iter().any(|b| b == name)
+    }
+}
+
+fn insert_char_at(s: &mut String, char_idx: usize, c: char) {
+    let byte_idx = char_to_byte_idx(s, char_idx);
+    s.insert(byte_idx, c);
+}
+
+fn remove_char_at(s: &mut String, char_idx: usize) {
+    let byte_idx = char_to_byte_idx(s, char_idx);
+    if byte_idx < s.len() {
+        s.remove(byte_idx);
+    }
+}
+
+fn char_to_byte_idx(s: &str, char_idx: usize) -> usize {
+    s.char_indices()
+        .nth(char_idx)
+        .map(|(b, _)| b)
+        .unwrap_or(s.len())
+}
+
+#[cfg(test)]
+mod text_edit_tests {
+    use super::*;
+
+    #[test]
+    fn insert_at_start() {
+        let mut s = String::from("bc");
+        insert_char_at(&mut s, 0, 'a');
+        assert_eq!(s, "abc");
+    }
+
+    #[test]
+    fn insert_at_middle() {
+        let mut s = String::from("ac");
+        insert_char_at(&mut s, 1, 'b');
+        assert_eq!(s, "abc");
+    }
+
+    #[test]
+    fn insert_at_end() {
+        let mut s = String::from("ab");
+        insert_char_at(&mut s, 2, 'c');
+        assert_eq!(s, "abc");
+    }
+
+    #[test]
+    fn insert_unicode() {
+        let mut s = String::from("αγ");
+        insert_char_at(&mut s, 1, 'β');
+        assert_eq!(s, "αβγ");
+    }
+
+    #[test]
+    fn remove_at_start() {
+        let mut s = String::from("abc");
+        remove_char_at(&mut s, 0);
+        assert_eq!(s, "bc");
+    }
+
+    #[test]
+    fn remove_at_middle() {
+        let mut s = String::from("abc");
+        remove_char_at(&mut s, 1);
+        assert_eq!(s, "ac");
+    }
+
+    #[test]
+    fn remove_at_end_is_noop() {
+        let mut s = String::from("abc");
+        remove_char_at(&mut s, 3);
+        assert_eq!(s, "abc");
+    }
+
+    #[test]
+    fn remove_unicode() {
+        let mut s = String::from("αβγ");
+        remove_char_at(&mut s, 1);
+        assert_eq!(s, "αγ");
     }
 }
