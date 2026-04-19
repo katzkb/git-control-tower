@@ -1,6 +1,6 @@
 [package]
 name = "git-control-tower"
-version = "0.0.32"
+version = "0.0.33"
 edition = "2024"
 license = "MIT OR Apache-2.0"
 description = "A terminal UI tool for overseeing Git/GitHub workflows"
