@@ -88,6 +88,20 @@ fn draw_entry_list(frame: &mut Frame, area: Rect, app: &mut App) {
                 format!("  {spinner} Loading"),
                 Style::default().fg(Color::DarkGray),
             )))]
+        } else if filtered.is_empty() {
+            let msg = if !app.search_query.is_empty() {
+                "  No branches match the search"
+            } else {
+                match app.main_filter {
+                    MainFilter::Local => "  No local branches",
+                    MainFilter::MyPr => "  No branches with your PRs",
+                    MainFilter::ReviewRequested => "  No branches awaiting review",
+                }
+            };
+            vec![ListItem::new(Line::from(Span::styled(
+                msg,
+                Style::default().fg(Color::DarkGray),
+            )))]
         } else {
             let search_query = &app.search_query;
             filtered
