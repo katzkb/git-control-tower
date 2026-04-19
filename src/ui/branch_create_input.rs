@@ -13,12 +13,13 @@ pub fn draw(frame: &mut Frame, input: &BranchCreateInput) {
     frame.render_widget(Clear, area);
 
     // Available width for the value portion of each row: modal inner width
-    // minus the "  Name: " prefix (8) minus 1 column for the cursor on Name.
+    // minus the prefix. `window_around_cursor` / `truncate_head` each treat their
+    // `max` as the full budget (content + cursor + ellipses), so no extra reservation.
     let inner = area.width.saturating_sub(2) as usize;
     let from_prefix = "  From: ".len();
     let name_prefix = "  Name: ".len();
     let from_max = inner.saturating_sub(from_prefix);
-    let name_max = inner.saturating_sub(name_prefix + 1);
+    let name_max = inner.saturating_sub(name_prefix);
 
     let source_display = truncate_head(&input.source, from_max);
     let window = window_around_cursor(&input.name, input.cursor, name_max);
@@ -101,26 +102,33 @@ struct CursorWindow {
 
 /// Compute the visible portion of `s` around `cursor` that fits within `max` columns.
 ///
-/// The returned `before` + cursor (1 col) + `after` spans at most `max` columns.
-/// `left_ellipsis` / `right_ellipsis` indicate whether a `…` marker should be drawn
-/// on the clipped side (ellipsis columns are not included in `max`).
+/// `max` is the total budget for the rendered cell, covering the 1-column cursor
+/// indicator, any visible content, and up to two `…` markers. The returned
+/// `before` + cursor + `after` + ellipses together span at most `max` columns.
 fn window_around_cursor(s: &str, cursor: usize, max: usize) -> CursorWindow {
+    let empty = CursorWindow {
+        before: String::new(),
+        after: String::new(),
+        left_ellipsis: false,
+        right_ellipsis: false,
+    };
     let chars: Vec<char> = s.chars().collect();
     let len = chars.len();
     let cursor = cursor.min(len);
 
-    // Content budget excludes the 1 column reserved for the cursor itself.
-    let content_budget = max.saturating_sub(1);
-    if content_budget == 0 || len == 0 {
-        return CursorWindow {
-            before: String::new(),
-            after: String::new(),
-            left_ellipsis: false,
-            right_ellipsis: false,
-        };
+    if max == 0 || len == 0 {
+        return empty;
     }
 
-    if len <= content_budget {
+    // 1 col goes to the cursor indicator; the rest is for content plus ellipses.
+    let visible = max - 1;
+    if visible == 0 {
+        // Only room for the cursor indicator itself — hide content and ellipses.
+        return empty;
+    }
+
+    // Fast path: the whole string fits alongside the cursor; no ellipses needed.
+    if len <= visible {
         return CursorWindow {
             before: chars[..cursor].iter().collect(),
             after: chars[cursor..].iter().collect(),
@@ -129,26 +137,45 @@ fn window_around_cursor(s: &str, cursor: usize, max: usize) -> CursorWindow {
         };
     }
 
-    // Text doesn't fit. Pick a window [start, end) of size `content_budget`
-    // that contains the cursor and keeps it roughly centered.
-    let half = content_budget / 2;
-    let mut start = cursor.saturating_sub(half);
-    let mut end = start + content_budget;
-    if end > len {
-        end = len;
-        start = end - content_budget;
+    // String is wider than the visible area — at least one ellipsis is required.
+    // A one-sided clip uses a content window of size `visible - 1`.
+    let one_ell = visible.saturating_sub(1);
+
+    // Cursor close to the start: clip only on the right.
+    if cursor <= one_ell {
+        let end = one_ell;
+        return CursorWindow {
+            before: chars[..cursor].iter().collect(),
+            after: chars[cursor..end].iter().collect(),
+            left_ellipsis: false,
+            right_ellipsis: true,
+        };
     }
 
-    let left_ellipsis = start > 0;
-    let right_ellipsis = end < len;
-    let before: String = chars[start..cursor].iter().collect();
-    let after: String = chars[cursor..end].iter().collect();
+    // Cursor close to the end: clip only on the left.
+    if cursor >= len - one_ell {
+        let start = len - one_ell;
+        return CursorWindow {
+            before: chars[start..cursor].iter().collect(),
+            after: chars[cursor..].iter().collect(),
+            left_ellipsis: true,
+            right_ellipsis: false,
+        };
+    }
 
+    // Cursor in the middle: clip on both sides. Budget shrinks by 2 for ellipses.
+    if visible < 2 {
+        return empty;
+    }
+    let window_size = visible - 2;
+    let half = window_size / 2;
+    let start = cursor - half;
+    let end = start + window_size;
     CursorWindow {
-        before,
-        after,
-        left_ellipsis,
-        right_ellipsis,
+        before: chars[start..cursor].iter().collect(),
+        after: chars[cursor..end].iter().collect(),
+        left_ellipsis: true,
+        right_ellipsis: true,
     }
 }
 
@@ -221,41 +248,33 @@ mod tests {
 
     #[test]
     fn window_clipped_right_when_cursor_near_start() {
-        // "abcdefghij", cursor=1, max=5 -> content budget 4
-        // half=2, start=max(0,1-2)=0, end=0+4=4 -> "abcd" with right ellipsis
         assert_eq!(
             window_around_cursor("abcdefghij", 1, 5),
-            w("a", "bcd", false, true)
+            w("a", "bc", false, true)
         );
     }
 
     #[test]
     fn window_clipped_left_when_cursor_near_end() {
-        // "abcdefghij", cursor=10, max=5 -> content budget 4
-        // half=2, start=8, end=12 -> clamp end=10, start=6 -> "ghij" with left ellipsis
         assert_eq!(
             window_around_cursor("abcdefghij", 10, 5),
-            w("ghij", "", true, false)
+            w("hij", "", true, false)
         );
     }
 
     #[test]
     fn window_clipped_both_when_cursor_middle() {
-        // "abcdefghij", cursor=5, max=5 -> content budget 4
-        // half=2, start=3, end=7 -> "de" + "fg", both ellipses
         assert_eq!(
             window_around_cursor("abcdefghij", 5, 5),
-            w("de", "fg", true, true)
+            w("e", "f", true, true)
         );
     }
 
     #[test]
     fn window_unicode() {
-        // 5 multi-byte chars, cursor middle, max=4 -> content budget 3
-        // half=1, start=1, end=4 -> "β" + "γδ", both ellipses
         assert_eq!(
             window_around_cursor("αβγδε", 2, 4),
-            w("β", "γδ", true, true)
+            w("αβ", "", false, true)
         );
     }
 
@@ -267,5 +286,25 @@ mod tests {
     #[test]
     fn window_empty_string() {
         assert_eq!(window_around_cursor("", 0, 10), w("", "", false, false));
+    }
+
+    /// Rendered cell width must never exceed `max` regardless of cursor position.
+    #[test]
+    fn window_never_exceeds_max() {
+        let s = "abcdefghij";
+        for cursor in 0..=s.chars().count() {
+            for max in 0..=12 {
+                let out = window_around_cursor(s, cursor, max);
+                let width = out.before.chars().count()
+                    + out.after.chars().count()
+                    + 1 // cursor indicator
+                    + usize::from(out.left_ellipsis)
+                    + usize::from(out.right_ellipsis);
+                assert!(
+                    width <= max.max(1),
+                    "cursor={cursor} max={max} width={width} out={out:?}"
+                );
+            }
+        }
     }
 }
