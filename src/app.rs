@@ -942,20 +942,10 @@ pub(crate) fn compose_bulk_delete_message(
     }
     let head = head_parts.join(" + ");
 
-    let mut clauses = Vec::with_capacity(2);
-    if unmerged > 0 {
-        clauses.push(format!("{unmerged} unmerged — will force delete"));
-    }
-    if worktrees > 0 {
-        clauses.push(format!(
-            "{worktrees} {worktree_label} will be removed, force if needed"
-        ));
-    }
-
-    let head_with_clauses = if clauses.is_empty() {
-        format!("Delete {head}?")
+    let head_with_clauses = if unmerged > 0 {
+        format!("Delete {head}? ({unmerged} unmerged — will force delete)")
     } else {
-        format!("Delete {head}? ({})", clauses.join("; "))
+        format!("Delete {head}?")
     };
     format!("{head_with_clauses}\n[{preview}]")
 }
@@ -1053,7 +1043,7 @@ mod bulk_delete_message_tests {
     fn branches_plus_worktrees() {
         assert_eq!(
             compose_bulk_delete_message(3, 2, 0, "a, b, c"),
-            "Delete 3 branches + 2 worktrees? (2 worktrees will be removed, force if needed)\n[a, b, c]"
+            "Delete 3 branches + 2 worktrees?\n[a, b, c]"
         );
     }
 
@@ -1061,7 +1051,7 @@ mod bulk_delete_message_tests {
     fn branches_worktrees_and_unmerged() {
         assert_eq!(
             compose_bulk_delete_message(3, 2, 1, "a, b, c"),
-            "Delete 3 branches + 2 worktrees? (1 unmerged — will force delete; 2 worktrees will be removed, force if needed)\n[a, b, c]"
+            "Delete 3 branches + 2 worktrees? (1 unmerged — will force delete)\n[a, b, c]"
         );
     }
 
@@ -1069,7 +1059,7 @@ mod bulk_delete_message_tests {
     fn worktree_only_singular() {
         assert_eq!(
             compose_bulk_delete_message(0, 1, 0, "a"),
-            "Delete 1 worktree? (1 worktree will be removed, force if needed)\n[a]"
+            "Delete 1 worktree?\n[a]"
         );
     }
 
@@ -1077,7 +1067,7 @@ mod bulk_delete_message_tests {
     fn single_branch_and_worktree() {
         assert_eq!(
             compose_bulk_delete_message(1, 1, 0, "a"),
-            "Delete 1 branch + 1 worktree? (1 worktree will be removed, force if needed)\n[a]"
+            "Delete 1 branch + 1 worktree?\n[a]"
         );
     }
 }
