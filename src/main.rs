@@ -75,6 +75,29 @@ enum AsyncResult {
         path: String,
         message: String,
     },
+    BulkDeleteDone {
+        branches_deleted: Vec<String>,
+        worktrees_removed: Vec<String>,
+        failures: Vec<String>,
+        wt_paths_claimed: Vec<String>,
+    },
+}
+
+fn bulk_success_parts(branches: usize, worktrees: usize) -> Vec<String> {
+    let mut parts = Vec::with_capacity(2);
+    if branches > 0 {
+        let label = if branches == 1 { "branch" } else { "branches" };
+        parts.push(format!("{branches} {label}"));
+    }
+    if worktrees > 0 {
+        let label = if worktrees == 1 {
+            "worktree"
+        } else {
+            "worktrees"
+        };
+        parts.push(format!("{worktrees} {label}"));
+    }
+    parts
 }
 
 #[tokio::main]
@@ -540,6 +563,49 @@ async fn run(
                     app.wt_inflight.remove(&path);
                     app.notification = Some(Notification::error(message));
                 }
+                AsyncResult::BulkDeleteDone {
+                    branches_deleted,
+                    worktrees_removed,
+                    failures,
+                    wt_paths_claimed,
+                } => {
+                    for path in &wt_paths_claimed {
+                        app.wt_inflight.remove(path);
+                    }
+                    let success_parts =
+                        bulk_success_parts(branches_deleted.len(), worktrees_removed.len());
+                    if failures.is_empty() {
+                        let msg = if success_parts.is_empty() {
+                            "Nothing to delete".to_string()
+                        } else {
+                            format!("Deleted {}", success_parts.join(", "))
+                        };
+                        app.notification = Some(Notification::success(msg));
+                    } else {
+                        let short: Vec<String> = failures
+                            .iter()
+                            .map(|e| e.lines().next().unwrap_or(e).to_string())
+                            .collect();
+                        let summary = if success_parts.is_empty() {
+                            format!("Bulk delete failed: {}", short.join("; "))
+                        } else {
+                            format!(
+                                "Bulk delete: {}; failed: {}",
+                                success_parts.join(", "),
+                                short.join("; ")
+                            )
+                        };
+                        app.notification = Some(Notification::error(summary));
+                        if app.verbose {
+                            for err in &failures {
+                                if !app.verbose_errors.contains(err) {
+                                    app.verbose_errors.push(err.clone());
+                                }
+                            }
+                        }
+                    }
+                    refresh_entries(&mut app).await;
+                }
             }
         }
 
@@ -625,41 +691,121 @@ async fn run(
             });
         }
 
-        // Delete selected branches if requested
+        // Delete selected entries (branches + optional worktrees) in one spawned task
         if app.branch_delete_requested {
             app.branch_delete_requested = false;
             let selected: Vec<String> = app.branch_selected.drain().collect();
-            let mut deleted = Vec::new();
-            let mut failed = Vec::new();
-            for name in &selected {
-                match run_git(&["branch", "-D", name]).await {
-                    Ok(_) => deleted.push(name.as_str()),
-                    Err(e) => failed.push(format!("{name}: {e}")),
-                }
+
+            struct Work {
+                name: String,
+                wt_path: Option<String>,
+                has_local_branch: bool,
             }
-            if !failed.is_empty() {
-                // Show first line only in notification (git errors can be multi-line)
-                let short: Vec<String> = failed
-                    .iter()
-                    .map(|e| e.lines().next().unwrap_or(e).to_string())
-                    .collect();
-                app.notification = Some(Notification::error(format!(
-                    "Failed to delete: {}",
-                    short.join("; ")
-                )));
-                if app.verbose {
-                    let full_msg = format!("Failed to delete: {}", failed.join("; "));
-                    if !app.verbose_errors.contains(&full_msg) {
-                        app.verbose_errors.push(full_msg);
-                    }
+            let mut work: Vec<Work> = Vec::with_capacity(selected.len());
+            let mut wt_paths_claimed: Vec<String> = Vec::new();
+            // Re-validate each selection at dispatch time — entries / inflight
+            // state may have changed between the user pressing Space and d
+            // (e.g. after a refresh). Silently skipping keeps the batch safe
+            // against races; the final notification reflects what actually ran.
+            for name in selected {
+                let Some(entry) = app.entries.iter().find(|e| e.name == name) else {
+                    continue;
+                };
+                if entry.is_current() || app.is_protected_branch(&entry.name) {
+                    continue;
                 }
-            } else if !deleted.is_empty() {
+                let wt_path = entry.worktree_path().map(str::to_string);
+                if let Some(ref p) = wt_path
+                    && app.wt_inflight.contains(p)
+                {
+                    continue;
+                }
+                if let Some(ref p) = wt_path {
+                    app.wt_inflight.insert(p.clone());
+                    wt_paths_claimed.push(p.clone());
+                }
+                work.push(Work {
+                    name: entry.name.clone(),
+                    wt_path,
+                    has_local_branch: entry.local_branch.is_some(),
+                });
+            }
+
+            if work.is_empty() {
+                app.notification = Some(Notification::error("Nothing to delete".to_string()));
+            } else {
+                let pending_summary = bulk_success_parts(
+                    work.iter().filter(|w| w.has_local_branch).count(),
+                    work.iter().filter(|w| w.wt_path.is_some()).count(),
+                )
+                .join(", ");
                 app.notification = Some(Notification::success(format!(
-                    "Deleted {} branch(es)",
-                    deleted.len()
+                    "Deleting {pending_summary}…"
                 )));
+
+                let tx = tx.clone();
+                tokio::spawn(async move {
+                    let mut branches_deleted: Vec<String> = Vec::new();
+                    let mut worktrees_removed: Vec<String> = Vec::new();
+                    let mut failures: Vec<String> = Vec::new();
+
+                    for w in work {
+                        let wt_ok = if let Some(path) = w.wt_path.as_ref() {
+                            match run_git(&["worktree", "remove", path]).await {
+                                Ok(_) => {
+                                    worktrees_removed.push(path.clone());
+                                    true
+                                }
+                                Err(_) => {
+                                    match run_git(&["worktree", "remove", "--force", path]).await {
+                                        Ok(_) => {
+                                            worktrees_removed.push(path.clone());
+                                            true
+                                        }
+                                        Err(e) => {
+                                            let short = e
+                                                .to_string()
+                                                .lines()
+                                                .next()
+                                                .unwrap_or("unknown")
+                                                .to_string();
+                                            failures.push(format!(
+                                                "{}: worktree remove failed: {short}",
+                                                w.name
+                                            ));
+                                            false
+                                        }
+                                    }
+                                }
+                            }
+                        } else {
+                            true
+                        };
+
+                        if wt_ok && w.has_local_branch {
+                            match run_git(&["branch", "-D", &w.name]).await {
+                                Ok(_) => branches_deleted.push(w.name.clone()),
+                                Err(e) => {
+                                    let short = e
+                                        .to_string()
+                                        .lines()
+                                        .next()
+                                        .unwrap_or("unknown")
+                                        .to_string();
+                                    failures.push(format!("{}: {short}", w.name));
+                                }
+                            }
+                        }
+                    }
+
+                    let _ = tx.send(AsyncResult::BulkDeleteDone {
+                        branches_deleted,
+                        worktrees_removed,
+                        failures,
+                        wt_paths_claimed,
+                    });
+                });
             }
-            refresh_entries(&mut app).await;
         }
 
         // Create a new branch from the selected branch if requested

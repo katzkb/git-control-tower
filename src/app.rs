@@ -508,33 +508,64 @@ impl App {
                 self.branch_selected.extend(to_select);
             }
             KeyCode::Char('d') => {
+                // Only entries that will actually be processed (i.e. have a
+                // local branch or a worktree) contribute to the dialog — PR-only
+                // selections are silently ignored by the dispatcher, so they
+                // must not appear in the preview or inflate the counts.
+                let mut branch_count = 0usize;
+                let mut worktree_count = 0usize;
+                let mut unmerged_count = 0usize;
+                let mut deletable_names: Vec<&str> = Vec::new();
                 if !self.branch_selected.is_empty() {
-                    let count = self.branch_selected.len();
-                    let names: Vec<&str> =
-                        self.branch_selected.iter().map(|s| s.as_str()).collect();
+                    for name in &self.branch_selected {
+                        if let Some(entry) = self.entries.iter().find(|e| &e.name == name) {
+                            let has_branch = entry.local_branch.is_some();
+                            let has_worktree = entry.worktree.is_some();
+                            if !has_branch && !has_worktree {
+                                continue;
+                            }
+                            if has_branch {
+                                branch_count += 1;
+                                if !entry.is_merged() && !entry.pr_is_merged() {
+                                    unmerged_count += 1;
+                                }
+                            }
+                            if has_worktree {
+                                worktree_count += 1;
+                            }
+                            deletable_names.push(name.as_str());
+                        }
+                    }
+                }
+
+                if branch_count + worktree_count > 0 {
+                    let count = deletable_names.len();
                     let preview = if count <= 3 {
-                        names.join(", ")
+                        deletable_names.join(", ")
                     } else {
-                        format!("{} and {} more", names[..2].join(", "), count - 2)
+                        format!("{} and {} more", deletable_names[..2].join(", "), count - 2)
                     };
-                    let unmerged_count = self
-                        .branch_selected
-                        .iter()
-                        .filter(|name| {
-                            self.entries
-                                .iter()
-                                .any(|e| e.name == **name && !e.is_merged() && !e.pr_is_merged())
-                        })
-                        .count();
-                    let label = if count == 1 { "branch" } else { "branches" };
-                    let msg = if unmerged_count > 0 {
-                        format!(
-                            "Delete {count} {label}? ({unmerged_count} unmerged — will force delete)\n[{preview}]"
-                        )
+                    let msg = compose_bulk_delete_message(
+                        branch_count,
+                        worktree_count,
+                        unmerged_count,
+                        &preview,
+                    );
+                    let title = if worktree_count == 0 {
+                        "Delete Branches"
+                    } else if branch_count == 0 {
+                        "Delete Worktrees"
                     } else {
-                        format!("Delete {count} {label}? [{preview}]")
+                        "Delete Branches + Worktrees"
                     };
-                    self.confirm_dialog = Some(ConfirmDialog::new("Delete Branches", msg));
+                    self.confirm_dialog = Some(ConfirmDialog::new(title, msg));
+                } else if !self.branch_selected.is_empty() {
+                    // Non-empty selection but nothing deletable (e.g. PR-only entries
+                    // with no local branch and no worktree). Tell the user rather
+                    // than silently no-op.
+                    self.notification = Some(Notification::error(
+                        "Nothing to delete in selection".to_string(),
+                    ));
                 } else if let Some(entry) = self.selected_entry().cloned()
                     && let Some(wt_path) = entry.worktree_path()
                     && !entry.is_current()
@@ -890,6 +921,35 @@ fn char_to_byte_idx(s: &str, char_idx: usize) -> usize {
         .unwrap_or(s.len())
 }
 
+pub(crate) fn compose_bulk_delete_message(
+    branches: usize,
+    worktrees: usize,
+    unmerged: usize,
+    preview: &str,
+) -> String {
+    let branch_label = if branches == 1 { "branch" } else { "branches" };
+    let worktree_label = if worktrees == 1 {
+        "worktree"
+    } else {
+        "worktrees"
+    };
+    let mut head_parts = Vec::with_capacity(2);
+    if branches > 0 {
+        head_parts.push(format!("{branches} {branch_label}"));
+    }
+    if worktrees > 0 {
+        head_parts.push(format!("{worktrees} {worktree_label}"));
+    }
+    let head = head_parts.join(" + ");
+
+    let head_with_clauses = if unmerged > 0 {
+        format!("Delete {head}? ({unmerged} unmerged — will force delete)")
+    } else {
+        format!("Delete {head}?")
+    };
+    format!("{head_with_clauses}\n[{preview}]")
+}
+
 #[cfg(test)]
 mod text_edit_tests {
     use super::*;
@@ -948,5 +1008,66 @@ mod text_edit_tests {
         let mut s = String::from("αβγ");
         remove_char_at(&mut s, 1);
         assert_eq!(s, "αγ");
+    }
+}
+
+#[cfg(test)]
+mod bulk_delete_message_tests {
+    use super::compose_bulk_delete_message;
+
+    #[test]
+    fn branches_only_clean() {
+        assert_eq!(
+            compose_bulk_delete_message(3, 0, 0, "a, b, c"),
+            "Delete 3 branches?\n[a, b, c]"
+        );
+    }
+
+    #[test]
+    fn single_branch_pluralizes() {
+        assert_eq!(
+            compose_bulk_delete_message(1, 0, 0, "a"),
+            "Delete 1 branch?\n[a]"
+        );
+    }
+
+    #[test]
+    fn branches_with_unmerged() {
+        assert_eq!(
+            compose_bulk_delete_message(3, 0, 1, "a, b, c"),
+            "Delete 3 branches? (1 unmerged — will force delete)\n[a, b, c]"
+        );
+    }
+
+    #[test]
+    fn branches_plus_worktrees() {
+        assert_eq!(
+            compose_bulk_delete_message(3, 2, 0, "a, b, c"),
+            "Delete 3 branches + 2 worktrees?\n[a, b, c]"
+        );
+    }
+
+    #[test]
+    fn branches_worktrees_and_unmerged() {
+        assert_eq!(
+            compose_bulk_delete_message(3, 2, 1, "a, b, c"),
+            "Delete 3 branches + 2 worktrees? (1 unmerged — will force delete)\n[a, b, c]"
+        );
+    }
+
+    #[test]
+    fn worktree_only_singular() {
+        assert_eq!(
+            compose_bulk_delete_message(0, 1, 0, "a"),
+            "Delete 1 worktree?\n[a]"
+        );
+    }
+
+    #[test]
+    fn single_branch_and_worktree() {
+        assert_eq!(
+            compose_bulk_delete_message(1, 1, 0, "a"),
+            "Delete 1 branch + 1 worktree?\n[a]"
+        );
     }
 }
