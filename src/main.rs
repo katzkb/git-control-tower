@@ -61,14 +61,20 @@ enum AsyncResult {
         wt_path: String,
         copy_errors: Vec<String>,
     },
-    WtCreateError(String),
+    WtCreateError {
+        wt_path: String,
+        message: String,
+    },
     WtRemoved(String),
     WtRemoveError {
         path: String,
         reason: String,
     },
     WtForceRemoved(String),
-    WtForceRemoveError(String),
+    WtForceRemoveError {
+        path: String,
+        message: String,
+    },
 }
 
 #[tokio::main]
@@ -489,7 +495,7 @@ async fn run(
                     wt_path,
                     copy_errors,
                 } => {
-                    app.wt_loading = false;
+                    app.wt_inflight.remove(&wt_path);
                     if copy_errors.is_empty() {
                         app.notification = Some(Notification::success(format!(
                             "Worktree created: {wt_path}"
@@ -505,18 +511,18 @@ async fn run(
                     }
                     refresh_entries(&mut app).await;
                 }
-                AsyncResult::WtCreateError(msg) => {
-                    app.wt_loading = false;
-                    app.notification = Some(Notification::error(msg));
+                AsyncResult::WtCreateError { wt_path, message } => {
+                    app.wt_inflight.remove(&wt_path);
+                    app.notification = Some(Notification::error(message));
                 }
                 AsyncResult::WtRemoved(path) => {
-                    app.wt_loading = false;
+                    app.wt_inflight.remove(&path);
                     app.notification =
                         Some(Notification::success(format!("Worktree removed: {path}")));
                     refresh_entries(&mut app).await;
                 }
                 AsyncResult::WtRemoveError { path, reason } => {
-                    app.wt_loading = false;
+                    // Keep path in wt_inflight until the force-delete decision resolves.
                     app.confirm_dialog = Some(crate::ui::confirm_dialog::ConfirmDialog::new(
                         "Force Delete Worktree",
                         format!("{reason}\nForce remove {path}?"),
@@ -524,22 +530,22 @@ async fn run(
                     app.wt_force_delete_pending_path = Some(path);
                 }
                 AsyncResult::WtForceRemoved(path) => {
-                    app.wt_loading = false;
+                    app.wt_inflight.remove(&path);
                     app.notification = Some(Notification::success(format!(
                         "Worktree force removed: {path}"
                     )));
                     refresh_entries(&mut app).await;
                 }
-                AsyncResult::WtForceRemoveError(msg) => {
-                    app.wt_loading = false;
-                    app.notification = Some(Notification::error(msg));
+                AsyncResult::WtForceRemoveError { path, message } => {
+                    app.wt_inflight.remove(&path);
+                    app.notification = Some(Notification::error(message));
                 }
             }
         }
 
         // Delete worktree if requested (async, non-blocking)
         if let Some(path) = app.wt_delete_requested.take() {
-            app.wt_loading = true;
+            app.wt_inflight.insert(path.clone());
             let tx = tx.clone();
             tokio::spawn(async move {
                 match run_git(&["worktree", "remove", &path]).await {
@@ -560,7 +566,7 @@ async fn run(
 
         // Force delete worktree if confirmed (async, non-blocking)
         if let Some(path) = app.wt_force_delete_requested.take() {
-            app.wt_loading = true;
+            app.wt_inflight.insert(path.clone());
             let tx = tx.clone();
             tokio::spawn(async move {
                 match run_git(&["worktree", "remove", "--force", &path]).await {
@@ -568,9 +574,10 @@ async fn run(
                         let _ = tx.send(AsyncResult::WtForceRemoved(path));
                     }
                     Err(e) => {
-                        let _ = tx.send(AsyncResult::WtForceRemoveError(format!(
-                            "Failed to force remove worktree: {e}"
-                        )));
+                        let _ = tx.send(AsyncResult::WtForceRemoveError {
+                            path,
+                            message: format!("Failed to force remove worktree: {e}"),
+                        });
                     }
                 }
             });
@@ -578,8 +585,8 @@ async fn run(
 
         // Create worktree if requested (async, non-blocking)
         if let Some(branch_name) = app.wt_create_requested.take() {
-            app.wt_loading = true;
             let wt_path = app.config.worktree_path(&branch_name);
+            app.wt_inflight.insert(wt_path.clone());
             if let Some(parent) = std::path::Path::new(&wt_path).parent() {
                 let _ = std::fs::create_dir_all(parent);
             }
@@ -609,9 +616,10 @@ async fn run(
                         });
                     }
                     Err(e) => {
-                        let _ = tx.send(AsyncResult::WtCreateError(format!(
-                            "Failed to create worktree: {e}"
-                        )));
+                        let _ = tx.send(AsyncResult::WtCreateError {
+                            wt_path,
+                            message: format!("Failed to create worktree: {e}"),
+                        });
                     }
                 }
             });

@@ -135,7 +135,9 @@ pub struct App {
     pub wt_force_delete_requested: Option<String>,
     pub wt_force_delete_pending_path: Option<String>,
     pub wt_create_requested: Option<String>,
-    pub wt_loading: bool,
+    /// Worktree paths with an in-flight create/delete, gated per-path so unrelated
+    /// worktrees stay actionable in the UI while one is still running.
+    pub wt_inflight: HashSet<String>,
     pub branch_selected: HashSet<String>,
     pub branch_delete_requested: bool,
     pub open_pr_requested: Option<u64>,
@@ -197,7 +199,7 @@ impl App {
             wt_force_delete_requested: None,
             wt_force_delete_pending_path: None,
             wt_create_requested: None,
-            wt_loading: false,
+            wt_inflight: HashSet::new(),
             branch_selected: HashSet::new(),
             branch_delete_requested: false,
             open_pr_requested: None,
@@ -224,7 +226,7 @@ impl App {
     pub fn tick(&mut self) {
         self.spinner_tick = self.spinner_tick.wrapping_add(1);
         // Don't auto-dismiss while a worktree operation is in progress
-        if !self.wt_loading
+        if self.wt_inflight.is_empty()
             && let Some(ref mut n) = self.notification
         {
             if n.ticks_remaining > 0 {
@@ -533,10 +535,10 @@ impl App {
                         format!("Delete {count} {label}? [{preview}]")
                     };
                     self.confirm_dialog = Some(ConfirmDialog::new("Delete Branches", msg));
-                } else if !self.wt_loading
-                    && let Some(entry) = self.selected_entry().cloned()
+                } else if let Some(entry) = self.selected_entry().cloned()
                     && let Some(wt_path) = entry.worktree_path()
                     && !entry.is_current()
+                    && !self.wt_inflight.contains(wt_path)
                 {
                     let path = wt_path.to_string();
                     self.confirm_dialog = Some(ConfirmDialog::new(
@@ -547,11 +549,13 @@ impl App {
                 }
             }
             KeyCode::Char('w') => {
-                if !self.wt_loading
-                    && let Some(entry) = self.selected_entry()
+                if let Some(entry) = self.selected_entry()
                     && entry.worktree.is_none()
                     && !entry.is_current()
                     && (entry.local_branch.is_some() || entry.pull_request.is_some())
+                    && !self
+                        .wt_inflight
+                        .contains(&self.config.worktree_path(&entry.name))
                 {
                     self.wt_create_requested = Some(entry.name.clone());
                     self.notification =
@@ -675,14 +679,19 @@ impl App {
         if entry.worktree.is_some() {
             items.push(ActionItem::CdIntoWorktree);
         }
-        if !self.wt_loading
-            && entry.worktree.is_none()
+        if entry.worktree.is_none()
             && !entry.is_current()
             && (entry.local_branch.is_some() || entry.pull_request.is_some())
+            && !self
+                .wt_inflight
+                .contains(&self.config.worktree_path(&entry.name))
         {
             items.push(ActionItem::CreateWorktree);
         }
-        if !self.wt_loading && entry.worktree.is_some() && !entry.is_current() {
+        if let Some(wt_path) = entry.worktree_path()
+            && !entry.is_current()
+            && !self.wt_inflight.contains(wt_path)
+        {
             items.push(ActionItem::DeleteWorktree);
         }
         if entry.local_branch.is_some() {
@@ -846,7 +855,11 @@ impl App {
             }
             KeyCode::Char('n') | KeyCode::Esc => {
                 self.wt_delete_pending_path = None;
-                self.wt_force_delete_pending_path = None;
+                // Declining force-delete ends the op — release the path so its
+                // action items reappear.
+                if let Some(path) = self.wt_force_delete_pending_path.take() {
+                    self.wt_inflight.remove(&path);
+                }
                 self.confirm_dialog = None;
             }
             _ => {}
