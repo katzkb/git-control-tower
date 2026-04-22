@@ -508,33 +508,42 @@ impl App {
                 self.branch_selected.extend(to_select);
             }
             KeyCode::Char('d') => {
+                // Only entries that will actually be processed (i.e. have a
+                // local branch or a worktree) contribute to the dialog — PR-only
+                // selections are silently ignored by the dispatcher, so they
+                // must not appear in the preview or inflate the counts.
                 let mut branch_count = 0usize;
                 let mut worktree_count = 0usize;
                 let mut unmerged_count = 0usize;
+                let mut deletable_names: Vec<&str> = Vec::new();
                 if !self.branch_selected.is_empty() {
                     for name in &self.branch_selected {
                         if let Some(entry) = self.entries.iter().find(|e| &e.name == name) {
-                            if entry.local_branch.is_some() {
-                                branch_count += 1;
+                            let has_branch = entry.local_branch.is_some();
+                            let has_worktree = entry.worktree.is_some();
+                            if !has_branch && !has_worktree {
+                                continue;
                             }
-                            if entry.worktree.is_some() {
+                            if has_branch {
+                                branch_count += 1;
+                                if !entry.is_merged() && !entry.pr_is_merged() {
+                                    unmerged_count += 1;
+                                }
+                            }
+                            if has_worktree {
                                 worktree_count += 1;
                             }
-                            if !entry.is_merged() && !entry.pr_is_merged() {
-                                unmerged_count += 1;
-                            }
+                            deletable_names.push(name.as_str());
                         }
                     }
                 }
 
                 if branch_count + worktree_count > 0 {
-                    let count = self.branch_selected.len();
-                    let names: Vec<&str> =
-                        self.branch_selected.iter().map(|s| s.as_str()).collect();
+                    let count = deletable_names.len();
                     let preview = if count <= 3 {
-                        names.join(", ")
+                        deletable_names.join(", ")
                     } else {
-                        format!("{} and {} more", names[..2].join(", "), count - 2)
+                        format!("{} and {} more", deletable_names[..2].join(", "), count - 2)
                     };
                     let msg = compose_bulk_delete_message(
                         branch_count,
