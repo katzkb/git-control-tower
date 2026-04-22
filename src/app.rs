@@ -508,7 +508,26 @@ impl App {
                 self.branch_selected.extend(to_select);
             }
             KeyCode::Char('d') => {
+                let mut branch_count = 0usize;
+                let mut worktree_count = 0usize;
+                let mut unmerged_count = 0usize;
                 if !self.branch_selected.is_empty() {
+                    for name in &self.branch_selected {
+                        if let Some(entry) = self.entries.iter().find(|e| &e.name == name) {
+                            if entry.local_branch.is_some() {
+                                branch_count += 1;
+                            }
+                            if entry.worktree.is_some() {
+                                worktree_count += 1;
+                            }
+                            if !entry.is_merged() && !entry.pr_is_merged() {
+                                unmerged_count += 1;
+                            }
+                        }
+                    }
+                }
+
+                if branch_count + worktree_count > 0 {
                     let count = self.branch_selected.len();
                     let names: Vec<&str> =
                         self.branch_selected.iter().map(|s| s.as_str()).collect();
@@ -517,24 +536,20 @@ impl App {
                     } else {
                         format!("{} and {} more", names[..2].join(", "), count - 2)
                     };
-                    let unmerged_count = self
-                        .branch_selected
-                        .iter()
-                        .filter(|name| {
-                            self.entries
-                                .iter()
-                                .any(|e| e.name == **name && !e.is_merged() && !e.pr_is_merged())
-                        })
-                        .count();
-                    let label = if count == 1 { "branch" } else { "branches" };
-                    let msg = if unmerged_count > 0 {
-                        format!(
-                            "Delete {count} {label}? ({unmerged_count} unmerged — will force delete)\n[{preview}]"
-                        )
+                    let msg = compose_bulk_delete_message(
+                        branch_count,
+                        worktree_count,
+                        unmerged_count,
+                        &preview,
+                    );
+                    let title = if worktree_count == 0 {
+                        "Delete Branches"
+                    } else if branch_count == 0 {
+                        "Delete Worktrees"
                     } else {
-                        format!("Delete {count} {label}? [{preview}]")
+                        "Delete Branches + Worktrees"
                     };
-                    self.confirm_dialog = Some(ConfirmDialog::new("Delete Branches", msg));
+                    self.confirm_dialog = Some(ConfirmDialog::new(title, msg));
                 } else if let Some(entry) = self.selected_entry().cloned()
                     && let Some(wt_path) = entry.worktree_path()
                     && !entry.is_current()
@@ -890,6 +905,45 @@ fn char_to_byte_idx(s: &str, char_idx: usize) -> usize {
         .unwrap_or(s.len())
 }
 
+pub(crate) fn compose_bulk_delete_message(
+    branches: usize,
+    worktrees: usize,
+    unmerged: usize,
+    preview: &str,
+) -> String {
+    let branch_label = if branches == 1 { "branch" } else { "branches" };
+    let worktree_label = if worktrees == 1 {
+        "worktree"
+    } else {
+        "worktrees"
+    };
+    let mut head_parts = Vec::with_capacity(2);
+    if branches > 0 {
+        head_parts.push(format!("{branches} {branch_label}"));
+    }
+    if worktrees > 0 {
+        head_parts.push(format!("{worktrees} {worktree_label}"));
+    }
+    let head = head_parts.join(" + ");
+
+    let mut clauses = Vec::with_capacity(2);
+    if unmerged > 0 {
+        clauses.push(format!("{unmerged} unmerged — will force delete"));
+    }
+    if worktrees > 0 {
+        clauses.push(format!(
+            "{worktrees} {worktree_label} will be removed, force if needed"
+        ));
+    }
+
+    let head_with_clauses = if clauses.is_empty() {
+        format!("Delete {head}?")
+    } else {
+        format!("Delete {head}? ({})", clauses.join("; "))
+    };
+    format!("{head_with_clauses}\n[{preview}]")
+}
+
 #[cfg(test)]
 mod text_edit_tests {
     use super::*;
@@ -948,5 +1002,66 @@ mod text_edit_tests {
         let mut s = String::from("αβγ");
         remove_char_at(&mut s, 1);
         assert_eq!(s, "αγ");
+    }
+}
+
+#[cfg(test)]
+mod bulk_delete_message_tests {
+    use super::compose_bulk_delete_message;
+
+    #[test]
+    fn branches_only_clean() {
+        assert_eq!(
+            compose_bulk_delete_message(3, 0, 0, "a, b, c"),
+            "Delete 3 branches?\n[a, b, c]"
+        );
+    }
+
+    #[test]
+    fn single_branch_pluralizes() {
+        assert_eq!(
+            compose_bulk_delete_message(1, 0, 0, "a"),
+            "Delete 1 branch?\n[a]"
+        );
+    }
+
+    #[test]
+    fn branches_with_unmerged() {
+        assert_eq!(
+            compose_bulk_delete_message(3, 0, 1, "a, b, c"),
+            "Delete 3 branches? (1 unmerged — will force delete)\n[a, b, c]"
+        );
+    }
+
+    #[test]
+    fn branches_plus_worktrees() {
+        assert_eq!(
+            compose_bulk_delete_message(3, 2, 0, "a, b, c"),
+            "Delete 3 branches + 2 worktrees? (2 worktrees will be removed, force if needed)\n[a, b, c]"
+        );
+    }
+
+    #[test]
+    fn branches_worktrees_and_unmerged() {
+        assert_eq!(
+            compose_bulk_delete_message(3, 2, 1, "a, b, c"),
+            "Delete 3 branches + 2 worktrees? (1 unmerged — will force delete; 2 worktrees will be removed, force if needed)\n[a, b, c]"
+        );
+    }
+
+    #[test]
+    fn worktree_only_singular() {
+        assert_eq!(
+            compose_bulk_delete_message(0, 1, 0, "a"),
+            "Delete 1 worktree? (1 worktree will be removed, force if needed)\n[a]"
+        );
+    }
+
+    #[test]
+    fn single_branch_and_worktree() {
+        assert_eq!(
+            compose_bulk_delete_message(1, 1, 0, "a"),
+            "Delete 1 branch + 1 worktree? (1 worktree will be removed, force if needed)\n[a]"
+        );
     }
 }
