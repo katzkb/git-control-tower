@@ -550,6 +550,13 @@ impl App {
                         "Delete Branches + Worktrees"
                     };
                     self.confirm_dialog = Some(ConfirmDialog::new(title, msg));
+                } else if !self.branch_selected.is_empty() {
+                    // Non-empty selection but nothing deletable (e.g. PR-only entries
+                    // with no local branch and no worktree). Tell the user rather
+                    // than silently no-op.
+                    self.notification = Some(Notification::error(
+                        "Nothing to delete in selection".to_string(),
+                    ));
                 } else if let Some(entry) = self.selected_entry().cloned()
                     && let Some(wt_path) = entry.worktree_path()
                     && !entry.is_current()

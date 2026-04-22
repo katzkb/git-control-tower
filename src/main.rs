@@ -703,6 +703,10 @@ async fn run(
             }
             let mut work: Vec<Work> = Vec::with_capacity(selected.len());
             let mut wt_paths_claimed: Vec<String> = Vec::new();
+            // Re-validate each selection at dispatch time — entries / inflight
+            // state may have changed between the user pressing Space and d
+            // (e.g. after a refresh). Silently skipping keeps the batch safe
+            // against races; the final notification reflects what actually ran.
             for name in selected {
                 let Some(entry) = app.entries.iter().find(|e| e.name == name) else {
                     continue;
