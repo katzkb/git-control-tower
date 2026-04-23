@@ -134,6 +134,7 @@ pub struct App {
     pub wt_delete_pending_path: Option<String>, // path stored when confirm dialog shown
     pub wt_force_delete_requested: Option<String>,
     pub wt_force_delete_pending_path: Option<String>,
+    pub wt_cd_pending_path: Option<String>,
     pub wt_create_requested: Option<String>,
     /// Worktree paths with an in-flight create/delete, gated per-path so unrelated
     /// worktrees stay actionable in the UI while one is still running.
@@ -198,6 +199,7 @@ impl App {
             wt_delete_pending_path: None,
             wt_force_delete_requested: None,
             wt_force_delete_pending_path: None,
+            wt_cd_pending_path: None,
             wt_create_requested: None,
             wt_inflight: HashSet::new(),
             branch_selected: HashSet::new(),
@@ -875,7 +877,12 @@ impl App {
     fn handle_confirm_key(&mut self, code: KeyCode) {
         match code {
             KeyCode::Char('y') => {
-                if !self.branch_selected.is_empty() {
+                // Move-to-worktree takes precedence — it can race with a
+                // stale `branch_selected` from before the create finished.
+                if let Some(path) = self.wt_cd_pending_path.take() {
+                    self.cd_path = Some(path);
+                    self.should_quit = true;
+                } else if !self.branch_selected.is_empty() {
                     self.branch_delete_requested = true;
                 } else if let Some(path) = self.wt_force_delete_pending_path.take() {
                     self.wt_force_delete_requested = Some(path);
@@ -886,6 +893,7 @@ impl App {
             }
             KeyCode::Char('n') | KeyCode::Esc => {
                 self.wt_delete_pending_path = None;
+                self.wt_cd_pending_path = None;
                 // Declining force-delete ends the op — release the path so its
                 // action items reappear.
                 if let Some(path) = self.wt_force_delete_pending_path.take() {

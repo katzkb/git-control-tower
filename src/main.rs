@@ -533,6 +533,15 @@ async fn run(
                         }
                     }
                     refresh_entries(&mut app).await;
+                    if app.confirm_dialog.is_none() {
+                        app.confirm_dialog = Some(crate::ui::confirm_dialog::ConfirmDialog::new(
+                            "Move to Worktree",
+                            format!(
+                                "Move into the new worktree?\n(Requires shell integration — see README.)\n{wt_path}"
+                            ),
+                        ));
+                        app.wt_cd_pending_path = Some(wt_path);
+                    }
                 }
                 AsyncResult::WtCreateError { wt_path, message } => {
                     app.wt_inflight.remove(&wt_path);
