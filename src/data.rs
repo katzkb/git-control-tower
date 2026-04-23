@@ -296,6 +296,13 @@ pub async fn fetch_review_prs(
         }
     }
 
+    // Exclude PRs authored by the current user. `reviewed-by:@me` matches PRs
+    // where the user submitted any review, including COMMENT-type reviews the
+    // user added on their own PR — those would otherwise leak into the Review tab.
+    if !gh_user.is_empty() {
+        all_prs.retain(|pr| pr.author != gh_user);
+    }
+
     // When me-only, exclude PRs that only have team review requests
     if !include_team && !gh_user.is_empty() {
         all_prs.retain(|pr| {
