@@ -7,6 +7,7 @@ mod log_view;
 mod main_view;
 pub mod markdown;
 pub mod notification;
+pub mod progress_panel;
 pub mod sidebar;
 
 use ratatui::{
