@@ -68,8 +68,7 @@ enum AsyncResult {
         wt_path: String,
         message: String,
     },
-    WtRemoved(String),
-    WtRemoveError {
+    WtForceDecisionRequested {
         path: String,
         reason: String,
     },
@@ -100,6 +99,15 @@ enum AsyncResult {
         failures: Vec<String>,
         wt_paths_claimed: Vec<String>,
     },
+}
+
+/// Display-friendly label for a worktree path: takes the last path segment.
+fn wt_label_for(path: &str) -> String {
+    std::path::Path::new(path)
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or(path)
+        .to_string()
 }
 
 fn bulk_success_parts(branches: usize, worktrees: usize) -> Vec<String> {
@@ -825,14 +833,8 @@ async fn run(
                     app.quit_pressed_during_progress = false;
                     refresh_entries(&mut app).await;
                 }
-                AsyncResult::WtRemoved(path) => {
-                    app.wt_inflight.remove(&path);
-                    app.notification =
-                        Some(Notification::success(format!("Worktree removed: {path}")));
-                    refresh_entries(&mut app).await;
-                }
-                AsyncResult::WtRemoveError { path, reason } => {
-                    // Keep path in wt_inflight until the force-delete decision resolves.
+                AsyncResult::WtForceDecisionRequested { path, reason } => {
+                    // Plain remove failed; ask the user whether to force.
                     app.confirm_dialog = Some(crate::ui::confirm_dialog::ConfirmDialog::new(
                         "Force Delete Worktree",
                         format!("{reason}\nForce remove {path}?"),
@@ -853,23 +855,53 @@ async fn run(
             }
         }
 
-        // Delete worktree if requested (async, non-blocking)
+        // Delete worktree if requested (single-item, no auto-force fallback).
         if let Some(path) = app.wt_delete_requested.take() {
             app.wt_inflight.insert(path.clone());
-            let tx = tx.clone();
+            let op_id = app.progress.allocate_ids(1).start;
+            let label = wt_label_for(&path);
+            let claimed = vec![path.clone()];
+            let tx_c = tx.clone();
             tokio::spawn(async move {
-                match run_git(&["worktree", "remove", &path]).await {
-                    Ok(_) => {
-                        let _ = tx.send(AsyncResult::WtRemoved(path));
+                let result = run_delete_op(
+                    op_id,
+                    label.clone(),
+                    Some(path.clone()),
+                    None,
+                    false,
+                    DeleteMode::PlainOnly,
+                    tx_c.clone(),
+                )
+                .await;
+
+                if let Some(failure) = result.failure {
+                    // Plain failed — emit OpAllDone (closes the panel) then ask
+                    // the user whether to force via WtForceDecisionRequested.
+                    let _ = tx_c.send(AsyncResult::OpAllDone {
+                        branches_deleted: vec![],
+                        worktrees_removed: vec![],
+                        failures: vec![failure.clone()],
+                        wt_paths_claimed: claimed,
+                    });
+                    let reason = failure
+                        .lines()
+                        .next()
+                        .unwrap_or("unknown error")
+                        .to_string();
+                    let _ = tx_c.send(AsyncResult::WtForceDecisionRequested { path, reason });
+                } else {
+                    let mut wts = vec![];
+                    if result.worktree_removed
+                        && let Some(p) = result.wt_path
+                    {
+                        wts.push(p);
                     }
-                    Err(e) => {
-                        let reason = format!("{e}")
-                            .lines()
-                            .next()
-                            .unwrap_or("unknown error")
-                            .to_string();
-                        let _ = tx.send(AsyncResult::WtRemoveError { path, reason });
-                    }
+                    let _ = tx_c.send(AsyncResult::OpAllDone {
+                        branches_deleted: vec![],
+                        worktrees_removed: wts,
+                        failures: vec![],
+                        wt_paths_claimed: claimed,
+                    });
                 }
             });
         }
