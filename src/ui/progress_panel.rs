@@ -31,7 +31,7 @@ fn build_lines(tracker: &ProgressTracker, quit_warning: bool, now: Instant) -> V
 
     if quit_warning {
         lines.push(Line::from(Span::styled(
-            "Delete in progress. Press q again to quit anyway.".to_string(),
+            "Delete in progress. Press q/Esc again to quit anyway.".to_string(),
             Style::default()
                 .fg(Color::Yellow)
                 .add_modifier(Modifier::BOLD),
@@ -181,7 +181,7 @@ mod tests {
         let lines = build_lines(&t, true, fixed_now());
         let first: String = lines[0].spans.iter().map(|s| s.content.as_ref()).collect();
         assert!(first.contains("Delete in progress"));
-        assert!(first.contains("Press q again"));
+        assert!(first.contains("Press q/Esc again"));
     }
 
     #[test]
