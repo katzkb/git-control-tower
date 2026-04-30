@@ -7,6 +7,7 @@ mod log_view;
 mod main_view;
 pub mod markdown;
 pub mod notification;
+pub mod progress_panel;
 pub mod sidebar;
 
 use ratatui::{
@@ -62,8 +63,10 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         branch_create_input::draw(frame, input);
     }
 
-    // Notification overlay
-    if let Some(notif) = &app.notification {
+    // Progress panel takes priority over notification while a delete batch runs.
+    if app.progress.is_active() {
+        progress_panel::draw(frame, &app.progress, app.quit_pressed_during_progress);
+    } else if let Some(notif) = &app.notification {
         notification::draw(frame, notif);
     }
 

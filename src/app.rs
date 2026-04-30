@@ -1,6 +1,7 @@
 use crossterm::event::{KeyCode, KeyEvent};
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
+use std::time::Instant;
 
 use crate::git::types::{Branch, BranchEntry, Commit, PrDetail, PullRequest, Worktree};
 use crate::ui::confirm_dialog::ConfirmDialog;
@@ -67,6 +68,105 @@ pub struct BranchCreateInput {
     pub source: String,
     pub name: String,
     pub cursor: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum OpStep {
+    RunningWtRemove,
+    RunningWtForceRemove,
+    RunningBranchDelete,
+    Done { success: bool },
+}
+
+#[derive(Debug, Clone)]
+pub struct OpProgress {
+    pub label: String,
+    pub current_step: OpStep,
+    pub op_started_at: Instant,
+    pub last_command: Option<String>,
+    pub error: Option<String>,
+}
+
+impl OpProgress {
+    pub fn new(label: String) -> Self {
+        Self {
+            label,
+            current_step: OpStep::RunningWtRemove, // overwritten by first OpStepBegin
+            op_started_at: Instant::now(),
+            last_command: None,
+            error: None,
+        }
+    }
+
+    pub fn is_done(&self) -> bool {
+        matches!(self.current_step, OpStep::Done { .. })
+    }
+}
+
+#[derive(Debug, Default)]
+pub struct ProgressTracker {
+    pub ops: BTreeMap<u64, OpProgress>,
+    next_id: u64,
+    pub started_at: Option<Instant>,
+}
+
+impl ProgressTracker {
+    pub fn is_active(&self) -> bool {
+        !self.ops.is_empty()
+    }
+
+    pub fn total(&self) -> usize {
+        self.ops.len()
+    }
+
+    pub fn done_count(&self) -> usize {
+        self.ops.values().filter(|p| p.is_done()).count()
+    }
+
+    pub fn allocate_ids(&mut self, n: usize) -> std::ops::Range<u64> {
+        let start = self.next_id;
+        self.next_id += n as u64;
+        if self.started_at.is_none() && n > 0 {
+            self.started_at = Some(Instant::now());
+        }
+        start..self.next_id
+    }
+
+    pub fn insert(&mut self, op_id: u64, op: OpProgress) {
+        self.ops.insert(op_id, op);
+    }
+
+    pub fn update_step(&mut self, op_id: u64, step: OpStep, command: String) {
+        if let Some(op) = self.ops.get_mut(&op_id) {
+            op.current_step = step;
+            op.last_command = Some(command);
+        }
+    }
+
+    pub fn finish(&mut self, op_id: u64, success: bool, error: Option<String>) {
+        if let Some(op) = self.ops.get_mut(&op_id) {
+            op.current_step = OpStep::Done { success };
+            op.error = error;
+        }
+    }
+
+    /// Force-finish any non-Done ops as failures. Used when OpAllDone arrives
+    /// but some tasks panicked and never sent OpFinished.
+    pub fn sweep_unfinished(&mut self) {
+        for op in self.ops.values_mut() {
+            if !op.is_done() {
+                op.current_step = OpStep::Done { success: false };
+                if op.error.is_none() {
+                    op.error = Some("interrupted".to_string());
+                }
+            }
+        }
+    }
+
+    pub fn clear(&mut self) {
+        self.ops.clear();
+        self.started_at = None;
+    }
 }
 
 pub struct App {
@@ -139,6 +239,8 @@ pub struct App {
     /// Worktree paths with an in-flight create/delete, gated per-path so unrelated
     /// worktrees stay actionable in the UI while one is still running.
     pub wt_inflight: HashSet<String>,
+    pub progress: ProgressTracker,
+    pub quit_pressed_during_progress: bool,
     pub branch_selected: HashSet<String>,
     pub branch_delete_requested: bool,
     pub open_pr_requested: Option<u64>,
@@ -202,6 +304,8 @@ impl App {
             wt_cd_pending_path: None,
             wt_create_requested: None,
             wt_inflight: HashSet::new(),
+            progress: ProgressTracker::default(),
+            quit_pressed_during_progress: false,
             branch_selected: HashSet::new(),
             branch_delete_requested: false,
             open_pr_requested: None,
@@ -372,7 +476,13 @@ impl App {
 
         match key.code {
             KeyCode::Char('?') => self.show_help = true,
-            KeyCode::Char('q') => self.should_quit = true,
+            KeyCode::Char('q') => {
+                if !self.progress.is_active() || self.quit_pressed_during_progress {
+                    self.should_quit = true;
+                } else {
+                    self.quit_pressed_during_progress = true;
+                }
+            }
             KeyCode::Esc => {
                 if !self.search_query.is_empty() {
                     // Clear search filter and restore scroll
@@ -382,8 +492,10 @@ impl App {
                     self.request_details_for_selection();
                 } else if matches!(self.active_view, ActiveView::Log | ActiveView::History) {
                     self.active_view = ActiveView::Main;
-                } else {
+                } else if !self.progress.is_active() || self.quit_pressed_during_progress {
                     self.should_quit = true;
+                } else {
+                    self.quit_pressed_during_progress = true;
                 }
             }
             KeyCode::Char('l') => self.active_view = ActiveView::Log,
@@ -1016,6 +1128,140 @@ mod text_edit_tests {
         let mut s = String::from("αβγ");
         remove_char_at(&mut s, 1);
         assert_eq!(s, "αγ");
+    }
+
+    #[test]
+    fn progress_tracker_allocate_ids_advances() {
+        let mut t = ProgressTracker::default();
+        let r = t.allocate_ids(3);
+        assert_eq!(r, 0..3);
+        let r2 = t.allocate_ids(2);
+        assert_eq!(r2, 3..5);
+    }
+
+    #[test]
+    fn progress_tracker_allocate_ids_sets_started_at_once() {
+        let mut t = ProgressTracker::default();
+        assert!(t.started_at.is_none());
+        let _ = t.allocate_ids(2);
+        let first = t
+            .started_at
+            .expect("started_at set on first non-empty allocation");
+        let _ = t.allocate_ids(1);
+        assert_eq!(t.started_at, Some(first));
+    }
+
+    #[test]
+    fn progress_tracker_state_transitions() {
+        let mut t = ProgressTracker::default();
+        let ids: Vec<u64> = t.allocate_ids(2).collect();
+        t.insert(ids[0], OpProgress::new("a".into()));
+        t.insert(ids[1], OpProgress::new("b".into()));
+
+        assert_eq!(t.total(), 2);
+        assert_eq!(t.done_count(), 0);
+        assert!(t.is_active());
+
+        t.update_step(
+            ids[0],
+            OpStep::RunningWtForceRemove,
+            "git worktree remove --force /wt/a".into(),
+        );
+        assert_eq!(t.ops[&ids[0]].current_step, OpStep::RunningWtForceRemove);
+        assert_eq!(
+            t.ops[&ids[0]].last_command.as_deref(),
+            Some("git worktree remove --force /wt/a")
+        );
+
+        t.finish(ids[0], true, None);
+        assert!(t.ops[&ids[0]].is_done());
+        assert_eq!(t.done_count(), 1);
+
+        t.finish(ids[1], false, Some("nope".into()));
+        assert_eq!(t.done_count(), 2);
+        assert_eq!(t.ops[&ids[1]].error.as_deref(), Some("nope"));
+    }
+
+    #[test]
+    fn progress_tracker_sweep_unfinished_marks_remaining_as_failed() {
+        let mut t = ProgressTracker::default();
+        let ids: Vec<u64> = t.allocate_ids(2).collect();
+        t.insert(ids[0], OpProgress::new("a".into()));
+        t.insert(ids[1], OpProgress::new("b".into()));
+        t.finish(ids[0], true, None);
+
+        t.sweep_unfinished();
+        assert!(t.ops[&ids[1]].is_done());
+        assert_eq!(t.ops[&ids[1]].current_step, OpStep::Done { success: false });
+        assert_eq!(t.ops[&ids[1]].error.as_deref(), Some("interrupted"));
+    }
+
+    #[test]
+    fn progress_tracker_clear_resets_state() {
+        let mut t = ProgressTracker::default();
+        let ids: Vec<u64> = t.allocate_ids(1).collect();
+        t.insert(ids[0], OpProgress::new("a".into()));
+        t.clear();
+        assert!(!t.is_active());
+        assert!(t.started_at.is_none());
+        assert_eq!(t.total(), 0);
+    }
+
+    #[test]
+    fn quit_during_progress_requires_two_presses() {
+        use crate::config::Config;
+        let mut app = App::new(Config::default());
+        let id = app.progress.allocate_ids(1).start;
+        app.progress.insert(id, OpProgress::new("a".into()));
+
+        // First 'q': sets the flag, no quit.
+        app.handle_key(crossterm::event::KeyEvent::new(
+            crossterm::event::KeyCode::Char('q'),
+            crossterm::event::KeyModifiers::NONE,
+        ));
+        assert!(!app.should_quit);
+        assert!(app.quit_pressed_during_progress);
+
+        // Second 'q': force quits.
+        app.handle_key(crossterm::event::KeyEvent::new(
+            crossterm::event::KeyCode::Char('q'),
+            crossterm::event::KeyModifiers::NONE,
+        ));
+        assert!(app.should_quit);
+    }
+
+    #[test]
+    fn quit_when_no_progress_quits_immediately() {
+        use crate::config::Config;
+        let mut app = App::new(Config::default());
+        app.handle_key(crossterm::event::KeyEvent::new(
+            crossterm::event::KeyCode::Char('q'),
+            crossterm::event::KeyModifiers::NONE,
+        ));
+        assert!(app.should_quit);
+    }
+
+    #[test]
+    fn esc_during_progress_requires_two_presses() {
+        use crate::config::Config;
+        let mut app = App::new(Config::default());
+        let id = app.progress.allocate_ids(1).start;
+        app.progress.insert(id, OpProgress::new("a".into()));
+
+        // First Esc: sets the flag, no quit.
+        app.handle_key(crossterm::event::KeyEvent::new(
+            crossterm::event::KeyCode::Esc,
+            crossterm::event::KeyModifiers::NONE,
+        ));
+        assert!(!app.should_quit);
+        assert!(app.quit_pressed_during_progress);
+
+        // Second Esc: force quits.
+        app.handle_key(crossterm::event::KeyEvent::new(
+            crossterm::event::KeyCode::Esc,
+            crossterm::event::KeyModifiers::NONE,
+        ));
+        assert!(app.should_quit);
     }
 }
 
