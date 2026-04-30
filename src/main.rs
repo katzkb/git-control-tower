@@ -46,7 +46,6 @@ struct RepoInfo {
     hostname: Option<String>, // None for github.com
 }
 
-#[allow(dead_code)]
 enum AsyncResult {
     PrDetail(PrDetail),
     PrDetailError(u64, String),
@@ -71,11 +70,6 @@ enum AsyncResult {
     WtForceDecisionRequested {
         path: String,
         reason: String,
-    },
-    WtForceRemoved(String),
-    WtForceRemoveError {
-        path: String,
-        message: String,
     },
     OpStarted {
         op_id: u64,
@@ -127,7 +121,6 @@ fn bulk_success_parts(branches: usize, worktrees: usize) -> Vec<String> {
     parts
 }
 
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy)]
 enum DeleteMode {
     /// Try plain `worktree remove`; on failure, retry with `--force` (used for bulk).
@@ -138,9 +131,7 @@ enum DeleteMode {
     ForceOnly,
 }
 
-#[allow(dead_code)]
 struct DeleteOpResult {
-    op_id: u64,
     branch_name: Option<String>,
     wt_path: Option<String>,
     branch_deleted: bool,
@@ -214,7 +205,6 @@ async fn run_delete_op(
                             error: Some(short.clone()),
                         });
                         return DeleteOpResult {
-                            op_id,
                             branch_name,
                             wt_path,
                             branch_deleted: false,
@@ -250,7 +240,6 @@ async fn run_delete_op(
                         error: Some(short.clone()),
                     });
                     return DeleteOpResult {
-                        op_id,
                         branch_name,
                         wt_path,
                         branch_deleted: false,
@@ -285,7 +274,6 @@ async fn run_delete_op(
                     error: Some(short.clone()),
                 });
                 return DeleteOpResult {
-                    op_id,
                     branch_name,
                     wt_path,
                     branch_deleted: false,
@@ -303,7 +291,6 @@ async fn run_delete_op(
     });
 
     DeleteOpResult {
-        op_id,
         branch_name,
         wt_path,
         branch_deleted,
@@ -841,17 +828,6 @@ async fn run(
                     ));
                     app.wt_force_delete_pending_path = Some(path);
                 }
-                AsyncResult::WtForceRemoved(path) => {
-                    app.wt_inflight.remove(&path);
-                    app.notification = Some(Notification::success(format!(
-                        "Worktree force removed: {path}"
-                    )));
-                    refresh_entries(&mut app).await;
-                }
-                AsyncResult::WtForceRemoveError { path, message } => {
-                    app.wt_inflight.remove(&path);
-                    app.notification = Some(Notification::error(message));
-                }
             }
         }
 
@@ -906,22 +882,39 @@ async fn run(
             });
         }
 
-        // Force delete worktree if confirmed (async, non-blocking)
+        // Force delete worktree if confirmed (single-item, force only).
         if let Some(path) = app.wt_force_delete_requested.take() {
             app.wt_inflight.insert(path.clone());
-            let tx = tx.clone();
+            let op_id = app.progress.allocate_ids(1).start;
+            let label = wt_label_for(&path);
+            let claimed = vec![path.clone()];
+            let tx_c = tx.clone();
             tokio::spawn(async move {
-                match run_git(&["worktree", "remove", "--force", &path]).await {
-                    Ok(_) => {
-                        let _ = tx.send(AsyncResult::WtForceRemoved(path));
-                    }
-                    Err(e) => {
-                        let _ = tx.send(AsyncResult::WtForceRemoveError {
-                            path,
-                            message: format!("Failed to force remove worktree: {e}"),
-                        });
-                    }
+                let result = run_delete_op(
+                    op_id,
+                    label,
+                    Some(path),
+                    None,
+                    false,
+                    DeleteMode::ForceOnly,
+                    tx_c.clone(),
+                )
+                .await;
+                let mut wts = vec![];
+                let mut failures = vec![];
+                if let Some(f) = result.failure {
+                    failures.push(f);
+                } else if let Some(p) = result.wt_path
+                    && result.worktree_removed
+                {
+                    wts.push(p);
                 }
+                let _ = tx_c.send(AsyncResult::OpAllDone {
+                    branches_deleted: vec![],
+                    worktrees_removed: wts,
+                    failures,
+                    wt_paths_claimed: claimed,
+                });
             });
         }
 
