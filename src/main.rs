@@ -758,11 +758,6 @@ async fn run(
                     error,
                 } => {
                     app.progress.finish(op_id, success, error);
-                    // Optimistic UI: drop the entry from the sidebar early on success.
-                    if success && let Some(op) = app.progress.ops.get(&op_id) {
-                        let label = op.label.clone();
-                        app.entries.retain(|e| e.name != label);
-                    }
                 }
                 AsyncResult::OpAllDone {
                     branches_deleted,
@@ -959,7 +954,6 @@ async fn run(
 
             struct Work {
                 name: String,
-                label: String,
                 wt_path: Option<String>,
                 has_local_branch: bool,
             }
@@ -984,7 +978,6 @@ async fn run(
                 }
                 work.push(Work {
                     name: entry.name.clone(),
-                    label: entry.name.clone(),
                     wt_path,
                     has_local_branch: entry.local_branch.is_some(),
                 });
@@ -999,7 +992,7 @@ async fn run(
                     let tx_c = tx.clone();
                     set.spawn(run_delete_op(
                         op_id,
-                        w.label,
+                        w.name.clone(),
                         w.wt_path,
                         Some(w.name),
                         w.has_local_branch,
