@@ -22,6 +22,8 @@ use tokio::sync::mpsc;
 
 use crate::app::App;
 use crate::app::MainFilter;
+#[allow(unused_imports)]
+use crate::app::{OpProgress, OpStep, ProgressTracker};
 use crate::data::merge_entries;
 use crate::event::{Event, EventHandler};
 use crate::git::command::{run_gh, run_git};
@@ -44,6 +46,7 @@ struct RepoInfo {
     hostname: Option<String>, // None for github.com
 }
 
+#[allow(dead_code)]
 enum AsyncResult {
     PrDetail(PrDetail),
     PrDetailError(u64, String),
@@ -76,6 +79,28 @@ enum AsyncResult {
         message: String,
     },
     BulkDeleteDone {
+        branches_deleted: Vec<String>,
+        worktrees_removed: Vec<String>,
+        failures: Vec<String>,
+        wt_paths_claimed: Vec<String>,
+    },
+    OpStarted {
+        op_id: u64,
+        label: String,
+        wt_path: Option<String>,
+        branch_name: Option<String>,
+    },
+    OpStepBegin {
+        op_id: u64,
+        step: OpStep,
+        command: String,
+    },
+    OpFinished {
+        op_id: u64,
+        success: bool,
+        error: Option<String>,
+    },
+    OpAllDone {
         branches_deleted: Vec<String>,
         worktrees_removed: Vec<String>,
         failures: Vec<String>,
@@ -615,6 +640,12 @@ async fn run(
                     }
                     refresh_entries(&mut app).await;
                 }
+                // New Op* variants have no producers yet (Task 2 of progress-pipeline).
+                // Reducers wired in Task 3.
+                AsyncResult::OpStarted { .. }
+                | AsyncResult::OpStepBegin { .. }
+                | AsyncResult::OpFinished { .. }
+                | AsyncResult::OpAllDone { .. } => {}
             }
         }
 
