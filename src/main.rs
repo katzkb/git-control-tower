@@ -147,15 +147,15 @@ impl DeleteOpResult {
         wts: &mut Vec<String>,
         failures: &mut Vec<String>,
     ) {
-        if self.branch_deleted {
-            if let Some(n) = self.branch_name {
-                branches.push(n);
-            }
+        if self.branch_deleted
+            && let Some(n) = self.branch_name
+        {
+            branches.push(n);
         }
-        if self.worktree_removed {
-            if let Some(p) = self.wt_path {
-                wts.push(p);
-            }
+        if self.worktree_removed
+            && let Some(p) = self.wt_path
+        {
+            wts.push(p);
         }
         if let Some(f) = self.failure {
             failures.push(f);
@@ -255,37 +255,35 @@ async fn run_delete_op(
     }
 
     let mut branch_deleted = false;
-    if has_local_branch {
-        if let Some(name) = branch_name.as_ref() {
-            let cmd = format!("git branch -D {name}");
-            let _ = tx.send(AsyncResult::OpStepBegin {
-                op_id,
-                step: OpStep::RunningBranchDelete,
-                command: cmd,
-            });
-            match run_git(&["branch", "-D", name]).await {
-                Ok(_) => branch_deleted = true,
-                Err(e) => {
-                    let short = e
-                        .to_string()
-                        .lines()
-                        .next()
-                        .unwrap_or("unknown")
-                        .to_string();
-                    let _ = tx.send(AsyncResult::OpFinished {
-                        op_id,
-                        success: false,
-                        error: Some(short.clone()),
-                    });
-                    return DeleteOpResult {
-                        op_id,
-                        branch_name,
-                        wt_path,
-                        branch_deleted: false,
-                        worktree_removed,
-                        failure: Some(format!("{label}: {short}")),
-                    };
-                }
+    if has_local_branch && let Some(name) = branch_name.as_ref() {
+        let cmd = format!("git branch -D {name}");
+        let _ = tx.send(AsyncResult::OpStepBegin {
+            op_id,
+            step: OpStep::RunningBranchDelete,
+            command: cmd,
+        });
+        match run_git(&["branch", "-D", name]).await {
+            Ok(_) => branch_deleted = true,
+            Err(e) => {
+                let short = e
+                    .to_string()
+                    .lines()
+                    .next()
+                    .unwrap_or("unknown")
+                    .to_string();
+                let _ = tx.send(AsyncResult::OpFinished {
+                    op_id,
+                    success: false,
+                    error: Some(short.clone()),
+                });
+                return DeleteOpResult {
+                    op_id,
+                    branch_name,
+                    wt_path,
+                    branch_deleted: false,
+                    worktree_removed,
+                    failure: Some(format!("{label}: {short}")),
+                };
             }
         }
     }
@@ -776,11 +774,9 @@ async fn run(
                 } => {
                     app.progress.finish(op_id, success, error);
                     // Optimistic UI: drop the entry from the sidebar early on success.
-                    if success {
-                        if let Some(op) = app.progress.ops.get(&op_id) {
-                            let label = op.label.clone();
-                            app.entries.retain(|e| e.name != label);
-                        }
+                    if success && let Some(op) = app.progress.ops.get(&op_id) {
+                        let label = op.label.clone();
+                        app.entries.retain(|e| e.name != label);
                     }
                 }
                 AsyncResult::OpAllDone {
