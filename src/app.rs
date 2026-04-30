@@ -486,7 +486,13 @@ impl App {
 
         match key.code {
             KeyCode::Char('?') => self.show_help = true,
-            KeyCode::Char('q') => self.should_quit = true,
+            KeyCode::Char('q') => {
+                if !self.progress.is_active() || self.quit_pressed_during_progress {
+                    self.should_quit = true;
+                } else {
+                    self.quit_pressed_during_progress = true;
+                }
+            }
             KeyCode::Esc => {
                 if !self.search_query.is_empty() {
                     // Clear search filter and restore scroll
@@ -1214,6 +1220,41 @@ mod text_edit_tests {
         assert!(!t.is_active());
         assert!(t.started_at.is_none());
         assert_eq!(t.total(), 0);
+    }
+
+    #[test]
+    fn quit_during_progress_requires_two_presses() {
+        use crate::config::Config;
+        let mut app = App::new(Config::default());
+        let id = app.progress.allocate_ids(1).start;
+        app.progress
+            .insert(id, OpProgress::new("a".into(), None, None));
+
+        // First 'q': sets the flag, no quit.
+        app.handle_key(crossterm::event::KeyEvent::new(
+            crossterm::event::KeyCode::Char('q'),
+            crossterm::event::KeyModifiers::NONE,
+        ));
+        assert!(!app.should_quit);
+        assert!(app.quit_pressed_during_progress);
+
+        // Second 'q': force quits.
+        app.handle_key(crossterm::event::KeyEvent::new(
+            crossterm::event::KeyCode::Char('q'),
+            crossterm::event::KeyModifiers::NONE,
+        ));
+        assert!(app.should_quit);
+    }
+
+    #[test]
+    fn quit_when_no_progress_quits_immediately() {
+        use crate::config::Config;
+        let mut app = App::new(Config::default());
+        app.handle_key(crossterm::event::KeyEvent::new(
+            crossterm::event::KeyCode::Char('q'),
+            crossterm::event::KeyModifiers::NONE,
+        ));
+        assert!(app.should_quit);
     }
 }
 
