@@ -19,6 +19,7 @@ use crossterm::terminal::{
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 use tokio::sync::mpsc;
+use tokio::task::JoinSet;
 
 use crate::app::App;
 use crate::app::MainFilter;
@@ -76,12 +77,6 @@ enum AsyncResult {
     WtForceRemoveError {
         path: String,
         message: String,
-    },
-    BulkDeleteDone {
-        branches_deleted: Vec<String>,
-        worktrees_removed: Vec<String>,
-        failures: Vec<String>,
-        wt_paths_claimed: Vec<String>,
     },
     OpStarted {
         op_id: u64,
@@ -146,7 +141,6 @@ struct DeleteOpResult {
 }
 
 impl DeleteOpResult {
-    #[allow(dead_code)]
     fn collect_into(
         self,
         branches: &mut Vec<String>,
@@ -169,7 +163,6 @@ impl DeleteOpResult {
     }
 }
 
-#[allow(dead_code)]
 async fn run_delete_op(
     op_id: u64,
     label: String,
@@ -177,29 +170,25 @@ async fn run_delete_op(
     branch_name: Option<String>,
     has_local_branch: bool,
     mode: DeleteMode,
-    tx: mpsc::Sender<AsyncResult>,
+    tx: mpsc::UnboundedSender<AsyncResult>,
 ) -> DeleteOpResult {
-    let _ = tx
-        .send(AsyncResult::OpStarted {
-            op_id,
-            label: label.clone(),
-            wt_path: wt_path.clone(),
-            branch_name: branch_name.clone(),
-        })
-        .await;
+    let _ = tx.send(AsyncResult::OpStarted {
+        op_id,
+        label: label.clone(),
+        wt_path: wt_path.clone(),
+        branch_name: branch_name.clone(),
+    });
 
     let mut worktree_removed = false;
     if let Some(path) = wt_path.as_ref() {
         // Plain attempt (skipped for ForceOnly)
         if matches!(mode, DeleteMode::TryThenForce | DeleteMode::PlainOnly) {
             let cmd = format!("git worktree remove {path}");
-            let _ = tx
-                .send(AsyncResult::OpStepBegin {
-                    op_id,
-                    step: OpStep::RunningWtRemove,
-                    command: cmd,
-                })
-                .await;
+            let _ = tx.send(AsyncResult::OpStepBegin {
+                op_id,
+                step: OpStep::RunningWtRemove,
+                command: cmd,
+            });
             match run_git(&["worktree", "remove", path]).await {
                 Ok(_) => worktree_removed = true,
                 Err(e) => {
@@ -211,13 +200,11 @@ async fn run_delete_op(
                             .next()
                             .unwrap_or("unknown")
                             .to_string();
-                        let _ = tx
-                            .send(AsyncResult::OpFinished {
-                                op_id,
-                                success: false,
-                                error: Some(short.clone()),
-                            })
-                            .await;
+                        let _ = tx.send(AsyncResult::OpFinished {
+                            op_id,
+                            success: false,
+                            error: Some(short.clone()),
+                        });
                         return DeleteOpResult {
                             op_id,
                             branch_name,
@@ -235,13 +222,11 @@ async fn run_delete_op(
         // Force attempt (TryThenForce after plain failure, or ForceOnly always)
         if !worktree_removed {
             let cmd = format!("git worktree remove --force {path}");
-            let _ = tx
-                .send(AsyncResult::OpStepBegin {
-                    op_id,
-                    step: OpStep::RunningWtForceRemove,
-                    command: cmd,
-                })
-                .await;
+            let _ = tx.send(AsyncResult::OpStepBegin {
+                op_id,
+                step: OpStep::RunningWtForceRemove,
+                command: cmd,
+            });
             match run_git(&["worktree", "remove", "--force", path]).await {
                 Ok(_) => worktree_removed = true,
                 Err(e) => {
@@ -251,13 +236,11 @@ async fn run_delete_op(
                         .next()
                         .unwrap_or("unknown")
                         .to_string();
-                    let _ = tx
-                        .send(AsyncResult::OpFinished {
-                            op_id,
-                            success: false,
-                            error: Some(short.clone()),
-                        })
-                        .await;
+                    let _ = tx.send(AsyncResult::OpFinished {
+                        op_id,
+                        success: false,
+                        error: Some(short.clone()),
+                    });
                     return DeleteOpResult {
                         op_id,
                         branch_name,
@@ -275,13 +258,11 @@ async fn run_delete_op(
     if has_local_branch {
         if let Some(name) = branch_name.as_ref() {
             let cmd = format!("git branch -D {name}");
-            let _ = tx
-                .send(AsyncResult::OpStepBegin {
-                    op_id,
-                    step: OpStep::RunningBranchDelete,
-                    command: cmd,
-                })
-                .await;
+            let _ = tx.send(AsyncResult::OpStepBegin {
+                op_id,
+                step: OpStep::RunningBranchDelete,
+                command: cmd,
+            });
             match run_git(&["branch", "-D", name]).await {
                 Ok(_) => branch_deleted = true,
                 Err(e) => {
@@ -291,13 +272,11 @@ async fn run_delete_op(
                         .next()
                         .unwrap_or("unknown")
                         .to_string();
-                    let _ = tx
-                        .send(AsyncResult::OpFinished {
-                            op_id,
-                            success: false,
-                            error: Some(short.clone()),
-                        })
-                        .await;
+                    let _ = tx.send(AsyncResult::OpFinished {
+                        op_id,
+                        success: false,
+                        error: Some(short.clone()),
+                    });
                     return DeleteOpResult {
                         op_id,
                         branch_name,
@@ -311,13 +290,11 @@ async fn run_delete_op(
         }
     }
 
-    let _ = tx
-        .send(AsyncResult::OpFinished {
-            op_id,
-            success: true,
-            error: None,
-        })
-        .await;
+    let _ = tx.send(AsyncResult::OpFinished {
+        op_id,
+        success: true,
+        error: None,
+    });
 
     DeleteOpResult {
         op_id,
@@ -877,49 +854,6 @@ async fn run(
                     app.wt_inflight.remove(&path);
                     app.notification = Some(Notification::error(message));
                 }
-                AsyncResult::BulkDeleteDone {
-                    branches_deleted,
-                    worktrees_removed,
-                    failures,
-                    wt_paths_claimed,
-                } => {
-                    for path in &wt_paths_claimed {
-                        app.wt_inflight.remove(path);
-                    }
-                    let success_parts =
-                        bulk_success_parts(branches_deleted.len(), worktrees_removed.len());
-                    if failures.is_empty() {
-                        let msg = if success_parts.is_empty() {
-                            "Nothing to delete".to_string()
-                        } else {
-                            format!("Deleted {}", success_parts.join(", "))
-                        };
-                        app.notification = Some(Notification::success(msg));
-                    } else {
-                        let short: Vec<String> = failures
-                            .iter()
-                            .map(|e| e.lines().next().unwrap_or(e).to_string())
-                            .collect();
-                        let summary = if success_parts.is_empty() {
-                            format!("Bulk delete failed: {}", short.join("; "))
-                        } else {
-                            format!(
-                                "Bulk delete: {}; failed: {}",
-                                success_parts.join(", "),
-                                short.join("; ")
-                            )
-                        };
-                        app.notification = Some(Notification::error(summary));
-                        if app.verbose {
-                            for err in &failures {
-                                if !app.verbose_errors.contains(err) {
-                                    app.verbose_errors.push(err.clone());
-                                }
-                            }
-                        }
-                    }
-                    refresh_entries(&mut app).await;
-                }
             }
         }
 
@@ -1005,22 +939,19 @@ async fn run(
             });
         }
 
-        // Delete selected entries (branches + optional worktrees) in one spawned task
+        // Delete selected entries (branches + optional worktrees) in parallel.
         if app.branch_delete_requested {
             app.branch_delete_requested = false;
             let selected: Vec<String> = app.branch_selected.drain().collect();
 
             struct Work {
                 name: String,
+                label: String,
                 wt_path: Option<String>,
                 has_local_branch: bool,
             }
             let mut work: Vec<Work> = Vec::with_capacity(selected.len());
             let mut wt_paths_claimed: Vec<String> = Vec::new();
-            // Re-validate each selection at dispatch time — entries / inflight
-            // state may have changed between the user pressing Space and d
-            // (e.g. after a refresh). Silently skipping keeps the batch safe
-            // against races; the final notification reflects what actually ran.
             for name in selected {
                 let Some(entry) = app.entries.iter().find(|e| e.name == name) else {
                     continue;
@@ -1040,6 +971,7 @@ async fn run(
                 }
                 work.push(Work {
                     name: entry.name.clone(),
+                    label: entry.name.clone(),
                     wt_path,
                     has_local_branch: entry.local_branch.is_some(),
                 });
@@ -1048,75 +980,38 @@ async fn run(
             if work.is_empty() {
                 app.notification = Some(Notification::error("Nothing to delete".to_string()));
             } else {
-                let pending_summary = bulk_success_parts(
-                    work.iter().filter(|w| w.has_local_branch).count(),
-                    work.iter().filter(|w| w.wt_path.is_some()).count(),
-                )
-                .join(", ");
-                app.notification = Some(Notification::success(format!(
-                    "Deleting {pending_summary}…"
-                )));
+                let ids: Vec<u64> = app.progress.allocate_ids(work.len()).collect();
+                let mut set: JoinSet<DeleteOpResult> = JoinSet::new();
+                for (op_id, w) in ids.into_iter().zip(work) {
+                    let tx_c = tx.clone();
+                    set.spawn(run_delete_op(
+                        op_id,
+                        w.label,
+                        w.wt_path,
+                        Some(w.name),
+                        w.has_local_branch,
+                        DeleteMode::TryThenForce,
+                        tx_c,
+                    ));
+                }
 
-                let tx = tx.clone();
+                let tx_done = tx.clone();
+                let claimed = wt_paths_claimed;
                 tokio::spawn(async move {
-                    let mut branches_deleted: Vec<String> = Vec::new();
-                    let mut worktrees_removed: Vec<String> = Vec::new();
+                    let mut branches: Vec<String> = Vec::new();
+                    let mut wts: Vec<String> = Vec::new();
                     let mut failures: Vec<String> = Vec::new();
-
-                    for w in work {
-                        let wt_ok = if let Some(path) = w.wt_path.as_ref() {
-                            match run_git(&["worktree", "remove", path]).await {
-                                Ok(_) => {
-                                    worktrees_removed.push(path.clone());
-                                    true
-                                }
-                                Err(_) => {
-                                    match run_git(&["worktree", "remove", "--force", path]).await {
-                                        Ok(_) => {
-                                            worktrees_removed.push(path.clone());
-                                            true
-                                        }
-                                        Err(e) => {
-                                            let short = e
-                                                .to_string()
-                                                .lines()
-                                                .next()
-                                                .unwrap_or("unknown")
-                                                .to_string();
-                                            failures.push(format!(
-                                                "{}: worktree remove failed: {short}",
-                                                w.name
-                                            ));
-                                            false
-                                        }
-                                    }
-                                }
-                            }
-                        } else {
-                            true
-                        };
-
-                        if wt_ok && w.has_local_branch {
-                            match run_git(&["branch", "-D", &w.name]).await {
-                                Ok(_) => branches_deleted.push(w.name.clone()),
-                                Err(e) => {
-                                    let short = e
-                                        .to_string()
-                                        .lines()
-                                        .next()
-                                        .unwrap_or("unknown")
-                                        .to_string();
-                                    failures.push(format!("{}: {short}", w.name));
-                                }
-                            }
+                    while let Some(res) = set.join_next().await {
+                        match res {
+                            Ok(r) => r.collect_into(&mut branches, &mut wts, &mut failures),
+                            Err(e) => failures.push(format!("task panic: {e}")),
                         }
                     }
-
-                    let _ = tx.send(AsyncResult::BulkDeleteDone {
-                        branches_deleted,
-                        worktrees_removed,
+                    let _ = tx_done.send(AsyncResult::OpAllDone {
+                        branches_deleted: branches,
+                        worktrees_removed: wts,
                         failures,
-                        wt_paths_claimed,
+                        wt_paths_claimed: claimed,
                     });
                 });
             }
