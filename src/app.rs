@@ -81,7 +81,9 @@ pub enum OpStep {
 #[derive(Debug, Clone)]
 pub struct OpProgress {
     pub label: String,
+    #[allow(dead_code)]
     pub wt_path: Option<String>,
+    #[allow(dead_code)]
     pub branch_name: Option<String>,
     pub current_step: OpStep,
     pub step_started_at: Instant,
