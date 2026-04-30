@@ -492,8 +492,10 @@ impl App {
                     self.request_details_for_selection();
                 } else if matches!(self.active_view, ActiveView::Log | ActiveView::History) {
                     self.active_view = ActiveView::Main;
-                } else {
+                } else if !self.progress.is_active() || self.quit_pressed_during_progress {
                     self.should_quit = true;
+                } else {
+                    self.quit_pressed_during_progress = true;
                 }
             }
             KeyCode::Char('l') => self.active_view = ActiveView::Log,
@@ -1234,6 +1236,29 @@ mod text_edit_tests {
         let mut app = App::new(Config::default());
         app.handle_key(crossterm::event::KeyEvent::new(
             crossterm::event::KeyCode::Char('q'),
+            crossterm::event::KeyModifiers::NONE,
+        ));
+        assert!(app.should_quit);
+    }
+
+    #[test]
+    fn esc_during_progress_requires_two_presses() {
+        use crate::config::Config;
+        let mut app = App::new(Config::default());
+        let id = app.progress.allocate_ids(1).start;
+        app.progress.insert(id, OpProgress::new("a".into()));
+
+        // First Esc: sets the flag, no quit.
+        app.handle_key(crossterm::event::KeyEvent::new(
+            crossterm::event::KeyCode::Esc,
+            crossterm::event::KeyModifiers::NONE,
+        ));
+        assert!(!app.should_quit);
+        assert!(app.quit_pressed_during_progress);
+
+        // Second Esc: force quits.
+        app.handle_key(crossterm::event::KeyEvent::new(
+            crossterm::event::KeyCode::Esc,
             crossterm::event::KeyModifiers::NONE,
         ));
         assert!(app.should_quit);
