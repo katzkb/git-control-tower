@@ -81,27 +81,18 @@ pub enum OpStep {
 #[derive(Debug, Clone)]
 pub struct OpProgress {
     pub label: String,
-    #[allow(dead_code)]
-    pub wt_path: Option<String>,
-    #[allow(dead_code)]
-    pub branch_name: Option<String>,
     pub current_step: OpStep,
-    pub step_started_at: Instant,
     pub op_started_at: Instant,
     pub last_command: Option<String>,
     pub error: Option<String>,
 }
 
 impl OpProgress {
-    pub fn new(label: String, wt_path: Option<String>, branch_name: Option<String>) -> Self {
-        let now = Instant::now();
+    pub fn new(label: String) -> Self {
         Self {
             label,
-            wt_path,
-            branch_name,
             current_step: OpStep::RunningWtRemove, // overwritten by first OpStepBegin
-            step_started_at: now,
-            op_started_at: now,
+            op_started_at: Instant::now(),
             last_command: None,
             error: None,
         }
@@ -115,7 +106,7 @@ impl OpProgress {
 #[derive(Debug, Default)]
 pub struct ProgressTracker {
     pub ops: BTreeMap<u64, OpProgress>,
-    pub next_id: u64,
+    next_id: u64,
     pub started_at: Option<Instant>,
 }
 
@@ -149,7 +140,6 @@ impl ProgressTracker {
         if let Some(op) = self.ops.get_mut(&op_id) {
             op.current_step = step;
             op.last_command = Some(command);
-            op.step_started_at = Instant::now();
         }
     }
 
@@ -1145,7 +1135,6 @@ mod text_edit_tests {
         assert_eq!(r, 0..3);
         let r2 = t.allocate_ids(2);
         assert_eq!(r2, 3..5);
-        assert_eq!(t.next_id, 5);
     }
 
     #[test]
@@ -1164,14 +1153,8 @@ mod text_edit_tests {
     fn progress_tracker_state_transitions() {
         let mut t = ProgressTracker::default();
         let ids: Vec<u64> = t.allocate_ids(2).collect();
-        t.insert(
-            ids[0],
-            OpProgress::new("a".into(), Some("/wt/a".into()), Some("a".into())),
-        );
-        t.insert(
-            ids[1],
-            OpProgress::new("b".into(), Some("/wt/b".into()), Some("b".into())),
-        );
+        t.insert(ids[0], OpProgress::new("a".into()));
+        t.insert(ids[1], OpProgress::new("b".into()));
 
         assert_eq!(t.total(), 2);
         assert_eq!(t.done_count(), 0);
@@ -1201,8 +1184,8 @@ mod text_edit_tests {
     fn progress_tracker_sweep_unfinished_marks_remaining_as_failed() {
         let mut t = ProgressTracker::default();
         let ids: Vec<u64> = t.allocate_ids(2).collect();
-        t.insert(ids[0], OpProgress::new("a".into(), None, Some("a".into())));
-        t.insert(ids[1], OpProgress::new("b".into(), None, Some("b".into())));
+        t.insert(ids[0], OpProgress::new("a".into()));
+        t.insert(ids[1], OpProgress::new("b".into()));
         t.finish(ids[0], true, None);
 
         t.sweep_unfinished();
@@ -1215,7 +1198,7 @@ mod text_edit_tests {
     fn progress_tracker_clear_resets_state() {
         let mut t = ProgressTracker::default();
         let ids: Vec<u64> = t.allocate_ids(1).collect();
-        t.insert(ids[0], OpProgress::new("a".into(), None, None));
+        t.insert(ids[0], OpProgress::new("a".into()));
         t.clear();
         assert!(!t.is_active());
         assert!(t.started_at.is_none());
@@ -1227,8 +1210,7 @@ mod text_edit_tests {
         use crate::config::Config;
         let mut app = App::new(Config::default());
         let id = app.progress.allocate_ids(1).start;
-        app.progress
-            .insert(id, OpProgress::new("a".into(), None, None));
+        app.progress.insert(id, OpProgress::new("a".into()));
 
         // First 'q': sets the flag, no quit.
         app.handle_key(crossterm::event::KeyEvent::new(

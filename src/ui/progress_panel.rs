@@ -107,6 +107,10 @@ fn format_op_line(op: &OpProgress, now: Instant) -> Line<'static> {
     ])
 }
 
+// Counts unicode scalar values (chars), not display columns. CJK / emoji
+// labels render wider than their char count, so the column may overflow
+// for non-ASCII branch names. Acceptable for current usage; revisit with
+// `unicode-width` if internationalized labels become common.
 fn trunc(s: &str, n: usize) -> String {
     if s.chars().count() <= n {
         s.to_string()
@@ -139,10 +143,7 @@ mod tests {
     fn build_lines_includes_header_when_active() {
         let mut t = ProgressTracker::default();
         let id = t.allocate_ids(1).start;
-        t.insert(
-            id,
-            OpProgress::new("feat-a".into(), Some("/wt/a".into()), Some("feat-a".into())),
-        );
+        t.insert(id, OpProgress::new("feat-a".into()));
         let now = fixed_now();
         let lines = build_lines(&t, false, now);
         assert!(lines.len() >= 2);
@@ -156,7 +157,7 @@ mod tests {
         let mut t = ProgressTracker::default();
         let ids: Vec<u64> = t.allocate_ids(MAX_VISIBLE_OPS + 3).collect();
         for (i, id) in ids.iter().enumerate() {
-            t.insert(*id, OpProgress::new(format!("op{i}"), None, None));
+            t.insert(*id, OpProgress::new(format!("op{i}")));
         }
         let lines = build_lines(&t, false, fixed_now());
         let last: String = lines
@@ -176,7 +177,7 @@ mod tests {
     fn build_lines_quit_warning_prepended() {
         let mut t = ProgressTracker::default();
         let id = t.allocate_ids(1).start;
-        t.insert(id, OpProgress::new("a".into(), None, None));
+        t.insert(id, OpProgress::new("a".into()));
         let lines = build_lines(&t, true, fixed_now());
         let first: String = lines[0].spans.iter().map(|s| s.content.as_ref()).collect();
         assert!(first.contains("Delete in progress"));
@@ -185,7 +186,7 @@ mod tests {
 
     #[test]
     fn format_op_line_done_success_uses_check_icon() {
-        let mut op = OpProgress::new("a".into(), Some("/wt/a".into()), None);
+        let mut op = OpProgress::new("a".into());
         op.current_step = OpStep::Done { success: true };
         op.last_command = Some("git worktree remove /wt/a".into());
         let line = format_op_line(&op, Instant::now() + Duration::from_secs(1));
@@ -196,7 +197,7 @@ mod tests {
 
     #[test]
     fn format_op_line_done_failure_uses_cross_icon() {
-        let mut op = OpProgress::new("a".into(), Some("/wt/a".into()), None);
+        let mut op = OpProgress::new("a".into());
         op.current_step = OpStep::Done { success: false };
         op.error = Some("perm denied".into());
         let line = format_op_line(&op, Instant::now());

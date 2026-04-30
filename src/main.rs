@@ -74,8 +74,6 @@ enum AsyncResult {
     OpStarted {
         op_id: u64,
         label: String,
-        wt_path: Option<String>,
-        branch_name: Option<String>,
     },
     OpStepBegin {
         op_id: u64,
@@ -174,8 +172,6 @@ async fn run_delete_op(
     let _ = tx.send(AsyncResult::OpStarted {
         op_id,
         label: label.clone(),
-        wt_path: wt_path.clone(),
-        branch_name: branch_name.clone(),
     });
 
     let mut worktree_removed = false;
@@ -746,14 +742,8 @@ async fn run(
                     app.wt_inflight.remove(&wt_path);
                     app.notification = Some(Notification::error(message));
                 }
-                AsyncResult::OpStarted {
-                    op_id,
-                    label,
-                    wt_path,
-                    branch_name,
-                } => {
-                    app.progress
-                        .insert(op_id, OpProgress::new(label, wt_path, branch_name));
+                AsyncResult::OpStarted { op_id, label } => {
+                    app.progress.insert(op_id, OpProgress::new(label));
                 }
                 AsyncResult::OpStepBegin {
                     op_id,
@@ -851,12 +841,14 @@ async fn run(
                 .await;
 
                 if let Some(failure) = result.failure {
-                    // Plain failed — emit OpAllDone (closes the panel) then ask
-                    // the user whether to force via WtForceDecisionRequested.
+                    // Plain failed — drain the progress panel without raising a
+                    // failure notification (it would flash before the force-confirm
+                    // dialog appears). The actual outcome is communicated by the
+                    // subsequent force attempt or by the user dismissing the dialog.
                     let _ = tx_c.send(AsyncResult::OpAllDone {
                         branches_deleted: vec![],
                         worktrees_removed: vec![],
-                        failures: vec![failure.clone()],
+                        failures: vec![],
                         wt_paths_claimed: claimed,
                     });
                     let reason = failure
