@@ -22,8 +22,7 @@ use tokio::sync::mpsc;
 
 use crate::app::App;
 use crate::app::MainFilter;
-#[allow(unused_imports)]
-use crate::app::{OpProgress, OpStep, ProgressTracker};
+use crate::app::{OpProgress, OpStep};
 use crate::data::merge_entries;
 use crate::event::{Event, EventHandler};
 use crate::git::command::{run_gh, run_git};
@@ -572,6 +571,82 @@ async fn run(
                     app.wt_inflight.remove(&wt_path);
                     app.notification = Some(Notification::error(message));
                 }
+                AsyncResult::OpStarted {
+                    op_id,
+                    label,
+                    wt_path,
+                    branch_name,
+                } => {
+                    app.progress
+                        .insert(op_id, OpProgress::new(label, wt_path, branch_name));
+                }
+                AsyncResult::OpStepBegin {
+                    op_id,
+                    step,
+                    command,
+                } => {
+                    app.progress.update_step(op_id, step, command);
+                }
+                AsyncResult::OpFinished {
+                    op_id,
+                    success,
+                    error,
+                } => {
+                    app.progress.finish(op_id, success, error);
+                    // Optimistic UI: drop the entry from the sidebar early on success.
+                    if success {
+                        if let Some(op) = app.progress.ops.get(&op_id) {
+                            let label = op.label.clone();
+                            app.entries.retain(|e| e.name != label);
+                        }
+                    }
+                }
+                AsyncResult::OpAllDone {
+                    branches_deleted,
+                    worktrees_removed,
+                    failures,
+                    wt_paths_claimed,
+                } => {
+                    for path in &wt_paths_claimed {
+                        app.wt_inflight.remove(path);
+                    }
+                    app.progress.sweep_unfinished();
+                    let success_parts =
+                        bulk_success_parts(branches_deleted.len(), worktrees_removed.len());
+                    if failures.is_empty() {
+                        let msg = if success_parts.is_empty() {
+                            "Nothing to delete".to_string()
+                        } else {
+                            format!("Deleted {}", success_parts.join(", "))
+                        };
+                        app.notification = Some(Notification::success(msg));
+                    } else {
+                        let short: Vec<String> = failures
+                            .iter()
+                            .map(|e| e.lines().next().unwrap_or(e).to_string())
+                            .collect();
+                        let summary = if success_parts.is_empty() {
+                            format!("Bulk delete failed: {}", short.join("; "))
+                        } else {
+                            format!(
+                                "Bulk delete: {}; failed: {}",
+                                success_parts.join(", "),
+                                short.join("; ")
+                            )
+                        };
+                        app.notification = Some(Notification::error(summary));
+                        if app.verbose {
+                            for err in &failures {
+                                if !app.verbose_errors.contains(err) {
+                                    app.verbose_errors.push(err.clone());
+                                }
+                            }
+                        }
+                    }
+                    app.progress.clear();
+                    app.quit_pressed_during_progress = false;
+                    refresh_entries(&mut app).await;
+                }
                 AsyncResult::WtRemoved(path) => {
                     app.wt_inflight.remove(&path);
                     app.notification =
@@ -640,12 +715,6 @@ async fn run(
                     }
                     refresh_entries(&mut app).await;
                 }
-                // New Op* variants have no producers yet (Task 2 of progress-pipeline).
-                // Reducers wired in Task 3.
-                AsyncResult::OpStarted { .. }
-                | AsyncResult::OpStepBegin { .. }
-                | AsyncResult::OpFinished { .. }
-                | AsyncResult::OpAllDone { .. } => {}
             }
         }
 
