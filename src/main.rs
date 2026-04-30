@@ -124,6 +124,211 @@ fn bulk_success_parts(branches: usize, worktrees: usize) -> Vec<String> {
     parts
 }
 
+#[allow(dead_code)]
+#[derive(Debug, Clone, Copy)]
+enum DeleteMode {
+    /// Try plain `worktree remove`; on failure, retry with `--force` (used for bulk).
+    TryThenForce,
+    /// Run `worktree remove` only; do NOT auto-fallback (used for single, first attempt).
+    PlainOnly,
+    /// Run `worktree remove --force` directly (used for single, after user confirms).
+    ForceOnly,
+}
+
+#[allow(dead_code)]
+struct DeleteOpResult {
+    op_id: u64,
+    branch_name: Option<String>,
+    wt_path: Option<String>,
+    branch_deleted: bool,
+    worktree_removed: bool,
+    failure: Option<String>,
+}
+
+impl DeleteOpResult {
+    #[allow(dead_code)]
+    fn collect_into(
+        self,
+        branches: &mut Vec<String>,
+        wts: &mut Vec<String>,
+        failures: &mut Vec<String>,
+    ) {
+        if self.branch_deleted {
+            if let Some(n) = self.branch_name {
+                branches.push(n);
+            }
+        }
+        if self.worktree_removed {
+            if let Some(p) = self.wt_path {
+                wts.push(p);
+            }
+        }
+        if let Some(f) = self.failure {
+            failures.push(f);
+        }
+    }
+}
+
+#[allow(dead_code)]
+async fn run_delete_op(
+    op_id: u64,
+    label: String,
+    wt_path: Option<String>,
+    branch_name: Option<String>,
+    has_local_branch: bool,
+    mode: DeleteMode,
+    tx: mpsc::Sender<AsyncResult>,
+) -> DeleteOpResult {
+    let _ = tx
+        .send(AsyncResult::OpStarted {
+            op_id,
+            label: label.clone(),
+            wt_path: wt_path.clone(),
+            branch_name: branch_name.clone(),
+        })
+        .await;
+
+    let mut worktree_removed = false;
+    if let Some(path) = wt_path.as_ref() {
+        // Plain attempt (skipped for ForceOnly)
+        if matches!(mode, DeleteMode::TryThenForce | DeleteMode::PlainOnly) {
+            let cmd = format!("git worktree remove {path}");
+            let _ = tx
+                .send(AsyncResult::OpStepBegin {
+                    op_id,
+                    step: OpStep::RunningWtRemove,
+                    command: cmd,
+                })
+                .await;
+            match run_git(&["worktree", "remove", path]).await {
+                Ok(_) => worktree_removed = true,
+                Err(e) => {
+                    if matches!(mode, DeleteMode::PlainOnly) {
+                        // Caller decides whether to escalate to force; report failure.
+                        let short = e
+                            .to_string()
+                            .lines()
+                            .next()
+                            .unwrap_or("unknown")
+                            .to_string();
+                        let _ = tx
+                            .send(AsyncResult::OpFinished {
+                                op_id,
+                                success: false,
+                                error: Some(short.clone()),
+                            })
+                            .await;
+                        return DeleteOpResult {
+                            op_id,
+                            branch_name,
+                            wt_path,
+                            branch_deleted: false,
+                            worktree_removed: false,
+                            failure: Some(format!("{label}: {short}")),
+                        };
+                    }
+                    // TryThenForce: fall through to force attempt.
+                }
+            }
+        }
+
+        // Force attempt (TryThenForce after plain failure, or ForceOnly always)
+        if !worktree_removed {
+            let cmd = format!("git worktree remove --force {path}");
+            let _ = tx
+                .send(AsyncResult::OpStepBegin {
+                    op_id,
+                    step: OpStep::RunningWtForceRemove,
+                    command: cmd,
+                })
+                .await;
+            match run_git(&["worktree", "remove", "--force", path]).await {
+                Ok(_) => worktree_removed = true,
+                Err(e) => {
+                    let short = e
+                        .to_string()
+                        .lines()
+                        .next()
+                        .unwrap_or("unknown")
+                        .to_string();
+                    let _ = tx
+                        .send(AsyncResult::OpFinished {
+                            op_id,
+                            success: false,
+                            error: Some(short.clone()),
+                        })
+                        .await;
+                    return DeleteOpResult {
+                        op_id,
+                        branch_name,
+                        wt_path,
+                        branch_deleted: false,
+                        worktree_removed: false,
+                        failure: Some(format!("{label}: worktree remove failed: {short}")),
+                    };
+                }
+            }
+        }
+    }
+
+    let mut branch_deleted = false;
+    if has_local_branch {
+        if let Some(name) = branch_name.as_ref() {
+            let cmd = format!("git branch -D {name}");
+            let _ = tx
+                .send(AsyncResult::OpStepBegin {
+                    op_id,
+                    step: OpStep::RunningBranchDelete,
+                    command: cmd,
+                })
+                .await;
+            match run_git(&["branch", "-D", name]).await {
+                Ok(_) => branch_deleted = true,
+                Err(e) => {
+                    let short = e
+                        .to_string()
+                        .lines()
+                        .next()
+                        .unwrap_or("unknown")
+                        .to_string();
+                    let _ = tx
+                        .send(AsyncResult::OpFinished {
+                            op_id,
+                            success: false,
+                            error: Some(short.clone()),
+                        })
+                        .await;
+                    return DeleteOpResult {
+                        op_id,
+                        branch_name,
+                        wt_path,
+                        branch_deleted: false,
+                        worktree_removed,
+                        failure: Some(format!("{label}: {short}")),
+                    };
+                }
+            }
+        }
+    }
+
+    let _ = tx
+        .send(AsyncResult::OpFinished {
+            op_id,
+            success: true,
+            error: None,
+        })
+        .await;
+
+    DeleteOpResult {
+        op_id,
+        branch_name,
+        wt_path,
+        branch_deleted,
+        worktree_removed,
+        failure: None,
+    }
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     // Handle --version / -v before anything else
