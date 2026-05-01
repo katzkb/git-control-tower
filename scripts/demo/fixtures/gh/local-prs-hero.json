@@ -1,0 +1,52 @@
+{
+  "data": {
+    "repository": {
+      "b0": {
+        "nodes": [
+          {
+            "number": 142,
+            "title": "Add Stripe webhook handlers",
+            "state": "OPEN",
+            "headRefName": "feature/auth-flow",
+            "updatedAt": "2024-06-15T08:30:00Z",
+            "isDraft": false,
+            "author": { "login": "alice" },
+            "reviewRequests": {
+              "nodes": [
+                { "requestedReviewer": { "login": "katzkb-demo" } }
+              ]
+            }
+          },
+          {
+            "number": 138,
+            "title": "Refactor data layer for streaming",
+            "state": "OPEN",
+            "headRefName": "feature/api-redesign",
+            "updatedAt": "2024-06-15T07:15:00Z",
+            "isDraft": false,
+            "author": { "login": "bob" },
+            "reviewRequests": {
+              "nodes": [
+                { "requestedReviewer": { "login": "katzkb-demo" } }
+              ]
+            }
+          },
+          {
+            "number": 130,
+            "title": "Migrate logging to tracing",
+            "state": "OPEN",
+            "headRefName": "fix/wt-progress",
+            "updatedAt": "2024-06-14T18:00:00Z",
+            "isDraft": false,
+            "author": { "login": "carol" },
+            "reviewRequests": {
+              "nodes": [
+                { "requestedReviewer": { "login": "katzkb-demo" } }
+              ]
+            }
+          }
+        ]
+      }
+    }
+  }
+}

@@ -1,0 +1,115 @@
+#!/usr/bin/env bash
+# gh CLI stub for VHS demo recordings.
+#
+# Replaces the real `gh` binary on PATH so demo recordings stay deterministic
+# and offline. gct shells out to `gh` for everything GitHub-related; swapping
+# this binary lets us return canned JSON without touching production code.
+#
+# Required env vars (set by setup.sh):
+#   DEMO_FIXTURES — absolute path to the fixtures dir (with gh/ subdir)
+#   DEMO_SCENE    — scene name (hero / f1 / f2 / f3); selects fixture file set
+
+set -euo pipefail
+
+: "${DEMO_FIXTURES:?DEMO_FIXTURES env var required}"
+: "${DEMO_SCENE:?DEMO_SCENE env var required}"
+
+GH_DIR="$DEMO_FIXTURES/gh"
+
+case "${1:-}" in
+  --version)
+    echo "gh version 2.40.0 (demo stub)"
+    exit 0
+    ;;
+
+  api)
+    [[ "${2:-}" == "graphql" ]] || { echo "gh-stub: unsupported: gh api ${2:-}" >&2; exit 1; }
+
+    # Find the `query=...` arg (gh api graphql -f query=...)
+    query=""
+    for arg in "$@"; do
+      if [[ "$arg" == query=* ]]; then
+        query="${arg#query=}"
+        break
+      fi
+    done
+
+    if [[ "$query" == *"viewer{login}"* ]]; then
+      # gct passes --jq .data.viewer.login → bare login on stdout
+      if [[ "$*" == *"--jq"* ]]; then
+        cat "$GH_DIR/viewer-login.txt"
+      else
+        printf '{"data":{"viewer":{"login":"%s"}}}\n' "$(cat "$GH_DIR/viewer-login.txt")"
+      fi
+    elif [[ "$query" == *"repository("* ]]; then
+      cat "$GH_DIR/local-prs-${DEMO_SCENE}.json"
+    else
+      echo "gh-stub: unsupported graphql query" >&2
+      exit 1
+    fi
+    ;;
+
+  pr)
+    sub="${2:-}"
+    case "$sub" in
+      list)
+        # Walk argv looking for filter / state flags
+        is_merged=0
+        filter_kind=""
+        filter_value=""
+        prev=""
+        for arg in "$@"; do
+          case "$prev" in
+            --state)  [[ "$arg" == "merged" ]] && is_merged=1 ;;
+            --author) filter_kind="author"; filter_value="$arg" ;;
+            --search) filter_kind="search"; filter_value="$arg" ;;
+          esac
+          prev="$arg"
+        done
+
+        # Slug = filename component for filter
+        case "$filter_kind" in
+          author) slug="author-me" ;;
+          search) slug="search-${filter_value%%:*}" ;;
+          *)      slug="all" ;;
+        esac
+
+        if (( is_merged )); then state="merged"; else state="open"; fi
+
+        f="$GH_DIR/pr-list-${DEMO_SCENE}-${slug}-${state}.json"
+        if [[ -f "$f" ]]; then
+          cat "$f"
+        else
+          echo "[]"
+        fi
+        ;;
+
+      view)
+        num="${3:-}"
+        # `gh pr view <num> --web` is a side-effect call (browser open)
+        if [[ "$*" == *"--web"* ]]; then
+          exit 0
+        fi
+        f="$GH_DIR/pr-view-${num}.json"
+        if [[ -f "$f" ]]; then
+          cat "$f"
+        else
+          # Fall back to a minimal stub so the UI doesn't surface
+          # "Failed to load PR #N" notifications during the demo. Per-PR
+          # fixtures only need to exist for PRs whose detail body matters.
+          printf '{"number":%s,"title":"","author":{"login":"demo-user"},"state":"OPEN","body":"","additions":0,"deletions":0,"headRefName":""}\n' "$num"
+        fi
+        ;;
+
+      *)
+        echo "gh-stub: unsupported gh pr subcommand: $sub" >&2
+        exit 1
+        ;;
+    esac
+    ;;
+
+  *)
+    echo "gh-stub: unsupported gh command: ${1:-}" >&2
+    exit 1
+    ;;
+esac

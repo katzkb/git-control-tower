@@ -1,0 +1,24 @@
+[
+  {
+    "number": 92,
+    "title": "Export branches as JSON",
+    "author": { "login": "katzkb-demo" },
+    "state": "OPEN",
+    "headRefName": "feature/wip-export",
+    "updatedAt": "2024-06-15T09:30:00Z",
+    "isDraft": true,
+    "reviewRequests": [],
+    "latestReviews": []
+  },
+  {
+    "number": 93,
+    "title": "Cache invalidation on filter switch",
+    "author": { "login": "katzkb-demo" },
+    "state": "OPEN",
+    "headRefName": "fix/wip-cache",
+    "updatedAt": "2024-06-14T17:00:00Z",
+    "isDraft": false,
+    "reviewRequests": [],
+    "latestReviews": []
+  }
+]

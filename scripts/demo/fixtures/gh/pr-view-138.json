@@ -1,0 +1,10 @@
+{
+  "number": 138,
+  "title": "Refactor data layer for streaming",
+  "author": { "login": "bob" },
+  "state": "OPEN",
+  "body": "## Summary\n\nReplaces the blocking `fetch_all` path with a streaming iterator so large repositories\ndon't pin a full result set in memory.\n\n- Introduces `RepositoryStream` with backpressure\n- Cuts peak memory by ~60% on the 50k-row benchmark\n- Keeps the `fetch_all` shim for two releases for compatibility\n\n## Test plan\n\n- [x] Existing unit tests pass\n- [x] New stream cancellation tests\n- [ ] Manual smoke test on the staging mirror",
+  "additions": 234,
+  "deletions": 87,
+  "headRefName": "feature/api-redesign"
+}

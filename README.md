@@ -2,6 +2,8 @@
 
 A terminal UI tool that acts as a "control tower" for Git/GitHub workflows. Oversee your repository, start PR reviews, and clean up branches — all from the terminal.
 
+![Hero demo: pick a review-requested PR, drop it into a local worktree, then open it in any tool.](docs/images/hero.gif)
+
 ## Features
 
 - **Branch-centric 2-pane view** — Left sidebar lists branches with PR status, review indicators, and worktree info. Right pane shows git status, PR details with markdown rendering.
@@ -13,6 +15,20 @@ A terminal UI tool that acts as a "control tower" for Git/GitHub workflows. Over
 - **Branch cleanup** — Multi-select branches with `Space`, select all merged with `a`, batch delete with `d`. Force deletes squash-merged branches.
 - **Commit log** — View commit history with `l`.
 - **Verbose mode** — Run with `--verbose` to surface silenced errors for troubleshooting.
+
+## In motion
+
+**Branch cleanup** — toggle merged PRs, select all merged, batch delete.
+
+![Branch cleanup demo](docs/images/f1-cleanup.gif)
+
+**Search & filter** — narrow the sidebar with `/`, then jump between filter modes.
+
+![Search and filter demo](docs/images/f2-search.gif)
+
+**Worktree post-create hooks** — `.gct.toml` actions (file copy, symlinks, commands) fire automatically when a worktree is created.
+
+![Worktree hooks demo](docs/images/f3-hooks.gif)
 
 ## Requirements
 
@@ -160,6 +176,18 @@ protected_branches = ["main", "develop", "staging"]
 ```
 
 Branch names are matched case-sensitively.
+
+## Regenerating the demo GIFs
+
+The README's GIFs are produced by [VHS](https://github.com/charmbracelet/vhs) against a fully reproducible local fixture (a fresh git repo + a `gh` shim that returns canned JSON). No GitHub account is needed.
+
+```bash
+brew install vhs        # one-time
+make demos              # rebuild gct + re-record all four GIFs
+make demos-hero         # one scene at a time
+```
+
+See `scripts/demo/` for the tape files, fixtures, and setup script. When a new `gh` invocation is added to gct, extend `scripts/demo/gh-stub` accordingly so the recording stays self-contained.
 
 ## License
 

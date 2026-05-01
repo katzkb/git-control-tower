@@ -1,0 +1,10 @@
+{
+  "number": 130,
+  "title": "Migrate logging to tracing",
+  "author": { "login": "carol" },
+  "state": "OPEN",
+  "body": "## Summary\n\nDrops `log` + `env_logger` in favor of `tracing` + `tracing-subscriber`.\nUnifies our request logging with the new structured output the SRE team wants\nfor the central log pipeline.\n\n## Test plan\n\n- [x] All existing log lines still emit\n- [x] Span context propagates through the async boundary\n- [ ] Verify Datadog ingestion in staging",
+  "additions": 178,
+  "deletions": 142,
+  "headRefName": "fix/wt-progress"
+}
