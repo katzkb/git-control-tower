@@ -53,16 +53,26 @@ case "${1:-}" in
     sub="${2:-}"
     case "$sub" in
       list)
-        # Walk argv looking for filter / state flags
+        # Walk argv looking for filter / state flags. Handle both
+        # space-separated (--state merged) and equals (--state=merged)
+        # forms — gct currently uses the former, but supporting both
+        # avoids silent fixture misses if that ever changes.
         is_merged=0
         filter_kind=""
         filter_value=""
         prev=""
         for arg in "$@"; do
-          case "$prev" in
-            --state)  [[ "$arg" == "merged" ]] && is_merged=1 ;;
-            --author) filter_kind="author"; filter_value="$arg" ;;
-            --search) filter_kind="search"; filter_value="$arg" ;;
+          case "$arg" in
+            --state=merged) is_merged=1 ;;
+            --author=*)     filter_kind="author"; filter_value="${arg#--author=}" ;;
+            --search=*)     filter_kind="search"; filter_value="${arg#--search=}" ;;
+            *)
+              case "$prev" in
+                --state)  [[ "$arg" == "merged" ]] && is_merged=1 ;;
+                --author) filter_kind="author"; filter_value="$arg" ;;
+                --search) filter_kind="search"; filter_value="$arg" ;;
+              esac
+              ;;
           esac
           prev="$arg"
         done

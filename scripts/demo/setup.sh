@@ -19,6 +19,15 @@ export GIT_AUTHOR_NAME="$AUTHOR_NAME"   GIT_COMMITTER_NAME="$AUTHOR_NAME"
 export GIT_AUTHOR_EMAIL="$AUTHOR_EMAIL" GIT_COMMITTER_EMAIL="$AUTHOR_EMAIL"
 export GIT_AUTHOR_DATE="$GIT_DATE"      GIT_COMMITTER_DATE="$GIT_DATE"
 
+# Reap fixture dirs from previous runs before creating a fresh one. The
+# current run's $TMP can't safely remove itself with an EXIT trap because
+# the recorded shell's cwd may sit inside it (after `cd into worktree`),
+# and VHS's session-end isn't guaranteed to fire EXIT traps anyway.
+# Cleaning at the *start* of each run is robust, leaves at most one stale
+# dir between runs, and never races the recording.
+find "$(dirname "$(mktemp -u)")" -maxdepth 1 -type d -name 'gct-demo-*' -mmin +1 \
+  -exec rm -rf {} + 2>/dev/null || true
+
 TMP="$(mktemp -d -t "gct-demo-${SCENE}.XXXXXX")"
 REPO="$TMP/repo"
 mkdir -p "$REPO" "$TMP/bin" "$TMP/wt" "$TMP/empty-template"
