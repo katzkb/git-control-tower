@@ -1,5 +1,9 @@
 # F1 — Branch cleanup
-# Toggle merged PRs, select all merged, batch delete.
+# Local view → select all merged → batch delete → watch the list shrink.
+#
+# Done in Local view so the sidebar is `git branch` driven: deleted branches
+# disappear immediately. (My PR view is PR-driven, so list contents wouldn't
+# update visibly until the PR fixture changes.)
 #
 # Regenerate via: make demos-f1
 
@@ -22,28 +26,19 @@ Show
 Type "gct"
 Sleep 300ms
 Enter
-Sleep 1800ms
+Sleep 2200ms
 
-# My PR filter
-Type "2"
-Sleep 1500ms
-
-# Toggle merged display
-Type "m"
-Sleep 1500ms
-
-# Select all merged
+# `a` selects all merged branches in the current view
 Type "a"
-Sleep 1200ms
+Sleep 1500ms
 
-# Open batch-delete confirmation dialog
+# `d` opens batch-delete confirmation
 Type "d"
 Sleep 1500ms
 
-# Confirm
+# Confirm — branches are deleted, sidebar refreshes to drop them
 Type "y"
-Sleep 2000ms
+Sleep 2800ms
 
-# Quit
 Type "q"
 Sleep 800ms
