@@ -25,7 +25,7 @@ export GIT_AUTHOR_DATE="$GIT_DATE"      GIT_COMMITTER_DATE="$GIT_DATE"
 # and VHS's session-end isn't guaranteed to fire EXIT traps anyway.
 # Cleaning at the *start* of each run is robust, leaves at most one stale
 # dir between runs, and never races the recording.
-find "$(dirname "$(mktemp -u)")" -maxdepth 1 -type d -name 'gct-demo-*' -mmin +1 \
+find "${TMPDIR:-/tmp}" -maxdepth 1 -type d -name 'gct-demo-*' -mmin +1 \
   -exec rm -rf {} + 2>/dev/null || true
 
 TMP="$(mktemp -d -t "gct-demo-${SCENE}.XXXXXX")"
