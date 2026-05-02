@@ -1,0 +1,10 @@
+{
+  "number": 142,
+  "title": "Add Stripe webhook handlers",
+  "author": { "login": "alice" },
+  "state": "OPEN",
+  "body": "## Summary\n\nWires up the Stripe webhook flow:\n\n- `payment_intent.succeeded` updates the order status\n- `charge.refunded` triggers the refund email pipeline\n- All handlers idempotent on `event.id`\n\n## Test plan\n\n- [x] Unit tests for each event type\n- [x] Replay-attack test with duplicate event IDs\n- [ ] Run the Stripe CLI fixtures against staging",
+  "additions": 312,
+  "deletions": 14,
+  "headRefName": "feature/auth-flow"
+}

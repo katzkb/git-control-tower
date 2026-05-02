@@ -1,0 +1,50 @@
+{
+  "data": {
+    "repository": {
+      "b0": {
+        "nodes": [
+          {
+            "number": 50,
+            "title": "Login form scaffolding",
+            "state": "OPEN",
+            "headRefName": "feature/auth-flow",
+            "updatedAt": "2024-06-15T09:00:00Z",
+            "isDraft": false,
+            "author": { "login": "katzkb-demo" },
+            "reviewRequests": { "nodes": [] }
+          },
+          {
+            "number": 51,
+            "title": "Auth tokens with refresh rotation",
+            "state": "OPEN",
+            "headRefName": "feature/auth-tokens",
+            "updatedAt": "2024-06-15T08:00:00Z",
+            "isDraft": false,
+            "author": { "login": "katzkb-demo" },
+            "reviewRequests": { "nodes": [] }
+          },
+          {
+            "number": 49,
+            "title": "Initial billing wireframe",
+            "state": "OPEN",
+            "headRefName": "feature/billing",
+            "updatedAt": "2024-06-14T17:00:00Z",
+            "isDraft": true,
+            "author": { "login": "katzkb-demo" },
+            "reviewRequests": { "nodes": [] }
+          },
+          {
+            "number": 48,
+            "title": "Fix auth redirect loop on Safari",
+            "state": "OPEN",
+            "headRefName": "fix/auth-redirect",
+            "updatedAt": "2024-06-13T11:00:00Z",
+            "isDraft": false,
+            "author": { "login": "katzkb-demo" },
+            "reviewRequests": { "nodes": [] }
+          }
+        ]
+      }
+    }
+  }
+}

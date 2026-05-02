@@ -1,0 +1,57 @@
+[
+  {
+    "number": 87,
+    "title": "Branch search with regex",
+    "author": { "login": "katzkb-demo" },
+    "state": "MERGED",
+    "headRefName": "feature/done-search",
+    "updatedAt": "2024-06-10T14:00:00Z",
+    "isDraft": false,
+    "reviewRequests": [],
+    "latestReviews": [{ "author": { "login": "alice" }, "state": "APPROVED" }]
+  },
+  {
+    "number": 86,
+    "title": "Filter modes (local / my PR / review)",
+    "author": { "login": "katzkb-demo" },
+    "state": "MERGED",
+    "headRefName": "feature/done-filter",
+    "updatedAt": "2024-06-09T11:30:00Z",
+    "isDraft": false,
+    "reviewRequests": [],
+    "latestReviews": [{ "author": { "login": "bob" }, "state": "APPROVED" }]
+  },
+  {
+    "number": 85,
+    "title": "Fix sidebar flicker on resize",
+    "author": { "login": "katzkb-demo" },
+    "state": "MERGED",
+    "headRefName": "fix/done-flicker",
+    "updatedAt": "2024-06-08T20:00:00Z",
+    "isDraft": false,
+    "reviewRequests": [],
+    "latestReviews": [{ "author": { "login": "alice" }, "state": "APPROVED" }]
+  },
+  {
+    "number": 84,
+    "title": "Handle UTF-8 in branch names",
+    "author": { "login": "katzkb-demo" },
+    "state": "MERGED",
+    "headRefName": "fix/done-encoding",
+    "updatedAt": "2024-06-07T16:45:00Z",
+    "isDraft": false,
+    "reviewRequests": [],
+    "latestReviews": [{ "author": { "login": "carol" }, "state": "APPROVED" }]
+  },
+  {
+    "number": 83,
+    "title": "Tidy clippy lints",
+    "author": { "login": "katzkb-demo" },
+    "state": "MERGED",
+    "headRefName": "chore/done-clippy",
+    "updatedAt": "2024-06-06T09:00:00Z",
+    "isDraft": false,
+    "reviewRequests": [],
+    "latestReviews": [{ "author": { "login": "alice" }, "state": "APPROVED" }]
+  }
+]

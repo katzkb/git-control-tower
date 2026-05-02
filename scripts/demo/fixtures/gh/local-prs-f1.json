@@ -1,0 +1,80 @@
+{
+  "data": {
+    "repository": {
+      "b0": {
+        "nodes": [
+          {
+            "number": 92,
+            "title": "Export branches as JSON",
+            "state": "OPEN",
+            "headRefName": "feature/wip-export",
+            "updatedAt": "2024-06-15T09:30:00Z",
+            "isDraft": true,
+            "author": { "login": "katzkb-demo" },
+            "reviewRequests": { "nodes": [] }
+          },
+          {
+            "number": 93,
+            "title": "Cache invalidation on filter switch",
+            "state": "OPEN",
+            "headRefName": "fix/wip-cache",
+            "updatedAt": "2024-06-14T17:00:00Z",
+            "isDraft": false,
+            "author": { "login": "katzkb-demo" },
+            "reviewRequests": { "nodes": [] }
+          },
+          {
+            "number": 87,
+            "title": "Branch search with regex",
+            "state": "MERGED",
+            "headRefName": "feature/done-search",
+            "updatedAt": "2024-06-10T14:00:00Z",
+            "isDraft": false,
+            "author": { "login": "katzkb-demo" },
+            "reviewRequests": { "nodes": [] }
+          },
+          {
+            "number": 86,
+            "title": "Filter modes (local / my PR / review)",
+            "state": "MERGED",
+            "headRefName": "feature/done-filter",
+            "updatedAt": "2024-06-09T11:30:00Z",
+            "isDraft": false,
+            "author": { "login": "katzkb-demo" },
+            "reviewRequests": { "nodes": [] }
+          },
+          {
+            "number": 85,
+            "title": "Fix sidebar flicker on resize",
+            "state": "MERGED",
+            "headRefName": "fix/done-flicker",
+            "updatedAt": "2024-06-08T20:00:00Z",
+            "isDraft": false,
+            "author": { "login": "katzkb-demo" },
+            "reviewRequests": { "nodes": [] }
+          },
+          {
+            "number": 84,
+            "title": "Handle UTF-8 in branch names",
+            "state": "MERGED",
+            "headRefName": "fix/done-encoding",
+            "updatedAt": "2024-06-07T16:45:00Z",
+            "isDraft": false,
+            "author": { "login": "katzkb-demo" },
+            "reviewRequests": { "nodes": [] }
+          },
+          {
+            "number": 83,
+            "title": "Tidy clippy lints",
+            "state": "MERGED",
+            "headRefName": "chore/done-clippy",
+            "updatedAt": "2024-06-06T09:00:00Z",
+            "isDraft": false,
+            "author": { "login": "katzkb-demo" },
+            "reviewRequests": { "nodes": [] }
+          }
+        ]
+      }
+    }
+  }
+}
