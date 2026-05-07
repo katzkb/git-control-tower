@@ -7,7 +7,7 @@ use ratatui::{
 };
 
 use crate::app::App;
-use crate::git::types::{BranchEntry, PrDetail, ReviewStatus};
+use crate::git::types::{BranchEntry, PrDetail, RepoId, ReviewStatus};
 use crate::ui::markdown;
 
 pub fn draw(frame: &mut Frame, area: Rect, app: &App) {
@@ -27,7 +27,13 @@ pub fn draw(frame: &mut Frame, area: Rect, app: &App) {
     if let Some(entry) = &entry {
         draw_git_status_section(&mut lines, entry, spinner);
         draw_worktree_section(&mut lines, entry);
-        draw_pr_section(&mut lines, entry, app.selected_pr_detail(), spinner);
+        draw_pr_section(
+            &mut lines,
+            entry,
+            app.selected_pr_detail(),
+            spinner,
+            app.active_repo.as_ref(),
+        );
     } else {
         lines.push(Line::from(Span::styled(
             " No branch selected",
@@ -174,6 +180,7 @@ fn draw_pr_section(
     entry: &BranchEntry,
     pr_detail: Option<&PrDetail>,
     spinner: &str,
+    active_repo: Option<&RepoId>,
 ) {
     let pr = match &entry.pull_request {
         Some(p) => p,
@@ -189,6 +196,24 @@ fn draw_pr_section(
     };
 
     lines.push(section_header(&format!("PR #{}", pr.number)));
+
+    // Cross-repo: show repo identifier above title only when we know the active
+    // repo and the entry belongs to a different one. When active_repo is None
+    // (e.g. no `origin` remote, detached HEAD) we suppress the label — every
+    // entry would otherwise show it, which is more confusing than helpful.
+    if let Some(active) = active_repo
+        && active != &entry.repo_id
+    {
+        lines.push(Line::from(vec![
+            Span::styled("  repo: ", Style::default().fg(Color::DarkGray)),
+            Span::styled(
+                entry.repo_id.to_string(),
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            ),
+        ]));
+    }
 
     // Title
     lines.push(Line::from(Span::styled(

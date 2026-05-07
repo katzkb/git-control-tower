@@ -66,6 +66,25 @@ fn draw_filter_bar(frame: &mut Frame, area: Rect, app: &App) {
             };
             spans.push(Span::styled(team_label, Style::default().fg(Color::Cyan)));
         }
+        // Show repo/PR counter when multiple repos are present
+        if matches!(
+            app.main_filter,
+            MainFilter::MyPr | MainFilter::ReviewRequested
+        ) {
+            let filtered = app.filtered_entries();
+            let repo_count = filtered
+                .iter()
+                .map(|e| e.repo_id.clone())
+                .collect::<std::collections::HashSet<_>>()
+                .len();
+            if repo_count > 1 {
+                let pr_count = filtered.iter().filter(|e| e.pull_request.is_some()).count();
+                spans.push(Span::styled(
+                    format!("  {repo_count} repos · {pr_count} PRs"),
+                    Style::default().fg(Color::DarkGray),
+                ));
+            }
+        }
         Line::from(spans)
     };
     frame.render_widget(
@@ -80,15 +99,15 @@ fn draw_entry_list(frame: &mut Frame, area: Rect, app: &mut App) {
 
     // Build items and capture count before mutably borrowing app
     let (items, item_count): (Vec<ListItem>, usize) = {
-        let filtered = app.filtered_entries();
-        let count = filtered.len();
-        let items = if filtered.is_empty() && is_loading {
+        let rows = app.sidebar_rows();
+        let item_count = rows.len();
+        let items = if rows.is_empty() && is_loading {
             let spinner = app.spinner_frame();
             vec![ListItem::new(Line::from(Span::styled(
                 format!("  {spinner} Loading"),
                 Style::default().fg(Color::DarkGray),
             )))]
-        } else if filtered.is_empty() {
+        } else if rows.is_empty() {
             let msg = if !app.search_query.is_empty() {
                 "  No branches match the search"
             } else {
@@ -104,22 +123,31 @@ fn draw_entry_list(frame: &mut Frame, area: Rect, app: &mut App) {
             )))]
         } else {
             let search_query = &app.search_query;
-            filtered
-                .iter()
-                .map(|entry| {
-                    let is_selected = app.branch_selected.contains(&entry.name);
-                    let is_protected = app.is_protected_branch(&entry.name);
-                    ListItem::new(format_entry_line(
-                        entry,
-                        show_checkboxes,
-                        is_selected,
-                        is_protected,
-                        search_query,
-                    ))
+            rows.iter()
+                .map(|row| match row {
+                    crate::app::SidebarRow::Header { repo_id } => {
+                        ListItem::new(Line::from(vec![Span::styled(
+                            format!(" ▾ {repo_id} "),
+                            Style::default()
+                                .fg(Color::Cyan)
+                                .add_modifier(Modifier::DIM | Modifier::BOLD),
+                        )]))
+                    }
+                    crate::app::SidebarRow::Entry(entry) => {
+                        let is_selected = app.branch_selected.contains(&entry.name);
+                        let is_protected = app.is_protected_branch(&entry.name);
+                        ListItem::new(format_entry_line(
+                            entry,
+                            show_checkboxes,
+                            is_selected,
+                            is_protected,
+                            search_query,
+                        ))
+                    }
                 })
                 .collect()
         };
-        (items, count)
+        (items, item_count)
     };
 
     // Adjust viewport offset and clamp scroll/offset to valid ranges

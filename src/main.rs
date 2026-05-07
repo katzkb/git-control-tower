@@ -26,9 +26,9 @@ use crate::app::MainFilter;
 use crate::app::{OpProgress, OpStep};
 use crate::data::merge_entries;
 use crate::event::{Event, EventHandler};
-use crate::git::command::{run_gh, run_git};
+use crate::git::command::{run_gh, run_git, run_git_in};
 use crate::git::parser::{parse_branches, parse_log, parse_worktrees};
-use crate::git::types::{GitStatus, PrDetail, PullRequest, ReviewStatus};
+use crate::git::types::{GitStatus, PrDetail, PullRequest, RepoId, ReviewStatus};
 use crate::ui::notification::Notification;
 
 /// Args used for fetching commits in the Log view (startup + `r` refresh).
@@ -40,15 +40,16 @@ const LOG_ARGS: &[&str] = &[
     "200",
 ];
 
-struct RepoInfo {
-    owner: String,
-    repo: String,
-    hostname: Option<String>, // None for github.com
-}
-
 enum AsyncResult {
-    PrDetail(PrDetail),
-    PrDetailError(u64, String),
+    PrDetail {
+        repo_id: crate::git::types::RepoId,
+        detail: PrDetail,
+    },
+    PrDetailError {
+        repo_id: crate::git::types::RepoId,
+        number: u64,
+        error: String,
+    },
     GitStatus {
         wt_path: String,
         status: GitStatus,
@@ -62,6 +63,7 @@ enum AsyncResult {
     WtCreated {
         wt_path: String,
         copy_errors: Vec<String>,
+        target_repo: Option<crate::git::types::RepoId>,
     },
     WtCreateError {
         wt_path: String,
@@ -90,6 +92,10 @@ enum AsyncResult {
         worktrees_removed: Vec<String>,
         failures: Vec<String>,
         wt_paths_claimed: Vec<String>,
+    },
+    WtListLoaded {
+        repo_id: crate::git::types::RepoId,
+        list: Vec<crate::git::types::Worktree>,
     },
 }
 
@@ -390,8 +396,33 @@ async fn run(
     app.verbose = verbose;
     let mut events = EventHandler::new(Duration::from_millis(80));
     let (tx, mut rx) = mpsc::unbounded_channel::<AsyncResult>();
-    let mut pr_inflight: HashSet<u64> = HashSet::new();
+    let mut pr_inflight: HashSet<(crate::git::types::RepoId, u64)> = HashSet::new();
     let mut status_inflight: HashSet<String> = HashSet::new();
+
+    let active_root = run_git(&["rev-parse", "--show-toplevel"])
+        .await
+        .ok()
+        .map(|s| std::path::PathBuf::from(s.trim()));
+    let active_id = run_git(&["remote", "get-url", "origin"])
+        .await
+        .ok()
+        .and_then(|url| extract_repo_info(url.trim()));
+    app.active_repo = active_id.clone();
+    app.clone_root = match (&active_root, &active_id) {
+        (Some(p), Some(id)) => infer_clone_root(p, id),
+        _ => None,
+    }
+    .or_else(|| app.config.workspace.clone_root_expanded());
+
+    // Seed repos with the active repo immediately (local_path and resolved flag known now).
+    if let Some(id) = app.active_repo.clone() {
+        app.repos
+            .entry(id.clone())
+            .or_insert_with(|| crate::git::types::RepoMeta {
+                local_path: active_root.clone(),
+                local_path_resolved: true,
+            });
+    }
 
     // Phase 1: Fast local loads (blocking, ~170ms)
     if let Ok(output) = run_git(LOG_ARGS).await {
@@ -401,16 +432,20 @@ async fn run(
         app.worktrees = parse_worktrees(&output);
     }
     load_branches(&mut app).await;
-    let repo_info = run_git(&["remote", "get-url", "origin"])
-        .await
-        .ok()
-        .and_then(|url| extract_repo_info(url.trim()));
-    app.entries = merge_entries(&app.branches, &app.worktrees, &[]);
+    let repo_info = active_id;
+    let active = app.active_repo.clone().unwrap_or_default();
+    app.entries = merge_entries(
+        &active,
+        &app.branches,
+        &app.worktrees,
+        &[],
+        &app.wt_lists_per_repo,
+    );
     app.entries_loaded = true;
     app.request_details_for_selection();
 
     // Phase 2: Slow network loads (background, non-blocking)
-    let gh_hostname = repo_info.as_ref().and_then(|r| r.hostname.clone());
+    let gh_hostname = repo_info.as_ref().and_then(|r| r.host.clone());
 
     let tx_user = tx.clone();
     let hostname_for_user = gh_hostname.clone();
@@ -444,8 +479,8 @@ async fn run(
         let tx_local = tx.clone();
         let branch_names: Vec<String> = app.branches.iter().map(|b| b.name.clone()).collect();
         let owner = info.owner.clone();
-        let repo = info.repo.clone();
-        let hostname = info.hostname.clone();
+        let repo = info.name.clone();
+        let hostname = info.host.clone();
         tokio::spawn(async move {
             let (prs, errors) =
                 data::fetch_local_prs(&branch_names, &owner, &repo, hostname.as_deref()).await;
@@ -474,38 +509,77 @@ async fn run(
         }
 
         // Spawn PR detail load in background (non-blocking, deduplicated)
-        if let Some(number) = app.pr_detail_requested.take()
-            && !pr_inflight.contains(&number)
+        if let Some((repo_id, number)) = app.pr_detail_requested.take()
+            && !pr_inflight.contains(&(repo_id.clone(), number))
         {
-            pr_inflight.insert(number);
+            pr_inflight.insert((repo_id.clone(), number));
             let tx = tx.clone();
+            let repo_arg = format!("{}/{}", repo_id.owner, repo_id.name);
             tokio::spawn(async move {
                 let num_str = number.to_string();
-                let result = run_gh(&[
+                let mut args = vec![
                     "pr",
                     "view",
                     &num_str,
+                    "--repo",
+                    repo_arg.as_str(),
                     "--json",
                     "number,title,author,state,body,additions,deletions,headRefName",
-                ])
-                .await;
+                ];
+                // For GHE hosts, add --hostname
+                let hostname_buf;
+                if let Some(h) = &repo_id.host {
+                    hostname_buf = h.clone();
+                    args.push("--hostname");
+                    args.push(hostname_buf.as_str());
+                }
+                let result = run_gh(&args).await;
                 match result {
                     Ok(output) => match serde_json::from_str::<PrDetail>(&output) {
                         Ok(detail) => {
-                            let _ = tx.send(AsyncResult::PrDetail(detail));
+                            let _ = tx.send(AsyncResult::PrDetail { repo_id, detail });
                         }
                         Err(e) => {
-                            let _ = tx.send(AsyncResult::PrDetailError(
+                            let _ = tx.send(AsyncResult::PrDetailError {
+                                repo_id,
                                 number,
-                                format!("PR #{number} parse error: {e}"),
-                            ));
+                                error: format!("PR #{number} parse error: {e}"),
+                            });
                         }
                     },
                     Err(e) => {
-                        let _ = tx.send(AsyncResult::PrDetailError(
+                        let _ = tx.send(AsyncResult::PrDetailError {
+                            repo_id,
                             number,
-                            format!("PR #{number} fetch failed: {e}"),
-                        ));
+                            error: format!("PR #{number} fetch failed: {e}"),
+                        });
+                    }
+                }
+            });
+        }
+
+        // Spawn cross-repo worktree list load in background (non-blocking, deduplicated)
+        if let Some(repo_id) = app.wt_list_requested.take()
+            && !app.wt_list_inflight.contains(&repo_id)
+            && let Some(path) = app.repos.get(&repo_id).and_then(|m| m.local_path.clone())
+        {
+            app.wt_list_inflight.insert(repo_id.clone());
+            let tx_c = tx.clone();
+            let repo_id_c = repo_id.clone();
+            tokio::spawn(async move {
+                match run_git_in(&path, &["worktree", "list", "--porcelain"]).await {
+                    Ok(out) => {
+                        let list = crate::git::parser::parse_worktrees(&out);
+                        let _ = tx_c.send(AsyncResult::WtListLoaded {
+                            repo_id: repo_id_c,
+                            list,
+                        });
+                    }
+                    Err(_) => {
+                        let _ = tx_c.send(AsyncResult::WtListLoaded {
+                            repo_id: repo_id_c,
+                            list: Vec::new(),
+                        });
                     }
                 }
             });
@@ -549,8 +623,8 @@ async fn run(
                         let branch_names: Vec<String> =
                             app.branches.iter().map(|b| b.name.clone()).collect();
                         let owner = info.owner.clone();
-                        let repo = info.repo.clone();
-                        let hostname = info.hostname.clone();
+                        let repo = info.name.clone();
+                        let hostname = info.host.clone();
                         tokio::spawn(async move {
                             let (prs, errors) = data::fetch_local_prs(
                                 &branch_names,
@@ -599,16 +673,21 @@ async fn run(
         // Receive completed background results (non-blocking)
         while let Ok(result) = rx.try_recv() {
             match result {
-                AsyncResult::PrDetail(detail) => {
-                    pr_inflight.remove(&detail.number);
-                    app.pr_detail_cache.insert(detail.number, detail);
+                AsyncResult::PrDetail { repo_id, detail } => {
+                    let key = (repo_id.clone(), detail.number);
+                    pr_inflight.remove(&key);
+                    app.pr_detail_cache.insert(key, detail);
                 }
-                AsyncResult::PrDetailError(number, error_msg) => {
-                    pr_inflight.remove(&number);
+                AsyncResult::PrDetailError {
+                    repo_id,
+                    number,
+                    error,
+                } => {
+                    pr_inflight.remove(&(repo_id, number));
                     app.notification =
                         Some(Notification::error(format!("Failed to load PR #{number}")));
-                    if app.verbose && !app.verbose_errors.contains(&error_msg) {
-                        app.verbose_errors.push(error_msg);
+                    if app.verbose && !app.verbose_errors.contains(&error) {
+                        app.verbose_errors.push(error);
                     }
                 }
                 AsyncResult::GitStatus { wt_path, status } => {
@@ -656,9 +735,16 @@ async fn run(
                             }
                         }
                     }
+                    seed_repos_from_prs(&mut app.repos, &app.local_prs);
                     if app.main_filter == MainFilter::Local {
-                        app.entries =
-                            merge_entries(&app.branches, &app.worktrees, app.current_prs());
+                        let active = app.active_repo.clone().unwrap_or_default();
+                        app.entries = merge_entries(
+                            &active,
+                            &app.branches,
+                            &app.worktrees,
+                            app.current_prs(),
+                            &app.wt_lists_per_repo,
+                        );
                         let filtered_len = app.filtered_entries().len();
                         if app.sidebar_scroll >= filtered_len && filtered_len > 0 {
                             app.sidebar_scroll = filtered_len - 1;
@@ -676,9 +762,16 @@ async fn run(
                             }
                         }
                     }
+                    seed_repos_from_prs(&mut app.repos, &app.my_prs);
                     if app.main_filter == MainFilter::MyPr {
-                        app.entries =
-                            merge_entries(&app.branches, &app.worktrees, app.current_prs());
+                        let active = app.active_repo.clone().unwrap_or_default();
+                        app.entries = merge_entries(
+                            &active,
+                            &app.branches,
+                            &app.worktrees,
+                            app.current_prs(),
+                            &app.wt_lists_per_repo,
+                        );
                         let filtered_len = app.filtered_entries().len();
                         if app.sidebar_scroll >= filtered_len && filtered_len > 0 {
                             app.sidebar_scroll = filtered_len - 1;
@@ -699,9 +792,16 @@ async fn run(
                             }
                         }
                     }
+                    seed_repos_from_prs(&mut app.repos, &app.review_prs);
                     if app.main_filter == MainFilter::ReviewRequested {
-                        app.entries =
-                            merge_entries(&app.branches, &app.worktrees, app.current_prs());
+                        let active = app.active_repo.clone().unwrap_or_default();
+                        app.entries = merge_entries(
+                            &active,
+                            &app.branches,
+                            &app.worktrees,
+                            app.current_prs(),
+                            &app.wt_lists_per_repo,
+                        );
                         let filtered_len = app.filtered_entries().len();
                         if app.sidebar_scroll >= filtered_len && filtered_len > 0 {
                             app.sidebar_scroll = filtered_len - 1;
@@ -712,6 +812,7 @@ async fn run(
                 AsyncResult::WtCreated {
                     wt_path,
                     copy_errors,
+                    target_repo,
                 } => {
                     app.wt_inflight.remove(&wt_path);
                     if copy_errors.is_empty() {
@@ -728,6 +829,10 @@ async fn run(
                         }
                     }
                     refresh_entries(&mut app).await;
+                    // Cross-repo: invalidate worktree-list cache for target so next selection re-fetches.
+                    if let Some(repo_id) = target_repo {
+                        app.wt_lists_per_repo.remove(&repo_id);
+                    }
                     if app.confirm_dialog.is_none() {
                         app.confirm_dialog = Some(crate::ui::confirm_dialog::ConfirmDialog::new(
                             "Move to Worktree",
@@ -812,6 +917,12 @@ async fn run(
                         format!("{reason}\nForce remove {path}?"),
                     ));
                     app.wt_force_delete_pending_path = Some(path);
+                }
+                AsyncResult::WtListLoaded { repo_id, list } => {
+                    app.wt_list_inflight.remove(&repo_id);
+                    app.wt_lists_per_repo.insert(repo_id, list);
+                    app.rebuild_entries();
+                    app.snap_scroll_to_entry();
                 }
             }
         }
@@ -906,40 +1017,95 @@ async fn run(
         }
 
         // Create worktree if requested (async, non-blocking)
-        if let Some(branch_name) = app.wt_create_requested.take() {
-            let wt_path = app.config.worktree_path(&branch_name);
+        if let Some((req_repo_id, branch_name)) = app.wt_create_requested.take() {
+            // Resolve target repo (active or cross-repo) and its root path.
+            let entry = app
+                .entries
+                .iter()
+                .find(|e| e.repo_id == req_repo_id && e.name == branch_name)
+                .cloned();
+            let Some(entry) = entry else {
+                continue;
+            };
+            let target_repo = entry.repo_id.clone();
+            let active_repo = app.active_repo.clone();
+            let is_active = active_repo.as_ref() == Some(&target_repo);
+
+            let target_root: std::path::PathBuf = if is_active {
+                run_git(&["rev-parse", "--show-toplevel"])
+                    .await
+                    .map(|s| std::path::PathBuf::from(s.trim()))
+                    .unwrap_or_else(|_| std::env::current_dir().unwrap_or_default())
+            } else {
+                // cross-repo: must have resolved local_path
+                match app
+                    .repos
+                    .get(&target_repo)
+                    .and_then(|m| m.local_path.clone())
+                {
+                    Some(p) => p,
+                    None => {
+                        app.notification =
+                            Some(Notification::error(format!("{target_repo} not cloned")));
+                        continue;
+                    }
+                }
+            };
+
+            let wt_path = app.config.worktree_path_for(&target_root, &branch_name);
             app.wt_inflight.insert(wt_path.clone());
             if let Some(parent) = std::path::Path::new(&wt_path).parent() {
                 let _ = std::fs::create_dir_all(parent);
             }
-            let has_local = app.branches.iter().any(|b| b.name == branch_name);
+
+            let is_active_with_local =
+                is_active && app.branches.iter().any(|b| b.name == branch_name);
             let post_create = app.config.worktree.post_create.clone();
+            let target_repo_for_send = if is_active {
+                None
+            } else {
+                Some(target_repo.clone())
+            };
             let tx = tx.clone();
+            let wt_path_arg = wt_path.clone();
+            let branch_arg = branch_name.clone();
+            let target_root_arg = target_root.clone();
+
             tokio::spawn(async move {
-                let result = if has_local {
-                    run_git(&["worktree", "add", &wt_path, &branch_name]).await
+                let result = if is_active_with_local {
+                    run_git_in(
+                        &target_root_arg,
+                        &["worktree", "add", &wt_path_arg, &branch_arg],
+                    )
+                    .await
                 } else {
-                    match run_git(&["fetch", "origin", &branch_name]).await {
-                        Ok(_) => run_git(&["worktree", "add", &wt_path, &branch_name]).await,
+                    match run_git_in(&target_root_arg, &["fetch", "origin", &branch_arg]).await {
+                        Ok(_) => {
+                            run_git_in(
+                                &target_root_arg,
+                                &["worktree", "add", &wt_path_arg, &branch_arg],
+                            )
+                            .await
+                        }
                         Err(e) => Err(e),
                     }
                 };
                 match result {
                     Ok(_) => {
-                        let repo_root = std::env::current_dir().unwrap_or_default();
                         let copy_errors = config::run_post_create(
                             &post_create,
-                            &repo_root,
-                            std::path::Path::new(&wt_path),
+                            &target_root_arg,
+                            std::path::Path::new(&wt_path_arg),
                         );
                         let _ = tx.send(AsyncResult::WtCreated {
-                            wt_path,
+                            wt_path: wt_path_arg,
                             copy_errors,
+                            target_repo: target_repo_for_send,
                         });
                     }
                     Err(e) => {
                         let _ = tx.send(AsyncResult::WtCreateError {
-                            wt_path,
+                            wt_path: wt_path_arg,
                             message: format!("Failed to create worktree: {e}"),
                         });
                     }
@@ -959,8 +1125,13 @@ async fn run(
             }
             let mut work: Vec<Work> = Vec::with_capacity(selected.len());
             let mut wt_paths_claimed: Vec<String> = Vec::new();
+            let active_repo = app.active_repo.clone();
             for name in selected {
-                let Some(entry) = app.entries.iter().find(|e| e.name == name) else {
+                let Some(entry) = app
+                    .entries
+                    .iter()
+                    .find(|e| e.name == name && active_repo.as_ref() == Some(&e.repo_id))
+                else {
                     continue;
                 };
                 if entry.is_current() || app.is_protected_branch(&entry.name) {
@@ -1044,8 +1215,17 @@ async fn run(
         }
 
         // Open PR in browser if requested
-        if let Some(pr_number) = app.open_pr_requested.take() {
-            let _ = run_gh(&["pr", "view", &pr_number.to_string(), "--web"]).await;
+        if let Some((repo_id, pr_number)) = app.open_pr_requested.take() {
+            let repo_arg = format!("{}/{}", repo_id.owner, repo_id.name);
+            let num = pr_number.to_string();
+            let mut args = vec!["pr", "view", &num, "--web", "--repo", repo_arg.as_str()];
+            let hostname_buf;
+            if let Some(h) = &repo_id.host {
+                hostname_buf = h.clone();
+                args.push("--hostname");
+                args.push(hostname_buf.as_str());
+            }
+            let _ = run_gh(&args).await;
         }
 
         // Copy branch name to clipboard if requested
@@ -1075,11 +1255,19 @@ async fn refresh_entries(app: &mut App) {
             }
         }
     }
-    app.entries = merge_entries(&app.branches, &app.worktrees, app.current_prs());
+    let active = app.active_repo.clone().unwrap_or_default();
+    app.entries = merge_entries(
+        &active,
+        &app.branches,
+        &app.worktrees,
+        app.current_prs(),
+        &app.wt_lists_per_repo,
+    );
     let filtered_len = app.filtered_entries().len();
     if app.sidebar_scroll >= filtered_len && filtered_len > 0 {
         app.sidebar_scroll = filtered_len - 1;
     }
+    app.snap_scroll_to_entry();
 }
 
 async fn load_branches(app: &mut App) {
@@ -1270,6 +1458,23 @@ fn copy_via_osc52(text: &str) {
     }
 }
 
+/// Seed `repos` map with stub entries for every repo referenced by `prs`.
+/// Called after each PR list arrives from the network so that cross-repo
+/// entries have a `RepoMeta` record even before a clone is resolved.
+fn seed_repos_from_prs(
+    repos: &mut std::collections::HashMap<crate::git::types::RepoId, crate::git::types::RepoMeta>,
+    prs: &[PullRequest],
+) {
+    for pr in prs {
+        repos
+            .entry(pr.repo_id.clone())
+            .or_insert_with(|| crate::git::types::RepoMeta {
+                local_path: None,
+                local_path_resolved: false,
+            });
+    }
+}
+
 fn compute_review_status(pr: &PullRequest, gh_user: &str) -> ReviewStatus {
     if gh_user.is_empty() {
         return ReviewStatus::NeedsReview;
@@ -1287,8 +1492,8 @@ fn compute_review_status(pr: &PullRequest, gh_user: &str) -> ReviewStatus {
     ReviewStatus::NeedsReview
 }
 
-/// Extract owner, repo, and hostname from a git remote URL.
-fn extract_repo_info(remote_url: &str) -> Option<RepoInfo> {
+/// Parse a git remote URL into a `RepoId` (owner, name, host).
+fn extract_repo_info(remote_url: &str) -> Option<RepoId> {
     let hostname = extract_gh_hostname(remote_url)?;
     let gh_hostname = if hostname == "github.com" {
         None
@@ -1326,11 +1531,38 @@ fn extract_repo_info(remote_url: &str) -> Option<RepoInfo> {
         return None;
     }
 
-    Some(RepoInfo {
+    Some(RepoId {
         owner: parts[0].to_string(),
-        repo: parts[1].to_string(),
-        hostname: gh_hostname,
+        name: parts[1].to_string(),
+        host: gh_hostname,
     })
+}
+
+/// If `local_path` ends with `<…>/<host>/<owner>/<name>`, strip that suffix
+/// and return the prefix. `RepoId.host == None` is treated as `github.com`
+/// for the purpose of suffix matching.
+fn infer_clone_root(
+    local_path: &std::path::Path,
+    repo_id: &crate::git::types::RepoId,
+) -> Option<std::path::PathBuf> {
+    let host = repo_id.host.as_deref().unwrap_or("github.com");
+    let mut comps: Vec<&std::ffi::OsStr> = local_path.iter().collect();
+    if comps.len() < 3 {
+        return None;
+    }
+    let last = comps.pop()?;
+    let owner = comps.pop()?;
+    let host_seg = comps.pop()?;
+    if last != std::ffi::OsStr::new(repo_id.name.as_str()) {
+        return None;
+    }
+    if owner != std::ffi::OsStr::new(repo_id.owner.as_str()) {
+        return None;
+    }
+    if host_seg != std::ffi::OsStr::new(host) {
+        return None;
+    }
+    Some(comps.iter().collect::<std::path::PathBuf>())
 }
 
 /// Extract the hostname from a git remote URL.
@@ -1371,6 +1603,44 @@ fn extract_gh_hostname(remote_url: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn infer_clone_root_ghq_layout() {
+        use std::path::PathBuf;
+        let local = PathBuf::from("/Users/me/workspace/github.com/owner/repo");
+        let id = RepoId {
+            host: None,
+            owner: "owner".into(),
+            name: "repo".into(),
+        };
+        let root = infer_clone_root(&local, &id).expect("should strip suffix");
+        assert_eq!(root, PathBuf::from("/Users/me/workspace"));
+    }
+
+    #[test]
+    fn infer_clone_root_ghe_layout() {
+        use std::path::PathBuf;
+        let local = PathBuf::from("/work/ghe.company.com/team/svc");
+        let id = RepoId {
+            host: Some("ghe.company.com".into()),
+            owner: "team".into(),
+            name: "svc".into(),
+        };
+        let root = infer_clone_root(&local, &id).expect("should strip suffix");
+        assert_eq!(root, PathBuf::from("/work"));
+    }
+
+    #[test]
+    fn infer_clone_root_mismatch_returns_none() {
+        use std::path::PathBuf;
+        let local = PathBuf::from("/Users/me/somewhere/repo-x");
+        let id = RepoId {
+            host: None,
+            owner: "owner".into(),
+            name: "repo-x".into(),
+        };
+        assert!(infer_clone_root(&local, &id).is_none());
+    }
 
     #[test]
     fn test_extract_hostname_ssh() {
@@ -1429,40 +1699,40 @@ mod tests {
     fn test_extract_repo_info_ssh() {
         let info = extract_repo_info("git@github.com:katzkb/repo.git").unwrap();
         assert_eq!(info.owner, "katzkb");
-        assert_eq!(info.repo, "repo");
-        assert!(info.hostname.is_none()); // github.com → None
+        assert_eq!(info.name, "repo");
+        assert!(info.host.is_none()); // github.com → None
     }
 
     #[test]
     fn test_extract_repo_info_ghe() {
         let info = extract_repo_info("git@ghe.company.com:org/repo.git").unwrap();
         assert_eq!(info.owner, "org");
-        assert_eq!(info.repo, "repo");
-        assert_eq!(info.hostname.as_deref(), Some("ghe.company.com"));
+        assert_eq!(info.name, "repo");
+        assert_eq!(info.host.as_deref(), Some("ghe.company.com"));
     }
 
     #[test]
     fn test_extract_repo_info_https() {
         let info = extract_repo_info("https://github.com/katzkb/repo.git").unwrap();
         assert_eq!(info.owner, "katzkb");
-        assert_eq!(info.repo, "repo");
-        assert!(info.hostname.is_none());
+        assert_eq!(info.name, "repo");
+        assert!(info.host.is_none());
     }
 
     #[test]
     fn test_extract_repo_info_ssh_url() {
         let info = extract_repo_info("ssh://git@ghe.company.com/org/repo.git").unwrap();
         assert_eq!(info.owner, "org");
-        assert_eq!(info.repo, "repo");
-        assert_eq!(info.hostname.as_deref(), Some("ghe.company.com"));
+        assert_eq!(info.name, "repo");
+        assert_eq!(info.host.as_deref(), Some("ghe.company.com"));
     }
 
     #[test]
     fn test_extract_repo_info_ssh_url_with_port() {
         let info = extract_repo_info("ssh://git@ghe.company.com:2222/org/repo.git").unwrap();
         assert_eq!(info.owner, "org");
-        assert_eq!(info.repo, "repo");
-        assert_eq!(info.hostname.as_deref(), Some("ghe.company.com"));
+        assert_eq!(info.name, "repo");
+        assert_eq!(info.host.as_deref(), Some("ghe.company.com"));
     }
 
     #[test]
@@ -1472,6 +1742,7 @@ mod tests {
 
     #[test]
     fn test_compute_review_status_no_user() {
+        use crate::git::types::RepoId;
         let pr = PullRequest {
             number: 1,
             title: String::new(),
@@ -1483,13 +1754,14 @@ mod tests {
             is_draft: false,
             latest_reviews: vec![],
             review_status: None,
+            repo_id: RepoId::default(),
         };
         assert_eq!(compute_review_status(&pr, ""), ReviewStatus::NeedsReview);
     }
 
     #[test]
     fn test_compute_review_status_no_matching_review() {
-        use crate::git::types::LatestReview;
+        use crate::git::types::{LatestReview, RepoId};
         let pr = PullRequest {
             number: 1,
             title: String::new(),
@@ -1504,6 +1776,7 @@ mod tests {
                 state: "APPROVED".to_string(),
             }],
             review_status: None,
+            repo_id: RepoId::default(),
         };
         assert_eq!(
             compute_review_status(&pr, "katzkb"),
@@ -1513,7 +1786,7 @@ mod tests {
 
     #[test]
     fn test_compute_review_status_approved() {
-        use crate::git::types::LatestReview;
+        use crate::git::types::{LatestReview, RepoId};
         let pr = PullRequest {
             number: 1,
             title: String::new(),
@@ -1528,13 +1801,14 @@ mod tests {
                 state: "APPROVED".to_string(),
             }],
             review_status: None,
+            repo_id: RepoId::default(),
         };
         assert_eq!(compute_review_status(&pr, "katzkb"), ReviewStatus::Approved);
     }
 
     #[test]
     fn test_compute_review_status_changes_requested() {
-        use crate::git::types::LatestReview;
+        use crate::git::types::{LatestReview, RepoId};
         let pr = PullRequest {
             number: 1,
             title: String::new(),
@@ -1549,6 +1823,7 @@ mod tests {
                 state: "CHANGES_REQUESTED".to_string(),
             }],
             review_status: None,
+            repo_id: RepoId::default(),
         };
         assert_eq!(
             compute_review_status(&pr, "katzkb"),

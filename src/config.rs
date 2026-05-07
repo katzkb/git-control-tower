@@ -4,12 +4,31 @@ use std::path::{Path, PathBuf};
 
 const DEFAULT_WORKTREE_DIR: &str = "..";
 
+#[derive(Debug, Deserialize, Clone, Default)]
+pub struct WorkspaceConfig {
+    /// Optional root path to look up local clones for cross-repo entries.
+    /// `~` is expanded at lookup time; absent means cross-repo Worktree
+    /// actions degrade to read-only when auto-detection also fails.
+    #[serde(default)]
+    pub clone_root: Option<String>,
+}
+
+impl WorkspaceConfig {
+    pub fn clone_root_expanded(&self) -> Option<PathBuf> {
+        let raw = self.clone_root.as_deref()?;
+        let expanded = shellexpand::tilde(raw);
+        Some(PathBuf::from(expanded.into_owned()))
+    }
+}
+
 #[derive(Debug, Deserialize, Clone)]
 pub struct Config {
     #[serde(default)]
     pub worktree: WorktreeConfig,
     #[serde(default = "default_protected_branches")]
     pub protected_branches: Vec<String>,
+    #[serde(default)]
+    pub workspace: WorkspaceConfig,
 }
 
 fn default_protected_branches() -> Vec<String> {
@@ -21,6 +40,7 @@ impl Default for Config {
         Self {
             worktree: WorktreeConfig::default(),
             protected_branches: default_protected_branches(),
+            workspace: WorkspaceConfig::default(),
         }
     }
 }
@@ -70,6 +90,22 @@ impl Config {
             dir
         };
         Path::new(base)
+            .join(branch_name)
+            .to_string_lossy()
+            .to_string()
+    }
+
+    /// Build a worktree path relative to a specific repo root.
+    /// `dir = ".."` produces `<repo_root>/../<branch>` (= sibling of repo).
+    pub fn worktree_path_for(&self, repo_root: &Path, branch_name: &str) -> String {
+        let dir = self.worktree.dir.trim();
+        let base = if dir.is_empty() {
+            DEFAULT_WORKTREE_DIR
+        } else {
+            dir
+        };
+        repo_root
+            .join(base)
             .join(branch_name)
             .to_string_lossy()
             .to_string()
@@ -569,5 +605,58 @@ command = "npm ci"
         let errors = run_post_create(&actions, &repo, &wt);
         assert_eq!(errors.len(), 1);
         assert!(errors[0].contains("exit 1"));
+    }
+
+    #[test]
+    fn parse_workspace_clone_root() {
+        let toml_str = r#"
+[workspace]
+clone_root = "~/workspace"
+"#;
+        let config: Config = toml::from_str(toml_str).unwrap();
+        assert_eq!(config.workspace.clone_root.as_deref(), Some("~/workspace"));
+    }
+
+    #[test]
+    fn workspace_default_empty() {
+        let config: Config = toml::from_str("").unwrap();
+        assert!(config.workspace.clone_root.is_none());
+    }
+
+    #[test]
+    fn workspace_clone_root_expanded_strips_tilde() {
+        let cfg = WorkspaceConfig {
+            clone_root: Some("~/foo".into()),
+        };
+        let path = cfg.clone_root_expanded().unwrap();
+        // No raw "~" should remain; the final component should be "foo".
+        assert!(!path.to_string_lossy().contains('~'));
+        assert!(path.ends_with("foo"));
+    }
+
+    #[test]
+    fn worktree_path_for_default_dir() {
+        let config = Config::default();
+        let root = Path::new("/repos/owner/name");
+        let p = config.worktree_path_for(root, "feature/auth");
+        let expected = Path::new("/repos/owner/name")
+            .join("..")
+            .join("feature/auth");
+        assert_eq!(p, expected.to_string_lossy().to_string());
+    }
+
+    #[test]
+    fn worktree_path_for_custom_dir() {
+        let config = Config {
+            worktree: WorktreeConfig {
+                dir: "wt".to_string(),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let root = Path::new("/repos/owner/name");
+        let p = config.worktree_path_for(root, "feature/x");
+        let expected = Path::new("/repos/owner/name").join("wt").join("feature/x");
+        assert_eq!(p, expected.to_string_lossy().to_string());
     }
 }

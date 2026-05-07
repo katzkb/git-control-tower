@@ -134,6 +134,27 @@ gct reads configuration from the first file found in this order:
 
 Project-local config is useful for per-repo worktree hooks (e.g. copying `.env`, running `npm ci`).
 
+### Cross-repo Reviews
+
+`My PR` (`2`) and `Review` (`3`) modes show pull requests across **all** of your GitHub repositories, not just the one you launched gct from. When the result spans multiple repos, the sidebar groups branches under repo headers; otherwise it stays flat as before.
+
+For cross-repo PRs, `Create Worktree` and `cd into Worktree` operate on the local clone of that repo. gct discovers the clone path one of two ways:
+
+1. **Auto-inferred from your active repo's path.** If you launched gct from `~/workspace/github.com/owner/name`, gct strips the `<host>/<owner>/<name>` suffix and treats `~/workspace` as the clone root. ghq users get this for free.
+
+2. **Configured explicitly** when auto-inference fails. Add to `.gct.toml` or `~/.config/gct/config.toml`:
+
+   ```toml
+   [workspace]
+   clone_root = "~/workspace"
+   ```
+
+   gct then expects clones at `<clone_root>/<host>/<owner>/<name>`.
+
+If neither path resolves, cross-repo entries remain visible but `Create Worktree` is greyed out with a one-line hint pointing at the expected clone location.
+
+**Limitations (v1):** Only github.com is searched (PRs on GitHub Enterprise hosts are not aggregated). Bulk delete (`d` after Space-selection) still operates on active-repo branches only.
+
 ### Worktree Settings
 
 ```toml

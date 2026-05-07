@@ -33,6 +33,11 @@ impl MainFilter {
     }
 }
 
+pub enum SidebarRow<'a> {
+    Header { repo_id: crate::git::types::RepoId },
+    Entry(&'a crate::git::types::BranchEntry),
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ActionItem {
     CreateWorktree,
@@ -61,7 +66,10 @@ impl ActionItem {
 pub struct ActionMenu {
     pub items: Vec<ActionItem>,
     pub scroll: usize,
-    pub target_name: String, // branch name captured when menu was opened
+    /// `(repo_id, branch_name)` captured when the menu was opened. Carrying
+    /// both fields prevents wrong-repo lookup when two repos share a branch name.
+    pub target: (crate::git::types::RepoId, String),
+    pub footer: Option<String>,
 }
 
 pub struct BranchCreateInput {
@@ -207,10 +215,10 @@ pub struct App {
     pub include_team_reviews: bool,
     pub pr_fetch_requested: Option<MainFilter>,
 
-    // PR Detail (for detail pane, cached by PR number)
-    pub pr_detail_cache: HashMap<u64, PrDetail>,
+    // PR Detail (for detail pane, cached by (RepoId, PR number))
+    pub pr_detail_cache: HashMap<(crate::git::types::RepoId, u64), PrDetail>,
     pub pr_detail_scroll: usize,
-    pub pr_detail_requested: Option<u64>,
+    pub pr_detail_requested: Option<(crate::git::types::RepoId, u64)>,
 
     // Git status loading
     pub git_status_requested: Option<String>, // worktree path
@@ -235,7 +243,9 @@ pub struct App {
     pub wt_force_delete_requested: Option<String>,
     pub wt_force_delete_pending_path: Option<String>,
     pub wt_cd_pending_path: Option<String>,
-    pub wt_create_requested: Option<String>,
+    /// `(repo_id, branch_name)` for the worktree to create. Carries `RepoId` so
+    /// the main-loop lookup matches the correct repo when branch names collide.
+    pub wt_create_requested: Option<(crate::git::types::RepoId, String)>,
     /// Worktree paths with an in-flight create/delete, gated per-path so unrelated
     /// worktrees stay actionable in the UI while one is still running.
     pub wt_inflight: HashSet<String>,
@@ -243,7 +253,7 @@ pub struct App {
     pub quit_pressed_during_progress: bool,
     pub branch_selected: HashSet<String>,
     pub branch_delete_requested: bool,
-    pub open_pr_requested: Option<u64>,
+    pub open_pr_requested: Option<(crate::git::types::RepoId, u64)>,
     pub copy_branch_requested: Option<String>,
     pub branch_create_requested: Option<(String, String)>, // (source, name)
     pub branches_reload_requested: bool,
@@ -254,6 +264,21 @@ pub struct App {
 
     // Loaded TOML config (protected_branches, worktree, …)
     pub config: crate::config::Config,
+
+    // Cross-repo context (set at startup)
+    pub active_repo: Option<crate::git::types::RepoId>,
+    pub clone_root: Option<std::path::PathBuf>,
+
+    // Per-repo metadata (populated lazily as repos are selected)
+    pub repos: std::collections::HashMap<crate::git::types::RepoId, crate::git::types::RepoMeta>,
+
+    // Worktree lists per repo (populated lazily as cross-repo PRs are selected)
+    pub wt_lists_per_repo:
+        std::collections::HashMap<crate::git::types::RepoId, Vec<crate::git::types::Worktree>>,
+
+    // Cross-repo worktree list lazy-load state
+    pub wt_list_inflight: HashSet<crate::git::types::RepoId>,
+    pub wt_list_requested: Option<crate::git::types::RepoId>,
 }
 
 impl App {
@@ -315,6 +340,12 @@ impl App {
             commits_reload_requested: false,
             spinner_tick: 0,
             config,
+            active_repo: None,
+            clone_root: None,
+            repos: HashMap::new(),
+            wt_lists_per_repo: HashMap::new(),
+            wt_list_inflight: HashSet::new(),
+            wt_list_requested: None,
         }
     }
 
@@ -378,8 +409,18 @@ impl App {
     }
 
     pub fn rebuild_entries(&mut self) {
-        self.entries =
-            crate::data::merge_entries(&self.branches, &self.worktrees, self.current_prs());
+        // When `active_repo` is absent (startup couldn't infer one), unwrap_or_default
+        // produces a sentinel empty RepoId. It can't collide with any real PR's repo_id,
+        // so cross-repo entries are still keyed correctly and worktree injection no-ops
+        // safely.
+        let active = self.active_repo.clone().unwrap_or_default();
+        self.entries = crate::data::merge_entries(
+            &active,
+            &self.branches,
+            &self.worktrees,
+            self.current_prs(),
+            &self.wt_lists_per_repo,
+        );
     }
 
     pub fn filtered_entries(&self) -> Vec<&BranchEntry> {
@@ -405,28 +446,115 @@ impl App {
             .collect()
     }
 
+    /// Build the sidebar rendering rows. Returns a flat list of headers and
+    /// entries; cross-repo grouping kicks in only for My PR / Review when
+    /// `entries` span more than one repo.
+    pub fn sidebar_rows(&self) -> Vec<SidebarRow<'_>> {
+        let filtered = self.filtered_entries();
+        let group_active = matches!(
+            self.main_filter,
+            MainFilter::MyPr | MainFilter::ReviewRequested
+        );
+        let repo_set: std::collections::HashSet<_> =
+            filtered.iter().map(|e| e.repo_id.clone()).collect();
+        let do_group = group_active && repo_set.len() > 1;
+
+        let mut rows = Vec::with_capacity(filtered.len() + repo_set.len());
+        if !do_group {
+            for e in filtered {
+                rows.push(SidebarRow::Entry(e));
+            }
+            return rows;
+        }
+        let mut last_repo: Option<crate::git::types::RepoId> = None;
+        for e in filtered {
+            if last_repo.as_ref() != Some(&e.repo_id) {
+                rows.push(SidebarRow::Header {
+                    repo_id: e.repo_id.clone(),
+                });
+                last_repo = Some(e.repo_id.clone());
+            }
+            rows.push(SidebarRow::Entry(e));
+        }
+        rows
+    }
+
     pub fn selected_entry(&self) -> Option<&BranchEntry> {
-        self.filtered_entries().into_iter().nth(self.sidebar_scroll)
+        let rows = self.sidebar_rows();
+        match rows.get(self.sidebar_scroll)? {
+            SidebarRow::Entry(e) => Some(*e),
+            SidebarRow::Header { .. } => None,
+        }
+    }
+
+    /// If `sidebar_scroll` lands on a Header, advance to the next Entry. If past
+    /// the end, clamp to the last Entry. No-op if already on an Entry.
+    pub fn snap_scroll_to_entry(&mut self) {
+        // Collect row kinds into a plain bool vec (true = is_header) to avoid holding
+        // a borrow on self while mutating sidebar_scroll.
+        let is_header: Vec<bool> = self
+            .sidebar_rows()
+            .iter()
+            .map(|r| matches!(r, SidebarRow::Header { .. }))
+            .collect();
+        if is_header.is_empty() {
+            self.sidebar_scroll = 0;
+            return;
+        }
+        while self.sidebar_scroll < is_header.len() && is_header[self.sidebar_scroll] {
+            self.sidebar_scroll += 1;
+        }
+        if self.sidebar_scroll >= is_header.len() {
+            self.sidebar_scroll = is_header.len().saturating_sub(1);
+        }
+    }
+
+    /// Find the next entry-row index after `from`, skipping headers. None if no entry follows.
+    fn next_entry_index(&self, from: usize) -> Option<usize> {
+        let rows = self.sidebar_rows();
+        let mut next = from + 1;
+        while next < rows.len() && matches!(rows[next], SidebarRow::Header { .. }) {
+            next += 1;
+        }
+        if next < rows.len() { Some(next) } else { None }
+    }
+
+    /// Find the previous entry-row index before `from`, skipping headers. None if no entry precedes.
+    fn prev_entry_index(&self, from: usize) -> Option<usize> {
+        if from == 0 {
+            return None;
+        }
+        let rows = self.sidebar_rows();
+        let mut prev = from - 1;
+        while matches!(rows.get(prev), Some(SidebarRow::Header { .. })) {
+            if prev == 0 {
+                return None;
+            }
+            prev -= 1;
+        }
+        Some(prev)
     }
 
     /// Return the cached PR detail for the currently selected entry, if available.
     pub fn selected_pr_detail(&self) -> Option<&PrDetail> {
         let entry = self.selected_entry()?;
         let pr_num = entry.pr_number()?;
-        self.pr_detail_cache.get(&pr_num)
+        self.pr_detail_cache.get(&(entry.repo_id.clone(), pr_num))
     }
 
     /// Signal that the selection changed; request PR detail and git status as needed.
     pub fn request_details_for_selection(&mut self) {
         self.pr_detail_scroll = 0;
-
         let selected = self.selected_entry().cloned();
-        if let Some(entry) = selected {
+
+        if let Some(entry) = &selected {
             // Request PR detail if entry has a PR and it's not cached
             if let Some(pr_num) = entry.pr_number()
-                && !self.pr_detail_cache.contains_key(&pr_num)
+                && !self
+                    .pr_detail_cache
+                    .contains_key(&(entry.repo_id.clone(), pr_num))
             {
-                self.pr_detail_requested = Some(pr_num);
+                self.pr_detail_requested = Some((entry.repo_id.clone(), pr_num));
             }
 
             // Request git status if entry has a worktree and status not yet loaded
@@ -434,6 +562,23 @@ impl App {
                 && entry.git_status.is_none()
             {
                 self.git_status_requested = Some(wt_path.to_string());
+            }
+        }
+
+        // Signal lazy load of cross-repo worktree list if not yet fetched (use the same `selected` binding)
+        if let Some(entry) = &selected
+            && self.active_repo.as_ref() != Some(&entry.repo_id)
+            && !self.wt_lists_per_repo.contains_key(&entry.repo_id)
+            && !self.wt_list_inflight.contains(&entry.repo_id)
+        {
+            self.resolve_local_path(&entry.repo_id);
+            if self
+                .repos
+                .get(&entry.repo_id)
+                .and_then(|m| m.local_path.as_ref())
+                .is_some()
+            {
+                self.wt_list_requested = Some(entry.repo_id.clone());
             }
         }
     }
@@ -489,6 +634,7 @@ impl App {
                     self.search_query.clear();
                     self.sidebar_scroll = self.search_pre_scroll;
                     self.sidebar_offset = 0;
+                    self.snap_scroll_to_entry();
                     self.request_details_for_selection();
                 } else if matches!(self.active_view, ActiveView::Log | ActiveView::History) {
                     self.active_view = ActiveView::Main;
@@ -512,6 +658,7 @@ impl App {
                 self.sidebar_scroll = 0;
                 self.sidebar_offset = 0;
                 self.rebuild_entries();
+                self.snap_scroll_to_entry();
                 if !self.local_prs_loaded {
                     self.pr_fetch_requested = Some(MainFilter::Local);
                 }
@@ -524,6 +671,7 @@ impl App {
                 self.sidebar_scroll = 0;
                 self.sidebar_offset = 0;
                 self.rebuild_entries();
+                self.snap_scroll_to_entry();
                 if !self.my_prs_loaded {
                     self.pr_fetch_requested = Some(MainFilter::MyPr);
                 }
@@ -536,6 +684,7 @@ impl App {
                 self.sidebar_scroll = 0;
                 self.sidebar_offset = 0;
                 self.rebuild_entries();
+                self.snap_scroll_to_entry();
                 if !self.review_prs_loaded {
                     self.pr_fetch_requested = Some(MainFilter::ReviewRequested);
                 }
@@ -562,6 +711,9 @@ impl App {
                     // one — stale detail bodies are risky after a refresh, and the
                     // detail pane will refetch on the next selection.
                     self.pr_detail_cache.clear();
+                    // Invalidate cross-repo worktree list caches so they re-fetch.
+                    self.wt_lists_per_repo.clear();
+                    self.wt_list_inflight.clear();
                     // Signal branches/worktrees reload + PR fetch
                     self.branches_reload_requested = true;
                     self.pr_fetch_requested = Some(self.main_filter);
@@ -584,22 +736,24 @@ impl App {
     }
 
     fn handle_main_key(&mut self, code: KeyCode) {
-        let filtered_len = self.filtered_entries().len();
         match code {
-            KeyCode::Char('j') | KeyCode::Down
-                if filtered_len > 0 && self.sidebar_scroll + 1 < filtered_len =>
-            {
-                self.sidebar_scroll += 1;
-                self.request_details_for_selection();
+            KeyCode::Char('j') | KeyCode::Down => {
+                if let Some(next) = self.next_entry_index(self.sidebar_scroll) {
+                    self.sidebar_scroll = next;
+                    self.request_details_for_selection();
+                }
             }
             KeyCode::Char('k') | KeyCode::Up if self.sidebar_scroll > 0 => {
-                self.sidebar_scroll = self.sidebar_scroll.saturating_sub(1);
-                self.request_details_for_selection();
+                if let Some(prev) = self.prev_entry_index(self.sidebar_scroll) {
+                    self.sidebar_scroll = prev;
+                    self.request_details_for_selection();
+                }
             }
             KeyCode::Char(' ') => {
                 if let Some(entry) = self.selected_entry().cloned()
                     && !entry.is_current()
                     && !self.is_protected_branch(&entry.name)
+                    && self.active_repo.as_ref() == Some(&entry.repo_id)
                 {
                     if self.branch_selected.contains(&entry.name) {
                         self.branch_selected.remove(&entry.name);
@@ -616,6 +770,7 @@ impl App {
                         (e.is_merged() || e.pr_is_merged())
                             && !e.is_current()
                             && !self.is_protected_branch(&e.name)
+                            && self.active_repo.as_ref() == Some(&e.repo_id)
                     })
                     .map(|e| e.name.clone())
                     .collect();
@@ -694,18 +849,44 @@ impl App {
                 }
             }
             KeyCode::Char('w') => {
-                if let Some(entry) = self.selected_entry()
-                    && entry.worktree.is_none()
-                    && !entry.is_current()
-                    && (entry.local_branch.is_some() || entry.pull_request.is_some())
-                    && !self
-                        .wt_inflight
-                        .contains(&self.config.worktree_path(&entry.name))
+                let Some(entry) = self.selected_entry().cloned() else {
+                    return;
+                };
+                if entry.worktree.is_some()
+                    || entry.is_current()
+                    || (entry.local_branch.is_none() && entry.pull_request.is_none())
                 {
-                    self.wt_create_requested = Some(entry.name.clone());
-                    self.notification =
-                        Some(Notification::success("Creating worktree...".to_string()));
+                    return;
                 }
+                let is_active = self.active_repo.as_ref() == Some(&entry.repo_id);
+                let clone_path: Option<std::path::PathBuf> = if is_active {
+                    None
+                } else {
+                    self.resolve_local_path(&entry.repo_id);
+                    self.repos
+                        .get(&entry.repo_id)
+                        .and_then(|m| m.local_path.clone())
+                };
+                let cross_repo_no_clone = !is_active && clone_path.is_none();
+                if cross_repo_no_clone {
+                    self.notification = Some(Notification::error(format!(
+                        "{} not cloned. Set [workspace] clone_root.",
+                        entry.repo_id
+                    )));
+                    return;
+                }
+                let wt_path = if is_active {
+                    self.config.worktree_path(&entry.name)
+                } else {
+                    // unwrap is safe: cross_repo_no_clone is false above
+                    self.config
+                        .worktree_path_for(clone_path.as_ref().unwrap(), &entry.name)
+                };
+                if self.wt_inflight.contains(&wt_path) {
+                    return;
+                }
+                self.wt_create_requested = Some((entry.repo_id.clone(), entry.name.clone()));
+                self.notification = Some(Notification::success("Creating worktree...".to_string()));
             }
             KeyCode::Enter => {
                 self.open_action_menu();
@@ -725,6 +906,7 @@ impl App {
                     self.pr_fetch_requested = Some(self.main_filter);
                     self.sidebar_scroll = 0;
                     self.sidebar_offset = 0;
+                    self.snap_scroll_to_entry();
                 }
             }
             KeyCode::Char('t') if self.main_filter == MainFilter::ReviewRequested => {
@@ -735,6 +917,7 @@ impl App {
                 self.pr_fetch_requested = Some(MainFilter::ReviewRequested);
                 self.sidebar_scroll = 0;
                 self.sidebar_offset = 0;
+                self.snap_scroll_to_entry();
             }
             KeyCode::Char('/') => {
                 self.search_pre_scroll = self.sidebar_scroll;
@@ -776,6 +959,7 @@ impl App {
                 self.search_active = false;
                 self.search_query.clear();
                 self.sidebar_scroll = self.search_pre_scroll;
+                self.snap_scroll_to_entry();
                 self.request_details_for_selection();
             }
             KeyCode::Enter => {
@@ -787,24 +971,27 @@ impl App {
                 self.search_query.pop();
                 self.sidebar_scroll = 0;
                 self.sidebar_offset = 0;
+                self.snap_scroll_to_entry();
                 self.request_details_for_selection();
             }
             KeyCode::Char(c) => {
                 self.search_query.push(c);
                 self.sidebar_scroll = 0;
                 self.sidebar_offset = 0;
+                self.snap_scroll_to_entry();
                 self.request_details_for_selection();
             }
             KeyCode::Down => {
-                let len = self.filtered_entries().len();
-                if len > 0 && self.sidebar_scroll + 1 < len {
-                    self.sidebar_scroll += 1;
+                if let Some(next) = self.next_entry_index(self.sidebar_scroll) {
+                    self.sidebar_scroll = next;
                     self.request_details_for_selection();
                 }
             }
             KeyCode::Up if self.sidebar_scroll > 0 => {
-                self.sidebar_scroll -= 1;
-                self.request_details_for_selection();
+                if let Some(prev) = self.prev_entry_index(self.sidebar_scroll) {
+                    self.sidebar_scroll = prev;
+                    self.request_details_for_selection();
+                }
             }
             _ => {}
         }
@@ -815,45 +1002,90 @@ impl App {
             Some(e) => e,
             None => return,
         };
+        let is_active_repo = self.active_repo.as_ref() == Some(&entry.repo_id);
+        let clone_path: Option<std::path::PathBuf> = if is_active_repo {
+            None // active repo runs in CWD, no clone path needed
+        } else {
+            // cross-repo: resolve once, then read
+            self.resolve_local_path(&entry.repo_id);
+            self.repos
+                .get(&entry.repo_id)
+                .and_then(|m| m.local_path.clone())
+        };
+        let cross_repo_no_clone = !is_active_repo && clone_path.is_none();
+
         let mut items = Vec::new();
+        let mut footer = None;
 
         if entry.pull_request.is_some() {
             items.push(ActionItem::OpenPrInBrowser);
         }
         items.push(ActionItem::CopyBranchName);
-        if entry.worktree.is_some() {
+
+        let wt_already_exists = entry.worktree.is_some();
+        let wt_path_for_inflight: Option<String> = if cross_repo_no_clone {
+            None
+        } else if is_active_repo {
+            Some(self.config.worktree_path(&entry.name))
+        } else if let Some(ref root) = clone_path {
+            Some(self.config.worktree_path_for(root, &entry.name))
+        } else {
+            None
+        };
+
+        if wt_already_exists {
             items.push(ActionItem::CdIntoWorktree);
         }
-        if entry.worktree.is_none()
+
+        let can_create_wt = !wt_already_exists
             && !entry.is_current()
             && (entry.local_branch.is_some() || entry.pull_request.is_some())
-            && !self
-                .wt_inflight
-                .contains(&self.config.worktree_path(&entry.name))
-        {
+            && !cross_repo_no_clone
+            && wt_path_for_inflight
+                .as_deref()
+                .map(|p| !self.wt_inflight.contains(p))
+                .unwrap_or(false);
+        if can_create_wt {
             items.push(ActionItem::CreateWorktree);
         }
-        if let Some(wt_path) = entry.worktree_path()
+
+        // DeleteWorktree is active-repo only (cross-repo wt management is OUT for v1).
+        if is_active_repo
+            && let Some(wt_path) = entry.worktree_path()
             && !entry.is_current()
             && !self.wt_inflight.contains(wt_path)
         {
             items.push(ActionItem::DeleteWorktree);
         }
-        if entry.local_branch.is_some() {
+        if is_active_repo && entry.local_branch.is_some() {
             items.push(ActionItem::CreateBranch);
         }
-        if entry.local_branch.is_some()
+        if is_active_repo
+            && entry.local_branch.is_some()
             && !entry.is_current()
             && !self.is_protected_branch(&entry.name)
         {
             items.push(ActionItem::DeleteBranch);
         }
 
+        if cross_repo_no_clone {
+            let hint_root = self
+                .clone_root
+                .as_ref()
+                .map(|p| p.display().to_string())
+                .unwrap_or_else(|| "[workspace] clone_root".to_string());
+            footer = Some(format!(
+                "{} not cloned. Clone under {hint_root}.",
+                entry.repo_id
+            ));
+        }
+
         if !items.is_empty() {
             self.action_menu = Some(ActionMenu {
                 items,
                 scroll: 0,
-                target_name: entry.name.clone(),
+                target: (entry.repo_id.clone(), entry.name.clone()),
+                footer,
             });
         }
     }
@@ -872,9 +1104,9 @@ impl App {
             }
             KeyCode::Enter => {
                 let action = menu.items[menu.scroll];
-                let target = menu.target_name.clone();
+                let (repo_id, branch_name) = menu.target.clone();
                 self.action_menu = None;
-                self.execute_action(action, &target);
+                self.execute_action(action, &repo_id, &branch_name);
             }
             KeyCode::Esc => {
                 self.action_menu = None;
@@ -883,14 +1115,24 @@ impl App {
         }
     }
 
-    fn execute_action(&mut self, action: ActionItem, target_name: &str) {
-        let entry = match self.entries.iter().find(|e| e.name == target_name).cloned() {
+    pub(crate) fn execute_action(
+        &mut self,
+        action: ActionItem,
+        repo_id: &crate::git::types::RepoId,
+        name: &str,
+    ) {
+        let entry = match self
+            .entries
+            .iter()
+            .find(|e| e.repo_id == *repo_id && e.name == name)
+            .cloned()
+        {
             Some(e) => e,
             None => return,
         };
         match action {
             ActionItem::CreateWorktree => {
-                self.wt_create_requested = Some(entry.name.clone());
+                self.wt_create_requested = Some((entry.repo_id.clone(), entry.name.clone()));
                 self.notification = Some(Notification::success("Creating worktree...".to_string()));
             }
             ActionItem::CdIntoWorktree => {
@@ -932,7 +1174,7 @@ impl App {
             }
             ActionItem::OpenPrInBrowser => {
                 if let Some(pr) = &entry.pull_request {
-                    self.open_pr_requested = Some(pr.number);
+                    self.open_pr_requested = Some((entry.repo_id.clone(), pr.number));
                 }
             }
             ActionItem::CopyBranchName => {
@@ -1019,6 +1261,29 @@ impl App {
 
     pub fn is_protected_branch(&self, name: &str) -> bool {
         self.config.protected_branches.iter().any(|b| b == name)
+    }
+
+    /// Resolve a repo's local clone path under `clone_root`. Idempotent: only
+    /// hits the filesystem once per repo. Sets `local_path_resolved = true`
+    /// regardless of outcome to prevent re-tries.
+    pub fn resolve_local_path(&mut self, id: &crate::git::types::RepoId) {
+        // Snapshot clone_root first (no borrow on self.repos held).
+        let root = self.clone_root.clone();
+        let Some(meta) = self.repos.get_mut(id) else {
+            return;
+        };
+        if meta.local_path_resolved {
+            return;
+        }
+        meta.local_path_resolved = true;
+        let Some(root) = root else {
+            return;
+        };
+        let host = id.host.as_deref().unwrap_or("github.com");
+        let candidate = root.join(host).join(&id.owner).join(&id.name);
+        if candidate.is_dir() {
+            meta.local_path = Some(candidate);
+        }
     }
 }
 
@@ -1266,6 +1531,344 @@ mod text_edit_tests {
 }
 
 #[cfg(test)]
+mod pr_detail_cache_tests {
+    use super::*;
+
+    #[test]
+    fn pr_detail_cache_keyed_by_repo_id() {
+        use crate::config::Config;
+        use crate::git::types::{PrDetail, RepoId};
+        let mut app = App::new(Config::default());
+        let id_a = RepoId {
+            host: None,
+            owner: "a".into(),
+            name: "x".into(),
+        };
+        let id_b = RepoId {
+            host: None,
+            owner: "b".into(),
+            name: "x".into(),
+        };
+        let detail_a = PrDetail {
+            number: 1,
+            title: "A".into(),
+            author: "u".into(),
+            state: "OPEN".into(),
+            body: String::new(),
+            additions: 0,
+            deletions: 0,
+            head_ref: "f".into(),
+        };
+        let detail_b = PrDetail {
+            number: 1,
+            title: "B".into(),
+            author: "u".into(),
+            state: "OPEN".into(),
+            body: String::new(),
+            additions: 0,
+            deletions: 0,
+            head_ref: "f".into(),
+        };
+        app.pr_detail_cache
+            .insert((id_a.clone(), 1), detail_a.clone());
+        app.pr_detail_cache
+            .insert((id_b.clone(), 1), detail_b.clone());
+        assert_eq!(app.pr_detail_cache.len(), 2);
+        assert_eq!(app.pr_detail_cache.get(&(id_a, 1)).unwrap().title, "A");
+        assert_eq!(app.pr_detail_cache.get(&(id_b, 1)).unwrap().title, "B");
+    }
+}
+
+#[cfg(test)]
+mod resolve_local_path_tests {
+    use super::*;
+
+    #[test]
+    fn resolve_local_path_ghq_layout_hits() {
+        use crate::config::Config;
+        use crate::git::types::RepoId;
+        let tmp = tempfile::tempdir().unwrap();
+        let host_dir = tmp.path().join("github.com").join("owner").join("name");
+        std::fs::create_dir_all(&host_dir).unwrap();
+
+        let mut app = App::new(Config::default());
+        app.clone_root = Some(tmp.path().to_path_buf());
+        let id = RepoId {
+            host: None,
+            owner: "owner".into(),
+            name: "name".into(),
+        };
+        app.repos.insert(
+            id.clone(),
+            crate::git::types::RepoMeta {
+                local_path: None,
+                local_path_resolved: false,
+            },
+        );
+        app.resolve_local_path(&id);
+        let meta = app.repos.get(&id).unwrap();
+        assert!(meta.local_path_resolved);
+        assert_eq!(meta.local_path.as_ref().unwrap(), &host_dir);
+    }
+
+    #[test]
+    fn resolve_local_path_misses_when_dir_absent() {
+        use crate::config::Config;
+        use crate::git::types::RepoId;
+        let tmp = tempfile::tempdir().unwrap();
+        let mut app = App::new(Config::default());
+        app.clone_root = Some(tmp.path().to_path_buf());
+        let id = RepoId {
+            host: None,
+            owner: "x".into(),
+            name: "y".into(),
+        };
+        app.repos.insert(
+            id.clone(),
+            crate::git::types::RepoMeta {
+                local_path: None,
+                local_path_resolved: false,
+            },
+        );
+        app.resolve_local_path(&id);
+        let meta = app.repos.get(&id).unwrap();
+        assert!(meta.local_path_resolved);
+        assert!(meta.local_path.is_none());
+    }
+}
+
+#[cfg(test)]
+mod cursor_skip_tests {
+    use super::*;
+
+    #[test]
+    fn cursor_moves_skips_headers_in_grouped_view() {
+        use crate::app::SidebarRow;
+        use crate::config::Config;
+        use crate::git::types::{BranchEntry, PullRequest, RepoId};
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        let mut app = App::new(Config::default());
+        let active = RepoId {
+            host: None,
+            owner: "a".into(),
+            name: "x".into(),
+        };
+        let other = RepoId {
+            host: None,
+            owner: "b".into(),
+            name: "y".into(),
+        };
+        app.active_repo = Some(active.clone());
+        app.main_filter = MainFilter::ReviewRequested;
+        let make_pr = |num: u64, head: &str, repo: &RepoId| PullRequest {
+            number: num,
+            title: "t".into(),
+            author: "u".into(),
+            state: "OPEN".into(),
+            head_ref: head.into(),
+            updated_at: "2024".into(),
+            is_draft: false,
+            review_requests: vec![],
+            latest_reviews: vec![],
+            review_status: None,
+            repo_id: repo.clone(),
+        };
+        app.entries = vec![
+            BranchEntry {
+                name: "e1".into(),
+                repo_id: active.clone(),
+                local_branch: None,
+                worktree: None,
+                pull_request: Some(make_pr(1, "e1", &active)),
+                git_status: None,
+            },
+            BranchEntry {
+                name: "e2".into(),
+                repo_id: other.clone(),
+                local_branch: None,
+                worktree: None,
+                pull_request: Some(make_pr(2, "e2", &other)),
+                git_status: None,
+            },
+        ];
+        // rows = [Header(active), Entry(e1), Header(other), Entry(e2)] → indices 0..=3
+        // Initial: snap to first Entry (= 1)
+        app.snap_scroll_to_entry();
+        assert_eq!(app.sidebar_scroll, 1);
+
+        // j → should jump from index 1 to index 3 (skip Header at index 2)
+        app.handle_key(KeyEvent::new(KeyCode::Char('j'), KeyModifiers::NONE));
+        let rows = app.sidebar_rows();
+        assert_eq!(app.sidebar_scroll, 3);
+        assert!(matches!(rows[app.sidebar_scroll], SidebarRow::Entry(_)));
+
+        // k → should jump back from 3 to 1
+        app.handle_key(KeyEvent::new(KeyCode::Char('k'), KeyModifiers::NONE));
+        let rows = app.sidebar_rows();
+        assert_eq!(app.sidebar_scroll, 1);
+        assert!(matches!(rows[app.sidebar_scroll], SidebarRow::Entry(_)));
+    }
+}
+
+#[cfg(test)]
+mod sidebar_rows_tests {
+    use super::*;
+
+    #[test]
+    fn render_rows_groups_when_multi_repo() {
+        use crate::app::SidebarRow;
+        use crate::config::Config;
+        use crate::git::types::{BranchEntry, PullRequest, RepoId};
+        let mut app = App::new(Config::default());
+        let active = RepoId {
+            host: None,
+            owner: "a".into(),
+            name: "r1".into(),
+        };
+        let other = RepoId {
+            host: None,
+            owner: "b".into(),
+            name: "r2".into(),
+        };
+        app.active_repo = Some(active.clone());
+        app.main_filter = MainFilter::ReviewRequested;
+        let make_pr = |num: u64, head: &str, repo: &RepoId| PullRequest {
+            number: num,
+            title: "x".into(),
+            author: "u".into(),
+            state: "OPEN".into(),
+            head_ref: head.into(),
+            updated_at: "2024".into(),
+            is_draft: false,
+            review_requests: vec![],
+            latest_reviews: vec![],
+            review_status: None,
+            repo_id: repo.clone(),
+        };
+        app.entries = vec![
+            BranchEntry {
+                name: "f1".into(),
+                repo_id: active.clone(),
+                local_branch: None,
+                worktree: None,
+                pull_request: Some(make_pr(1, "f1", &active)),
+                git_status: None,
+            },
+            BranchEntry {
+                name: "f2".into(),
+                repo_id: other.clone(),
+                local_branch: None,
+                worktree: None,
+                pull_request: Some(make_pr(2, "f2", &other)),
+                git_status: None,
+            },
+        ];
+        let rows = app.sidebar_rows();
+        let header_count = rows
+            .iter()
+            .filter(|r| matches!(r, SidebarRow::Header { .. }))
+            .count();
+        let entry_count = rows
+            .iter()
+            .filter(|r| matches!(r, SidebarRow::Entry(_)))
+            .count();
+        assert_eq!(header_count, 2);
+        assert_eq!(entry_count, 2);
+    }
+
+    #[test]
+    fn render_rows_no_headers_when_single_repo() {
+        use crate::app::SidebarRow;
+        use crate::config::Config;
+        use crate::git::types::{BranchEntry, PullRequest, RepoId};
+        let mut app = App::new(Config::default());
+        let active = RepoId {
+            host: None,
+            owner: "a".into(),
+            name: "r1".into(),
+        };
+        app.active_repo = Some(active.clone());
+        app.main_filter = MainFilter::ReviewRequested;
+        let make_pr = |num: u64, head: &str| PullRequest {
+            number: num,
+            title: "x".into(),
+            author: "u".into(),
+            state: "OPEN".into(),
+            head_ref: head.into(),
+            updated_at: "2024".into(),
+            is_draft: false,
+            review_requests: vec![],
+            latest_reviews: vec![],
+            review_status: None,
+            repo_id: active.clone(),
+        };
+        app.entries = vec![
+            BranchEntry {
+                name: "f1".into(),
+                repo_id: active.clone(),
+                local_branch: None,
+                worktree: None,
+                pull_request: Some(make_pr(1, "f1")),
+                git_status: None,
+            },
+            BranchEntry {
+                name: "f2".into(),
+                repo_id: active.clone(),
+                local_branch: None,
+                worktree: None,
+                pull_request: Some(make_pr(2, "f2")),
+                git_status: None,
+            },
+        ];
+        let rows = app.sidebar_rows();
+        assert_eq!(
+            rows.iter()
+                .filter(|r| matches!(r, SidebarRow::Header { .. }))
+                .count(),
+            0
+        );
+        assert_eq!(rows.len(), 2);
+    }
+
+    #[test]
+    fn render_rows_local_filter_never_groups() {
+        use crate::app::SidebarRow;
+        use crate::config::Config;
+        use crate::git::types::{BranchEntry, RepoId};
+        let mut app = App::new(Config::default());
+        let active = RepoId {
+            host: None,
+            owner: "a".into(),
+            name: "r1".into(),
+        };
+        app.active_repo = Some(active.clone());
+        app.main_filter = MainFilter::Local;
+        // Local mode: filtered_entries requires has_local. Give entries a local branch.
+        let make_branch = |name: &str| crate::git::types::Branch {
+            name: name.into(),
+            is_current: false,
+            upstream: None,
+            is_merged: false,
+        };
+        app.entries = vec![BranchEntry {
+            name: "f1".into(),
+            repo_id: active.clone(),
+            local_branch: Some(make_branch("f1")),
+            worktree: None,
+            pull_request: None,
+            git_status: None,
+        }];
+        let rows = app.sidebar_rows();
+        assert_eq!(
+            rows.iter()
+                .filter(|r| matches!(r, SidebarRow::Header { .. }))
+                .count(),
+            0
+        );
+    }
+}
+
+#[cfg(test)]
 mod bulk_delete_message_tests {
     use super::compose_bulk_delete_message;
 
@@ -1323,5 +1926,313 @@ mod bulk_delete_message_tests {
             compose_bulk_delete_message(1, 1, 0, "a"),
             "Delete 1 branch + 1 worktree?\n[a]"
         );
+    }
+}
+
+#[cfg(test)]
+mod action_menu_cross_repo_tests {
+    use super::*;
+
+    #[test]
+    fn action_menu_cross_repo_no_clone_excludes_worktree_actions() {
+        use crate::app::ActionItem;
+        use crate::config::Config;
+        use crate::git::types::{BranchEntry, PullRequest, RepoId, RepoMeta};
+        let mut app = App::new(Config::default());
+        let active = RepoId {
+            host: None,
+            owner: "a".into(),
+            name: "x".into(),
+        };
+        let other = RepoId {
+            host: None,
+            owner: "b".into(),
+            name: "y".into(),
+        };
+        app.active_repo = Some(active.clone());
+        app.repos.insert(
+            other.clone(),
+            RepoMeta {
+                local_path: None,
+                local_path_resolved: true,
+            },
+        );
+        app.main_filter = MainFilter::ReviewRequested;
+        app.entries = vec![BranchEntry {
+            name: "feat".into(),
+            repo_id: other.clone(),
+            local_branch: None,
+            worktree: None,
+            pull_request: Some(PullRequest {
+                number: 1,
+                title: "x".into(),
+                author: "u".into(),
+                state: "OPEN".into(),
+                head_ref: "feat".into(),
+                updated_at: "2024".into(),
+                is_draft: false,
+                review_requests: vec![],
+                latest_reviews: vec![],
+                review_status: None,
+                repo_id: other.clone(),
+            }),
+            git_status: None,
+        }];
+        app.snap_scroll_to_entry();
+        app.open_action_menu();
+        let menu = app.action_menu.as_ref().unwrap();
+        assert!(menu.items.contains(&ActionItem::OpenPrInBrowser));
+        assert!(menu.items.contains(&ActionItem::CopyBranchName));
+        assert!(!menu.items.contains(&ActionItem::CreateWorktree));
+        assert!(!menu.items.contains(&ActionItem::DeleteBranch));
+        assert!(menu.footer.is_some());
+        assert!(menu.footer.as_ref().unwrap().contains("not cloned"));
+    }
+
+    #[test]
+    fn action_menu_cross_repo_with_clone_enables_worktree_create() {
+        use crate::app::ActionItem;
+        use crate::config::Config;
+        use crate::git::types::{BranchEntry, PullRequest, RepoId, RepoMeta};
+        let mut app = App::new(Config::default());
+        let active = RepoId {
+            host: None,
+            owner: "a".into(),
+            name: "x".into(),
+        };
+        let other = RepoId {
+            host: None,
+            owner: "b".into(),
+            name: "y".into(),
+        };
+        let tmp = tempfile::tempdir().unwrap();
+        let clone_path = tmp.path().join("github.com").join("b").join("y");
+        std::fs::create_dir_all(&clone_path).unwrap();
+        app.active_repo = Some(active.clone());
+        app.repos.insert(
+            other.clone(),
+            RepoMeta {
+                local_path: Some(clone_path),
+                local_path_resolved: true,
+            },
+        );
+        app.main_filter = MainFilter::ReviewRequested;
+        app.entries = vec![BranchEntry {
+            name: "feat".into(),
+            repo_id: other.clone(),
+            local_branch: None,
+            worktree: None,
+            pull_request: Some(PullRequest {
+                number: 1,
+                title: "x".into(),
+                author: "u".into(),
+                state: "OPEN".into(),
+                head_ref: "feat".into(),
+                updated_at: "2024".into(),
+                is_draft: false,
+                review_requests: vec![],
+                latest_reviews: vec![],
+                review_status: None,
+                repo_id: other.clone(),
+            }),
+            git_status: None,
+        }];
+        app.snap_scroll_to_entry();
+        app.open_action_menu();
+        let menu = app.action_menu.as_ref().unwrap();
+        assert!(menu.items.contains(&ActionItem::CreateWorktree));
+        assert!(menu.footer.is_none());
+    }
+
+    #[test]
+    fn cd_into_worktree_cross_repo_uses_absolute_path() {
+        use crate::app::ActionItem;
+        use crate::config::Config;
+        use crate::git::types::{BranchEntry, RepoId, Worktree};
+        let mut app = App::new(Config::default());
+        let active = RepoId {
+            host: None,
+            owner: "a".into(),
+            name: "x".into(),
+        };
+        let other = RepoId {
+            host: None,
+            owner: "b".into(),
+            name: "y".into(),
+        };
+        app.active_repo = Some(active);
+        app.entries = vec![BranchEntry {
+            name: "feat".into(),
+            repo_id: other.clone(),
+            local_branch: None,
+            worktree: Some(Worktree {
+                path: "/tmp/clones/b/feat".into(),
+                head: "abc".into(),
+                branch: Some("feat".into()),
+                is_bare: false,
+            }),
+            pull_request: None,
+            git_status: None,
+        }];
+        app.snap_scroll_to_entry();
+        app.execute_action(ActionItem::CdIntoWorktree, &other, "feat");
+        assert_eq!(app.cd_path.as_deref(), Some("/tmp/clones/b/feat"));
+        assert!(app.should_quit);
+    }
+
+    #[test]
+    fn execute_action_targets_correct_repo_when_branch_names_collide() {
+        use crate::app::ActionItem;
+        use crate::config::Config;
+        use crate::git::types::{Branch, BranchEntry, PullRequest, RepoId, Worktree};
+        let mut app = App::new(Config::default());
+        let active = RepoId {
+            host: None,
+            owner: "active".into(),
+            name: "x".into(),
+        };
+        let other = RepoId {
+            host: None,
+            owner: "other".into(),
+            name: "y".into(),
+        };
+        app.active_repo = Some(active.clone());
+
+        // Active repo has a local branch called feature/auth
+        let active_entry = BranchEntry {
+            name: "feature/auth".into(),
+            repo_id: active.clone(),
+            local_branch: Some(Branch {
+                name: "feature/auth".into(),
+                is_current: false,
+                upstream: None,
+                is_merged: false,
+            }),
+            worktree: None,
+            pull_request: None,
+            git_status: None,
+        };
+        // Cross-repo also has a PR on feature/auth, with a known worktree
+        let cross_entry = BranchEntry {
+            name: "feature/auth".into(),
+            repo_id: other.clone(),
+            local_branch: None,
+            worktree: Some(Worktree {
+                path: "/cross/repo/feature/auth".into(),
+                head: "abc".into(),
+                branch: Some("feature/auth".into()),
+                is_bare: false,
+            }),
+            pull_request: Some(PullRequest {
+                number: 7,
+                title: "x".into(),
+                author: "u".into(),
+                state: "OPEN".into(),
+                head_ref: "feature/auth".into(),
+                updated_at: "2024".into(),
+                is_draft: false,
+                review_requests: vec![],
+                latest_reviews: vec![],
+                review_status: None,
+                repo_id: other.clone(),
+            }),
+            git_status: None,
+        };
+        // Active repo first per merge_entries sort
+        app.entries = vec![active_entry, cross_entry];
+
+        // Dispatch CdIntoWorktree targeting cross-repo branch.
+        // The tuple-based execute_action must NOT pick the active-repo entry.
+        app.execute_action(ActionItem::CdIntoWorktree, &other, "feature/auth");
+        assert_eq!(app.cd_path.as_deref(), Some("/cross/repo/feature/auth"));
+    }
+}
+
+#[cfg(test)]
+mod wt_list_lazy_load_tests {
+    use super::*;
+
+    #[test]
+    fn selecting_cross_repo_entry_signals_wt_list_load() {
+        use crate::config::Config;
+        use crate::git::types::{BranchEntry, PullRequest, RepoId, RepoMeta};
+        let tmp = tempfile::tempdir().unwrap();
+        let clone_path = tmp.path().join("github.com").join("b").join("y");
+        std::fs::create_dir_all(&clone_path).unwrap();
+
+        let mut app = App::new(Config::default());
+        let active = RepoId {
+            host: None,
+            owner: "a".into(),
+            name: "x".into(),
+        };
+        let other = RepoId {
+            host: None,
+            owner: "b".into(),
+            name: "y".into(),
+        };
+        app.active_repo = Some(active);
+        app.clone_root = Some(tmp.path().to_path_buf());
+        app.repos.insert(
+            other.clone(),
+            RepoMeta {
+                local_path: None,
+                local_path_resolved: false,
+            },
+        );
+        app.main_filter = MainFilter::ReviewRequested;
+        app.entries = vec![BranchEntry {
+            name: "feat".into(),
+            repo_id: other.clone(),
+            local_branch: None,
+            worktree: None,
+            pull_request: Some(PullRequest {
+                number: 1,
+                title: "x".into(),
+                author: "u".into(),
+                state: "OPEN".into(),
+                head_ref: "feat".into(),
+                updated_at: "2024".into(),
+                is_draft: false,
+                review_requests: vec![],
+                latest_reviews: vec![],
+                review_status: None,
+                repo_id: other.clone(),
+            }),
+            git_status: None,
+        }];
+        app.snap_scroll_to_entry();
+        app.request_details_for_selection();
+        assert_eq!(app.wt_list_requested.as_ref(), Some(&other));
+    }
+
+    #[test]
+    fn selecting_active_repo_entry_does_not_signal_wt_list_load() {
+        use crate::config::Config;
+        use crate::git::types::{BranchEntry, RepoId};
+        let mut app = App::new(Config::default());
+        let active = RepoId {
+            host: None,
+            owner: "a".into(),
+            name: "x".into(),
+        };
+        app.active_repo = Some(active.clone());
+        let make_branch = |name: &str| crate::git::types::Branch {
+            name: name.into(),
+            is_current: false,
+            upstream: None,
+            is_merged: false,
+        };
+        app.entries = vec![BranchEntry {
+            name: "feat".into(),
+            repo_id: active.clone(),
+            local_branch: Some(make_branch("feat")),
+            worktree: None,
+            pull_request: None,
+            git_status: None,
+        }];
+        app.snap_scroll_to_entry();
+        app.request_details_for_selection();
+        assert!(app.wt_list_requested.is_none());
     }
 }
