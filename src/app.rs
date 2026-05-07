@@ -258,8 +258,11 @@ pub struct App {
     // Cross-repo context (set at startup)
     #[allow(dead_code)]
     pub active_repo: Option<crate::git::types::RepoId>,
-    #[allow(dead_code)]
     pub clone_root: Option<std::path::PathBuf>,
+
+    // Per-repo metadata (populated lazily as repos are selected)
+    #[allow(dead_code)]
+    pub repos: std::collections::HashMap<crate::git::types::RepoId, crate::git::types::RepoMeta>,
 }
 
 impl App {
@@ -323,6 +326,7 @@ impl App {
             config,
             active_repo: None,
             clone_root: None,
+            repos: HashMap::new(),
         }
     }
 
@@ -1028,6 +1032,30 @@ impl App {
     pub fn is_protected_branch(&self, name: &str) -> bool {
         self.config.protected_branches.iter().any(|b| b == name)
     }
+
+    /// Resolve a repo's local clone path under `clone_root`. Idempotent: only
+    /// hits the filesystem once per repo. Sets `local_path_resolved = true`
+    /// regardless of outcome to prevent re-tries.
+    #[allow(dead_code)]
+    pub fn resolve_local_path(&mut self, id: &crate::git::types::RepoId) {
+        // Snapshot clone_root first (no borrow on self.repos held).
+        let root = self.clone_root.clone();
+        let Some(meta) = self.repos.get_mut(id) else {
+            return;
+        };
+        if meta.local_path_resolved {
+            return;
+        }
+        meta.local_path_resolved = true;
+        let Some(root) = root else {
+            return;
+        };
+        let host = id.host.as_deref().unwrap_or("github.com");
+        let candidate = root.join(host).join(&id.owner).join(&id.name);
+        if candidate.is_dir() {
+            meta.local_path = Some(candidate);
+        }
+    }
 }
 
 fn insert_char_at(s: &mut String, char_idx: usize, c: char) {
@@ -1270,6 +1298,66 @@ mod text_edit_tests {
             crossterm::event::KeyModifiers::NONE,
         ));
         assert!(app.should_quit);
+    }
+}
+
+#[cfg(test)]
+mod resolve_local_path_tests {
+    use super::*;
+
+    #[test]
+    fn resolve_local_path_ghq_layout_hits() {
+        use crate::config::Config;
+        use crate::git::types::RepoId;
+        let tmp = tempfile::tempdir().unwrap();
+        let host_dir = tmp.path().join("github.com").join("owner").join("name");
+        std::fs::create_dir_all(&host_dir).unwrap();
+
+        let mut app = App::new(Config::default());
+        app.clone_root = Some(tmp.path().to_path_buf());
+        let id = RepoId {
+            host: None,
+            owner: "owner".into(),
+            name: "name".into(),
+        };
+        app.repos.insert(
+            id.clone(),
+            crate::git::types::RepoMeta {
+                id: id.clone(),
+                local_path: None,
+                local_path_resolved: false,
+            },
+        );
+        app.resolve_local_path(&id);
+        let meta = app.repos.get(&id).unwrap();
+        assert!(meta.local_path_resolved);
+        assert_eq!(meta.local_path.as_ref().unwrap(), &host_dir);
+    }
+
+    #[test]
+    fn resolve_local_path_misses_when_dir_absent() {
+        use crate::config::Config;
+        use crate::git::types::RepoId;
+        let tmp = tempfile::tempdir().unwrap();
+        let mut app = App::new(Config::default());
+        app.clone_root = Some(tmp.path().to_path_buf());
+        let id = RepoId {
+            host: None,
+            owner: "x".into(),
+            name: "y".into(),
+        };
+        app.repos.insert(
+            id.clone(),
+            crate::git::types::RepoMeta {
+                id: id.clone(),
+                local_path: None,
+                local_path_resolved: false,
+            },
+        );
+        app.resolve_local_path(&id);
+        let meta = app.repos.get(&id).unwrap();
+        assert!(meta.local_path_resolved);
+        assert!(meta.local_path.is_none());
     }
 }
 
