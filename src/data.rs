@@ -341,6 +341,8 @@ fn host_from_url(url: &str) -> Option<String> {
 
 // gh api graphql does not accept --hostname here; v1 supports github.com only.
 // Cross-host (GHE) PR aggregation will require routing through per-host gh config.
+// TODO(future): GitHub's search index supports up to 1000 results; if very active
+// reviewers report missing PRs, paginate via search.pageInfo.endCursor.
 async fn fetch_search_prs(query_str: &str, limit: u32) -> (Vec<PullRequest>, Vec<String>) {
     let escaped_query = query_str.replace('\\', "\\\\").replace('"', "\\\"");
     let query = format!(
@@ -381,6 +383,8 @@ pub async fn fetch_my_prs(show_merged: bool) -> (Vec<PullRequest>, Vec<String>) 
     }
     // When show_merged is on we lose the OPEN-only narrowing, so widen the limit
     // to compensate (the previous fetch_pr_list returned 100 open + 50 merged).
+    // TODO(future): GitHub's search index supports up to 1000 results; if very active
+    // reviewers report missing PRs, paginate via search.pageInfo.endCursor.
     let limit = if show_merged { 150 } else { 100 };
     let (mut prs, errors) = fetch_search_prs(&q, limit).await;
     prs.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));

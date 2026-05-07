@@ -138,6 +138,10 @@ pub async fn run_git_in(cwd: &Path, args: &[&str]) -> Result<String> {
     run_git_in_with_id(cwd, None, args).await
 }
 
+// TODO(future): run_gh_in / run_gh_in_with_id are scaffolding for cross-repo gh actions
+// (e.g. gh CLI invocations against a specific clone). Used selectively today; v1 doesn't
+// need all of them.
+
 /// Run `gh <args>` with `current_dir(cwd)` for repo-specific operations.
 #[allow(dead_code)]
 pub async fn run_gh_in(cwd: &Path, args: &[&str]) -> Result<String> {
