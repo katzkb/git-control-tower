@@ -30,6 +30,10 @@ A terminal UI tool that acts as a "control tower" for Git/GitHub workflows. Over
 
 ![Worktree hooks demo](docs/images/f3-hooks.gif)
 
+**Cross-repo Reviews** — `Review` mode aggregates PRs across every repo you're involved in; the sidebar groups by repo and the action menu hints at uncloned repos.
+
+![Cross-repo Reviews demo](docs/images/f4-cross-repo.gif)
+
 ## Requirements
 
 - [git](https://git-scm.com/) CLI
@@ -204,7 +208,7 @@ The README's GIFs are produced by [VHS](https://github.com/charmbracelet/vhs) ag
 
 ```bash
 brew install vhs        # one-time
-make demos              # rebuild gct + re-record all four GIFs
+make demos              # rebuild gct + re-record all five GIFs
 make demos-hero         # one scene at a time
 ```
 
