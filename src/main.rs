@@ -414,6 +414,17 @@ async fn run(
     }
     .or_else(|| app.config.workspace.clone_root_expanded());
 
+    // Seed repos with the active repo immediately (local_path and resolved flag known now).
+    if let Some(id) = app.active_repo.clone() {
+        app.repos
+            .entry(id.clone())
+            .or_insert_with(|| crate::git::types::RepoMeta {
+                id,
+                local_path: active_root.clone(),
+                local_path_resolved: true,
+            });
+    }
+
     // Phase 1: Fast local loads (blocking, ~170ms)
     if let Ok(output) = run_git(LOG_ARGS).await {
         app.commits = parse_log(&output);
@@ -725,6 +736,15 @@ async fn run(
                             }
                         }
                     }
+                    for pr in &app.local_prs {
+                        app.repos.entry(pr.repo_id.clone()).or_insert_with(|| {
+                            crate::git::types::RepoMeta {
+                                id: pr.repo_id.clone(),
+                                local_path: None,
+                                local_path_resolved: false,
+                            }
+                        });
+                    }
                     if app.main_filter == MainFilter::Local {
                         let active = app.active_repo.clone().unwrap_or_default();
                         app.entries = merge_entries(
@@ -750,6 +770,15 @@ async fn run(
                                 app.verbose_errors.push(e);
                             }
                         }
+                    }
+                    for pr in &app.my_prs {
+                        app.repos.entry(pr.repo_id.clone()).or_insert_with(|| {
+                            crate::git::types::RepoMeta {
+                                id: pr.repo_id.clone(),
+                                local_path: None,
+                                local_path_resolved: false,
+                            }
+                        });
                     }
                     if app.main_filter == MainFilter::MyPr {
                         let active = app.active_repo.clone().unwrap_or_default();
@@ -779,6 +808,15 @@ async fn run(
                                 app.verbose_errors.push(e);
                             }
                         }
+                    }
+                    for pr in &app.review_prs {
+                        app.repos.entry(pr.repo_id.clone()).or_insert_with(|| {
+                            crate::git::types::RepoMeta {
+                                id: pr.repo_id.clone(),
+                                local_path: None,
+                                local_path_resolved: false,
+                            }
+                        });
                     }
                     if app.main_filter == MainFilter::ReviewRequested {
                         let active = app.active_repo.clone().unwrap_or_default();
