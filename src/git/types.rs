@@ -1,4 +1,23 @@
+use std::fmt;
+
 use serde::Deserialize;
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct RepoId {
+    /// `None` means github.com (canonical default for GitHub Enterprise omitted).
+    pub host: Option<String>,
+    pub owner: String,
+    pub name: String,
+}
+
+impl fmt::Display for RepoId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match &self.host {
+            None => write!(f, "{}/{}", self.owner, self.name),
+            Some(host) => write!(f, "{}/{}@{}", self.owner, self.name, host),
+        }
+    }
+}
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum ReviewStatus {
@@ -156,4 +175,53 @@ pub struct GitStatus {
     pub staged: Vec<String>,
     pub ahead: u32,
     pub behind: u32,
+}
+
+#[cfg(test)]
+mod repo_id_tests {
+    use super::*;
+
+    #[test]
+    fn display_github_dot_com() {
+        let id = RepoId {
+            host: None,
+            owner: "katzkb".into(),
+            name: "git-control-tower".into(),
+        };
+        assert_eq!(id.to_string(), "katzkb/git-control-tower");
+    }
+
+    #[test]
+    fn display_ghe_host() {
+        let id = RepoId {
+            host: Some("ghe.company.com".into()),
+            owner: "org".into(),
+            name: "repo".into(),
+        };
+        assert_eq!(id.to_string(), "org/repo@ghe.company.com");
+    }
+
+    #[test]
+    fn equality_and_hash() {
+        use std::collections::HashSet;
+        let a = RepoId {
+            host: None,
+            owner: "a".into(),
+            name: "b".into(),
+        };
+        let b = RepoId {
+            host: None,
+            owner: "a".into(),
+            name: "b".into(),
+        };
+        let c = RepoId {
+            host: None,
+            owner: "a".into(),
+            name: "c".into(),
+        };
+        let mut set = HashSet::new();
+        set.insert(a);
+        assert!(set.contains(&b));
+        assert!(!set.contains(&c));
+    }
 }

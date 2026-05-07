@@ -28,7 +28,7 @@ use crate::data::merge_entries;
 use crate::event::{Event, EventHandler};
 use crate::git::command::{run_gh, run_git};
 use crate::git::parser::{parse_branches, parse_log, parse_worktrees};
-use crate::git::types::{GitStatus, PrDetail, PullRequest, ReviewStatus};
+use crate::git::types::{GitStatus, PrDetail, PullRequest, RepoId, ReviewStatus};
 use crate::ui::notification::Notification;
 
 /// Args used for fetching commits in the Log view (startup + `r` refresh).
@@ -39,12 +39,6 @@ const LOG_ARGS: &[&str] = &[
     "-n",
     "200",
 ];
-
-struct RepoInfo {
-    owner: String,
-    repo: String,
-    hostname: Option<String>, // None for github.com
-}
 
 enum AsyncResult {
     PrDetail(PrDetail),
@@ -410,7 +404,7 @@ async fn run(
     app.request_details_for_selection();
 
     // Phase 2: Slow network loads (background, non-blocking)
-    let gh_hostname = repo_info.as_ref().and_then(|r| r.hostname.clone());
+    let gh_hostname = repo_info.as_ref().and_then(|r| r.host.clone());
 
     let tx_user = tx.clone();
     let hostname_for_user = gh_hostname.clone();
@@ -444,8 +438,8 @@ async fn run(
         let tx_local = tx.clone();
         let branch_names: Vec<String> = app.branches.iter().map(|b| b.name.clone()).collect();
         let owner = info.owner.clone();
-        let repo = info.repo.clone();
-        let hostname = info.hostname.clone();
+        let repo = info.name.clone();
+        let hostname = info.host.clone();
         tokio::spawn(async move {
             let (prs, errors) =
                 data::fetch_local_prs(&branch_names, &owner, &repo, hostname.as_deref()).await;
@@ -549,8 +543,8 @@ async fn run(
                         let branch_names: Vec<String> =
                             app.branches.iter().map(|b| b.name.clone()).collect();
                         let owner = info.owner.clone();
-                        let repo = info.repo.clone();
-                        let hostname = info.hostname.clone();
+                        let repo = info.name.clone();
+                        let hostname = info.host.clone();
                         tokio::spawn(async move {
                             let (prs, errors) = data::fetch_local_prs(
                                 &branch_names,
@@ -1287,8 +1281,8 @@ fn compute_review_status(pr: &PullRequest, gh_user: &str) -> ReviewStatus {
     ReviewStatus::NeedsReview
 }
 
-/// Extract owner, repo, and hostname from a git remote URL.
-fn extract_repo_info(remote_url: &str) -> Option<RepoInfo> {
+/// Parse a git remote URL into a `RepoId` (owner, name, host).
+fn extract_repo_info(remote_url: &str) -> Option<RepoId> {
     let hostname = extract_gh_hostname(remote_url)?;
     let gh_hostname = if hostname == "github.com" {
         None
@@ -1326,10 +1320,10 @@ fn extract_repo_info(remote_url: &str) -> Option<RepoInfo> {
         return None;
     }
 
-    Some(RepoInfo {
+    Some(RepoId {
         owner: parts[0].to_string(),
-        repo: parts[1].to_string(),
-        hostname: gh_hostname,
+        name: parts[1].to_string(),
+        host: gh_hostname,
     })
 }
 
@@ -1429,40 +1423,40 @@ mod tests {
     fn test_extract_repo_info_ssh() {
         let info = extract_repo_info("git@github.com:katzkb/repo.git").unwrap();
         assert_eq!(info.owner, "katzkb");
-        assert_eq!(info.repo, "repo");
-        assert!(info.hostname.is_none()); // github.com → None
+        assert_eq!(info.name, "repo");
+        assert!(info.host.is_none()); // github.com → None
     }
 
     #[test]
     fn test_extract_repo_info_ghe() {
         let info = extract_repo_info("git@ghe.company.com:org/repo.git").unwrap();
         assert_eq!(info.owner, "org");
-        assert_eq!(info.repo, "repo");
-        assert_eq!(info.hostname.as_deref(), Some("ghe.company.com"));
+        assert_eq!(info.name, "repo");
+        assert_eq!(info.host.as_deref(), Some("ghe.company.com"));
     }
 
     #[test]
     fn test_extract_repo_info_https() {
         let info = extract_repo_info("https://github.com/katzkb/repo.git").unwrap();
         assert_eq!(info.owner, "katzkb");
-        assert_eq!(info.repo, "repo");
-        assert!(info.hostname.is_none());
+        assert_eq!(info.name, "repo");
+        assert!(info.host.is_none());
     }
 
     #[test]
     fn test_extract_repo_info_ssh_url() {
         let info = extract_repo_info("ssh://git@ghe.company.com/org/repo.git").unwrap();
         assert_eq!(info.owner, "org");
-        assert_eq!(info.repo, "repo");
-        assert_eq!(info.hostname.as_deref(), Some("ghe.company.com"));
+        assert_eq!(info.name, "repo");
+        assert_eq!(info.host.as_deref(), Some("ghe.company.com"));
     }
 
     #[test]
     fn test_extract_repo_info_ssh_url_with_port() {
         let info = extract_repo_info("ssh://git@ghe.company.com:2222/org/repo.git").unwrap();
         assert_eq!(info.owner, "org");
-        assert_eq!(info.repo, "repo");
-        assert_eq!(info.hostname.as_deref(), Some("ghe.company.com"));
+        assert_eq!(info.name, "repo");
+        assert_eq!(info.host.as_deref(), Some("ghe.company.com"));
     }
 
     #[test]
