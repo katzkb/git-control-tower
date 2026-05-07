@@ -66,7 +66,9 @@ impl ActionItem {
 pub struct ActionMenu {
     pub items: Vec<ActionItem>,
     pub scroll: usize,
-    pub target_name: String, // branch name captured when menu was opened
+    /// `(repo_id, branch_name)` captured when the menu was opened. Carrying
+    /// both fields prevents wrong-repo lookup when two repos share a branch name.
+    pub target: (crate::git::types::RepoId, String),
     pub footer: Option<String>,
 }
 
@@ -241,7 +243,9 @@ pub struct App {
     pub wt_force_delete_requested: Option<String>,
     pub wt_force_delete_pending_path: Option<String>,
     pub wt_cd_pending_path: Option<String>,
-    pub wt_create_requested: Option<String>,
+    /// `(repo_id, branch_name)` for the worktree to create. Carries `RepoId` so
+    /// the main-loop lookup matches the correct repo when branch names collide.
+    pub wt_create_requested: Option<(crate::git::types::RepoId, String)>,
     /// Worktree paths with an in-flight create/delete, gated per-path so unrelated
     /// worktrees stay actionable in the UI while one is still running.
     pub wt_inflight: HashSet<String>,
@@ -866,7 +870,7 @@ impl App {
                 if self.wt_inflight.contains(&wt_path) {
                     return;
                 }
-                self.wt_create_requested = Some(entry.name.clone());
+                self.wt_create_requested = Some((entry.repo_id.clone(), entry.name.clone()));
                 self.notification = Some(Notification::success("Creating worktree...".to_string()));
             }
             KeyCode::Enter => {
@@ -1070,7 +1074,7 @@ impl App {
             self.action_menu = Some(ActionMenu {
                 items,
                 scroll: 0,
-                target_name: entry.name.clone(),
+                target: (entry.repo_id.clone(), entry.name.clone()),
                 footer,
             });
         }
@@ -1090,9 +1094,9 @@ impl App {
             }
             KeyCode::Enter => {
                 let action = menu.items[menu.scroll];
-                let target = menu.target_name.clone();
+                let (repo_id, branch_name) = menu.target.clone();
                 self.action_menu = None;
-                self.execute_action(action, &target);
+                self.execute_action(action, &repo_id, &branch_name);
             }
             KeyCode::Esc => {
                 self.action_menu = None;
@@ -1101,14 +1105,24 @@ impl App {
         }
     }
 
-    pub(crate) fn execute_action(&mut self, action: ActionItem, target_name: &str) {
-        let entry = match self.entries.iter().find(|e| e.name == target_name).cloned() {
+    pub(crate) fn execute_action(
+        &mut self,
+        action: ActionItem,
+        repo_id: &crate::git::types::RepoId,
+        name: &str,
+    ) {
+        let entry = match self
+            .entries
+            .iter()
+            .find(|e| e.repo_id == *repo_id && e.name == name)
+            .cloned()
+        {
             Some(e) => e,
             None => return,
         };
         match action {
             ActionItem::CreateWorktree => {
-                self.wt_create_requested = Some(entry.name.clone());
+                self.wt_create_requested = Some((entry.repo_id.clone(), entry.name.clone()));
                 self.notification = Some(Notification::success("Creating worktree...".to_string()));
             }
             ActionItem::CdIntoWorktree => {
@@ -2055,9 +2069,76 @@ mod action_menu_cross_repo_tests {
             git_status: None,
         }];
         app.snap_scroll_to_entry();
-        app.execute_action(ActionItem::CdIntoWorktree, "feat");
+        app.execute_action(ActionItem::CdIntoWorktree, &other, "feat");
         assert_eq!(app.cd_path.as_deref(), Some("/tmp/clones/b/feat"));
         assert!(app.should_quit);
+    }
+
+    #[test]
+    fn execute_action_targets_correct_repo_when_branch_names_collide() {
+        use crate::app::ActionItem;
+        use crate::config::Config;
+        use crate::git::types::{Branch, BranchEntry, PullRequest, RepoId, Worktree};
+        let mut app = App::new(Config::default());
+        let active = RepoId {
+            host: None,
+            owner: "active".into(),
+            name: "x".into(),
+        };
+        let other = RepoId {
+            host: None,
+            owner: "other".into(),
+            name: "y".into(),
+        };
+        app.active_repo = Some(active.clone());
+
+        // Active repo has a local branch called feature/auth
+        let active_entry = BranchEntry {
+            name: "feature/auth".into(),
+            repo_id: active.clone(),
+            local_branch: Some(Branch {
+                name: "feature/auth".into(),
+                is_current: false,
+                upstream: None,
+                is_merged: false,
+            }),
+            worktree: None,
+            pull_request: None,
+            git_status: None,
+        };
+        // Cross-repo also has a PR on feature/auth, with a known worktree
+        let cross_entry = BranchEntry {
+            name: "feature/auth".into(),
+            repo_id: other.clone(),
+            local_branch: None,
+            worktree: Some(Worktree {
+                path: "/cross/repo/feature/auth".into(),
+                head: "abc".into(),
+                branch: Some("feature/auth".into()),
+                is_bare: false,
+            }),
+            pull_request: Some(PullRequest {
+                number: 7,
+                title: "x".into(),
+                author: "u".into(),
+                state: "OPEN".into(),
+                head_ref: "feature/auth".into(),
+                updated_at: "2024".into(),
+                is_draft: false,
+                review_requests: vec![],
+                latest_reviews: vec![],
+                review_status: None,
+                repo_id: other.clone(),
+            }),
+            git_status: None,
+        };
+        // Active repo first per merge_entries sort
+        app.entries = vec![active_entry, cross_entry];
+
+        // Dispatch CdIntoWorktree targeting cross-repo branch.
+        // The tuple-based execute_action must NOT pick the active-repo entry.
+        app.execute_action(ActionItem::CdIntoWorktree, &other, "feature/auth");
+        assert_eq!(app.cd_path.as_deref(), Some("/cross/repo/feature/auth"));
     }
 }
 

@@ -1042,9 +1042,13 @@ async fn run(
         }
 
         // Create worktree if requested (async, non-blocking)
-        if let Some(branch_name) = app.wt_create_requested.take() {
+        if let Some((req_repo_id, branch_name)) = app.wt_create_requested.take() {
             // Resolve target repo (active or cross-repo) and its root path.
-            let entry = app.entries.iter().find(|e| e.name == branch_name).cloned();
+            let entry = app
+                .entries
+                .iter()
+                .find(|e| e.repo_id == req_repo_id && e.name == branch_name)
+                .cloned();
             let Some(entry) = entry else {
                 continue;
             };
