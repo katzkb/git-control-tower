@@ -832,18 +832,44 @@ impl App {
                 }
             }
             KeyCode::Char('w') => {
-                if let Some(entry) = self.selected_entry()
-                    && entry.worktree.is_none()
-                    && !entry.is_current()
-                    && (entry.local_branch.is_some() || entry.pull_request.is_some())
-                    && !self
-                        .wt_inflight
-                        .contains(&self.config.worktree_path(&entry.name))
+                let Some(entry) = self.selected_entry().cloned() else {
+                    return;
+                };
+                if entry.worktree.is_some()
+                    || entry.is_current()
+                    || (entry.local_branch.is_none() && entry.pull_request.is_none())
                 {
-                    self.wt_create_requested = Some(entry.name.clone());
-                    self.notification =
-                        Some(Notification::success("Creating worktree...".to_string()));
+                    return;
                 }
+                let is_active = self.active_repo.as_ref() == Some(&entry.repo_id);
+                let clone_path: Option<std::path::PathBuf> = if is_active {
+                    None
+                } else {
+                    self.resolve_local_path(&entry.repo_id);
+                    self.repos
+                        .get(&entry.repo_id)
+                        .and_then(|m| m.local_path.clone())
+                };
+                let cross_repo_no_clone = !is_active && clone_path.is_none();
+                if cross_repo_no_clone {
+                    self.notification = Some(Notification::error(format!(
+                        "{} not cloned. Set [workspace] clone_root.",
+                        entry.repo_id
+                    )));
+                    return;
+                }
+                let wt_path = if is_active {
+                    self.config.worktree_path(&entry.name)
+                } else {
+                    // unwrap is safe: cross_repo_no_clone is false above
+                    self.config
+                        .worktree_path_for(clone_path.as_ref().unwrap(), &entry.name)
+                };
+                if self.wt_inflight.contains(&wt_path) {
+                    return;
+                }
+                self.wt_create_requested = Some(entry.name.clone());
+                self.notification = Some(Notification::success("Creating worktree...".to_string()));
             }
             KeyCode::Enter => {
                 self.open_action_menu();
