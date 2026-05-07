@@ -107,6 +107,11 @@ case "$SCENE" in
     git add .env
     git commit --quiet -m "chore: add .env"
     ;;
+  cross-repo)
+    # No extra branches — the demo lives entirely in the Review view, where
+    # all 3 PRs come from gh-stub as cross-repo entries (active repo's origin
+    # is demo-user/demo-project, none of the 3 PRs match).
+    ;;
   *)
     echo "setup.sh: unknown scene: $SCENE" >&2
     exit 1
