@@ -71,18 +71,14 @@ fn draw_filter_bar(frame: &mut Frame, area: Rect, app: &App) {
             app.main_filter,
             MainFilter::MyPr | MainFilter::ReviewRequested
         ) {
-            let repo_count = app
-                .filtered_entries()
+            let filtered = app.filtered_entries();
+            let repo_count = filtered
                 .iter()
                 .map(|e| e.repo_id.clone())
                 .collect::<std::collections::HashSet<_>>()
                 .len();
             if repo_count > 1 {
-                let pr_count = app
-                    .filtered_entries()
-                    .iter()
-                    .filter(|e| e.pull_request.is_some())
-                    .count();
+                let pr_count = filtered.iter().filter(|e| e.pull_request.is_some()).count();
                 spans.push(Span::styled(
                     format!("  {repo_count} repos · {pr_count} PRs"),
                     Style::default().fg(Color::DarkGray),
