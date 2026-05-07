@@ -197,8 +197,13 @@ fn draw_pr_section(
 
     lines.push(section_header(&format!("PR #{}", pr.number)));
 
-    // Cross-repo: show repo identifier above title.
-    if active_repo != Some(&entry.repo_id) {
+    // Cross-repo: show repo identifier above title only when we know the active
+    // repo and the entry belongs to a different one. When active_repo is None
+    // (e.g. no `origin` remote, detached HEAD) we suppress the label — every
+    // entry would otherwise show it, which is more confusing than helpful.
+    if let Some(active) = active_repo
+        && active != &entry.repo_id
+    {
         lines.push(Line::from(vec![
             Span::styled("  repo: ", Style::default().fg(Color::DarkGray)),
             Span::styled(
