@@ -3,7 +3,7 @@ use ratatui::{
     layout::{Constraint, Flex, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Clear, List, ListItem, ListState},
+    widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph, Wrap},
 };
 
 use crate::app::App;
@@ -28,9 +28,18 @@ pub fn draw(frame: &mut Frame, area: Rect, app: &mut App) {
 }
 
 fn draw_action_menu(frame: &mut Frame, menu: &crate::app::ActionMenu) {
-    let height = (menu.items.len() as u16) + 2; // items + border
-    let area = centered_rect(40, height, frame.area());
+    let footer_height: u16 = if menu.footer.is_some() { 1 } else { 0 };
+    let list_height = (menu.items.len() as u16) + 2; // items + border
+    let total_height = list_height + footer_height;
+    let area = centered_rect(40, total_height, frame.area());
     frame.render_widget(Clear, area);
+
+    // Split the area into list portion and optional footer.
+    let [list_area, footer_area] = Layout::vertical([
+        Constraint::Length(list_height),
+        Constraint::Length(footer_height),
+    ])
+    .areas(area);
 
     let items: Vec<ListItem> = menu
         .items
@@ -59,7 +68,16 @@ fn draw_action_menu(frame: &mut Frame, menu: &crate::app::ActionMenu) {
 
     let mut state = ListState::default();
     state.select(Some(menu.scroll));
-    frame.render_stateful_widget(list, area, &mut state);
+    frame.render_stateful_widget(list, list_area, &mut state);
+
+    if let Some(ref footer) = menu.footer {
+        let footer_line = Line::from(Span::styled(
+            format!("─ {footer}"),
+            Style::default().fg(Color::DarkGray),
+        ));
+        let paragraph = Paragraph::new(footer_line).wrap(Wrap { trim: true });
+        frame.render_widget(paragraph, footer_area);
+    }
 }
 
 fn centered_rect(percent_x: u16, height: u16, area: Rect) -> Rect {

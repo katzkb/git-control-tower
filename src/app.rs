@@ -67,6 +67,7 @@ pub struct ActionMenu {
     pub items: Vec<ActionItem>,
     pub scroll: usize,
     pub target_name: String, // branch name captured when menu was opened
+    pub footer: Option<String>,
 }
 
 pub struct BranchCreateInput {
@@ -942,38 +943,83 @@ impl App {
             Some(e) => e,
             None => return,
         };
+        let is_active_repo = self.active_repo.as_ref() == Some(&entry.repo_id);
+        let clone_path: Option<std::path::PathBuf> = if is_active_repo {
+            None // active repo runs in CWD, no clone path needed
+        } else {
+            // cross-repo: resolve once, then read
+            self.resolve_local_path(&entry.repo_id);
+            self.repos
+                .get(&entry.repo_id)
+                .and_then(|m| m.local_path.clone())
+        };
+        let cross_repo_no_clone = !is_active_repo && clone_path.is_none();
+
         let mut items = Vec::new();
+        let mut footer = None;
 
         if entry.pull_request.is_some() {
             items.push(ActionItem::OpenPrInBrowser);
         }
         items.push(ActionItem::CopyBranchName);
-        if entry.worktree.is_some() {
+
+        let wt_already_exists = entry.worktree.is_some();
+        let wt_path_for_inflight = if is_active_repo {
+            self.config.worktree_path(&entry.name)
+        } else if let Some(ref root) = clone_path {
+            // Interim inline path-building logic until Task 13 introduces worktree_path_for.
+            let dir = self.config.worktree.dir.trim();
+            let base_dir = if dir.is_empty() { ".." } else { dir };
+            root.join(base_dir)
+                .join(&entry.name)
+                .to_string_lossy()
+                .to_string()
+        } else {
+            String::new()
+        };
+
+        if wt_already_exists {
             items.push(ActionItem::CdIntoWorktree);
         }
-        if entry.worktree.is_none()
+
+        let can_create_wt = !wt_already_exists
             && !entry.is_current()
             && (entry.local_branch.is_some() || entry.pull_request.is_some())
-            && !self
-                .wt_inflight
-                .contains(&self.config.worktree_path(&entry.name))
-        {
+            && !cross_repo_no_clone
+            && !self.wt_inflight.contains(&wt_path_for_inflight);
+        if can_create_wt {
             items.push(ActionItem::CreateWorktree);
         }
-        if let Some(wt_path) = entry.worktree_path()
+
+        // DeleteWorktree is active-repo only (cross-repo wt management is OUT for v1).
+        if is_active_repo
+            && let Some(wt_path) = entry.worktree_path()
             && !entry.is_current()
             && !self.wt_inflight.contains(wt_path)
         {
             items.push(ActionItem::DeleteWorktree);
         }
-        if entry.local_branch.is_some() {
+        if is_active_repo && entry.local_branch.is_some() {
             items.push(ActionItem::CreateBranch);
         }
-        if entry.local_branch.is_some()
+        if is_active_repo
+            && entry.local_branch.is_some()
             && !entry.is_current()
             && !self.is_protected_branch(&entry.name)
         {
             items.push(ActionItem::DeleteBranch);
+        }
+
+        if cross_repo_no_clone {
+            let hint_root = self
+                .clone_root
+                .as_ref()
+                .map(|p| p.display().to_string())
+                .unwrap_or_else(|| "[workspace] clone_root".to_string());
+            footer = Some(format!(
+                "{} not cloned. Clone under {hint_root}.",
+                entry.repo_id
+            ));
         }
 
         if !items.is_empty() {
@@ -981,6 +1027,7 @@ impl App {
                 items,
                 scroll: 0,
                 target_name: entry.name.clone(),
+                footer,
             });
         }
     }
@@ -1814,5 +1861,123 @@ mod bulk_delete_message_tests {
             compose_bulk_delete_message(1, 1, 0, "a"),
             "Delete 1 branch + 1 worktree?\n[a]"
         );
+    }
+}
+
+#[cfg(test)]
+mod action_menu_cross_repo_tests {
+    use super::*;
+
+    #[test]
+    fn action_menu_cross_repo_no_clone_excludes_worktree_actions() {
+        use crate::app::ActionItem;
+        use crate::config::Config;
+        use crate::git::types::{BranchEntry, PullRequest, RepoId, RepoMeta};
+        let mut app = App::new(Config::default());
+        let active = RepoId {
+            host: None,
+            owner: "a".into(),
+            name: "x".into(),
+        };
+        let other = RepoId {
+            host: None,
+            owner: "b".into(),
+            name: "y".into(),
+        };
+        app.active_repo = Some(active.clone());
+        app.repos.insert(
+            other.clone(),
+            RepoMeta {
+                id: other.clone(),
+                local_path: None,
+                local_path_resolved: true,
+            },
+        );
+        app.main_filter = MainFilter::ReviewRequested;
+        app.entries = vec![BranchEntry {
+            name: "feat".into(),
+            repo_id: other.clone(),
+            local_branch: None,
+            worktree: None,
+            pull_request: Some(PullRequest {
+                number: 1,
+                title: "x".into(),
+                author: "u".into(),
+                state: "OPEN".into(),
+                head_ref: "feat".into(),
+                updated_at: "2024".into(),
+                is_draft: false,
+                review_requests: vec![],
+                latest_reviews: vec![],
+                review_status: None,
+                repo_id: other.clone(),
+            }),
+            git_status: None,
+        }];
+        app.snap_scroll_to_entry();
+        app.open_action_menu();
+        let menu = app.action_menu.as_ref().unwrap();
+        assert!(menu.items.contains(&ActionItem::OpenPrInBrowser));
+        assert!(menu.items.contains(&ActionItem::CopyBranchName));
+        assert!(!menu.items.contains(&ActionItem::CreateWorktree));
+        assert!(!menu.items.contains(&ActionItem::DeleteBranch));
+        assert!(menu.footer.is_some());
+        assert!(menu.footer.as_ref().unwrap().contains("not cloned"));
+    }
+
+    #[test]
+    fn action_menu_cross_repo_with_clone_enables_worktree_create() {
+        use crate::app::ActionItem;
+        use crate::config::Config;
+        use crate::git::types::{BranchEntry, PullRequest, RepoId, RepoMeta};
+        let mut app = App::new(Config::default());
+        let active = RepoId {
+            host: None,
+            owner: "a".into(),
+            name: "x".into(),
+        };
+        let other = RepoId {
+            host: None,
+            owner: "b".into(),
+            name: "y".into(),
+        };
+        let tmp = tempfile::tempdir().unwrap();
+        let clone_path = tmp.path().join("github.com").join("b").join("y");
+        std::fs::create_dir_all(&clone_path).unwrap();
+        app.active_repo = Some(active.clone());
+        app.repos.insert(
+            other.clone(),
+            RepoMeta {
+                id: other.clone(),
+                local_path: Some(clone_path),
+                local_path_resolved: true,
+            },
+        );
+        app.main_filter = MainFilter::ReviewRequested;
+        app.entries = vec![BranchEntry {
+            name: "feat".into(),
+            repo_id: other.clone(),
+            local_branch: None,
+            worktree: None,
+            pull_request: Some(PullRequest {
+                number: 1,
+                title: "x".into(),
+                author: "u".into(),
+                state: "OPEN".into(),
+                head_ref: "feat".into(),
+                updated_at: "2024".into(),
+                is_draft: false,
+                review_requests: vec![],
+                latest_reviews: vec![],
+                review_status: None,
+                repo_id: other.clone(),
+            }),
+            git_status: None,
+        }];
+        app.snap_scroll_to_entry();
+        app.open_action_menu();
+        let menu = app.action_menu.as_ref().unwrap();
+        assert!(menu.items.contains(&ActionItem::CreateWorktree));
+        assert!(menu.footer.is_none());
     }
 }
