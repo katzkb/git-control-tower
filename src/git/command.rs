@@ -134,7 +134,6 @@ pub async fn run_gh(args: &[&str]) -> Result<String> {
 }
 
 /// Run `git -C <cwd> <args>` for repo-specific operations.
-#[allow(dead_code)]
 pub async fn run_git_in(cwd: &Path, args: &[&str]) -> Result<String> {
     run_git_in_with_id(cwd, None, args).await
 }

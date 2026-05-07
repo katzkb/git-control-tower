@@ -100,7 +100,6 @@ impl Config {
 
     /// Build a worktree path relative to a specific repo root.
     /// `dir = ".."` produces `<repo_root>/../<branch>` (= sibling of repo).
-    #[allow(dead_code)]
     pub fn worktree_path_for(&self, repo_root: &Path, branch_name: &str) -> String {
         let dir = self.worktree.dir.trim();
         let base = if dir.is_empty() {

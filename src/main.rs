@@ -26,7 +26,7 @@ use crate::app::MainFilter;
 use crate::app::{OpProgress, OpStep};
 use crate::data::merge_entries;
 use crate::event::{Event, EventHandler};
-use crate::git::command::{run_gh, run_git};
+use crate::git::command::{run_gh, run_git, run_git_in};
 use crate::git::parser::{parse_branches, parse_log, parse_worktrees};
 use crate::git::types::{GitStatus, PrDetail, PullRequest, RepoId, ReviewStatus};
 use crate::ui::notification::Notification;
@@ -63,6 +63,7 @@ enum AsyncResult {
     WtCreated {
         wt_path: String,
         copy_errors: Vec<String>,
+        target_repo: Option<crate::git::types::RepoId>,
     },
     WtCreateError {
         wt_path: String,
@@ -767,6 +768,7 @@ async fn run(
                 AsyncResult::WtCreated {
                     wt_path,
                     copy_errors,
+                    target_repo,
                 } => {
                     app.wt_inflight.remove(&wt_path);
                     if copy_errors.is_empty() {
@@ -783,6 +785,10 @@ async fn run(
                         }
                     }
                     refresh_entries(&mut app).await;
+                    // Cross-repo: invalidate worktree-list cache for target so next selection re-fetches.
+                    if let Some(repo_id) = target_repo {
+                        app.wt_lists_per_repo.remove(&repo_id);
+                    }
                     if app.confirm_dialog.is_none() {
                         app.confirm_dialog = Some(crate::ui::confirm_dialog::ConfirmDialog::new(
                             "Move to Worktree",
@@ -962,39 +968,90 @@ async fn run(
 
         // Create worktree if requested (async, non-blocking)
         if let Some(branch_name) = app.wt_create_requested.take() {
-            let wt_path = app.config.worktree_path(&branch_name);
+            // Resolve target repo (active or cross-repo) and its root path.
+            let entry = app.entries.iter().find(|e| e.name == branch_name).cloned();
+            let Some(entry) = entry else {
+                continue;
+            };
+            let target_repo = entry.repo_id.clone();
+            let active_repo = app.active_repo.clone();
+            let is_active = active_repo.as_ref() == Some(&target_repo);
+
+            let target_root: std::path::PathBuf = if is_active {
+                run_git(&["rev-parse", "--show-toplevel"])
+                    .await
+                    .map(|s| std::path::PathBuf::from(s.trim()))
+                    .unwrap_or_else(|_| std::env::current_dir().unwrap_or_default())
+            } else {
+                // cross-repo: must have resolved local_path
+                match app
+                    .repos
+                    .get(&target_repo)
+                    .and_then(|m| m.local_path.clone())
+                {
+                    Some(p) => p,
+                    None => {
+                        app.notification =
+                            Some(Notification::error(format!("{target_repo} not cloned")));
+                        continue;
+                    }
+                }
+            };
+
+            let wt_path = app.config.worktree_path_for(&target_root, &branch_name);
             app.wt_inflight.insert(wt_path.clone());
             if let Some(parent) = std::path::Path::new(&wt_path).parent() {
                 let _ = std::fs::create_dir_all(parent);
             }
-            let has_local = app.branches.iter().any(|b| b.name == branch_name);
+
+            let is_active_with_local =
+                is_active && app.branches.iter().any(|b| b.name == branch_name);
             let post_create = app.config.worktree.post_create.clone();
+            let target_repo_for_send = if is_active {
+                None
+            } else {
+                Some(target_repo.clone())
+            };
             let tx = tx.clone();
+            let wt_path_arg = wt_path.clone();
+            let branch_arg = branch_name.clone();
+            let target_root_arg = target_root.clone();
+
             tokio::spawn(async move {
-                let result = if has_local {
-                    run_git(&["worktree", "add", &wt_path, &branch_name]).await
+                let result = if is_active_with_local {
+                    run_git_in(
+                        &target_root_arg,
+                        &["worktree", "add", &wt_path_arg, &branch_arg],
+                    )
+                    .await
                 } else {
-                    match run_git(&["fetch", "origin", &branch_name]).await {
-                        Ok(_) => run_git(&["worktree", "add", &wt_path, &branch_name]).await,
+                    match run_git_in(&target_root_arg, &["fetch", "origin", &branch_arg]).await {
+                        Ok(_) => {
+                            run_git_in(
+                                &target_root_arg,
+                                &["worktree", "add", &wt_path_arg, &branch_arg],
+                            )
+                            .await
+                        }
                         Err(e) => Err(e),
                     }
                 };
                 match result {
                     Ok(_) => {
-                        let repo_root = std::env::current_dir().unwrap_or_default();
                         let copy_errors = config::run_post_create(
                             &post_create,
-                            &repo_root,
-                            std::path::Path::new(&wt_path),
+                            &target_root_arg,
+                            std::path::Path::new(&wt_path_arg),
                         );
                         let _ = tx.send(AsyncResult::WtCreated {
-                            wt_path,
+                            wt_path: wt_path_arg,
                             copy_errors,
+                            target_repo: target_repo_for_send,
                         });
                     }
                     Err(e) => {
                         let _ = tx.send(AsyncResult::WtCreateError {
-                            wt_path,
+                            wt_path: wt_path_arg,
                             message: format!("Failed to create worktree: {e}"),
                         });
                     }

@@ -271,7 +271,6 @@ pub struct App {
     pub repos: std::collections::HashMap<crate::git::types::RepoId, crate::git::types::RepoMeta>,
 
     // Worktree lists per repo (populated lazily as cross-repo PRs are selected)
-    #[allow(dead_code)]
     pub wt_lists_per_repo:
         std::collections::HashMap<crate::git::types::RepoId, Vec<crate::git::types::Worktree>>,
 }
