@@ -546,9 +546,9 @@ impl App {
     /// Signal that the selection changed; request PR detail and git status as needed.
     pub fn request_details_for_selection(&mut self) {
         self.pr_detail_scroll = 0;
-
         let selected = self.selected_entry().cloned();
-        if let Some(entry) = selected {
+
+        if let Some(entry) = &selected {
             // Request PR detail if entry has a PR and it's not cached
             if let Some(pr_num) = entry.pr_number()
                 && !self
@@ -566,9 +566,8 @@ impl App {
             }
         }
 
-        // Signal lazy load of cross-repo worktree list if not yet fetched
-        let selected_for_wt = self.selected_entry().cloned();
-        if let Some(entry) = selected_for_wt
+        // Signal lazy load of cross-repo worktree list if not yet fetched (use the same `selected` binding)
+        if let Some(entry) = &selected
             && self.active_repo.as_ref() != Some(&entry.repo_id)
             && !self.wt_lists_per_repo.contains_key(&entry.repo_id)
             && !self.wt_list_inflight.contains(&entry.repo_id)
