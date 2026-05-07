@@ -685,6 +685,9 @@ impl App {
                     // one — stale detail bodies are risky after a refresh, and the
                     // detail pane will refetch on the next selection.
                     self.pr_detail_cache.clear();
+                    // Invalidate cross-repo worktree list caches so they re-fetch.
+                    self.wt_lists_per_repo.clear();
+                    self.wt_list_inflight.clear();
                     // Signal branches/worktrees reload + PR fetch
                     self.branches_reload_requested = true;
                     self.pr_fetch_requested = Some(self.main_filter);
