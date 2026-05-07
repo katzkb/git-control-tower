@@ -149,7 +149,6 @@ pub async fn run_gh_in(cwd: &Path, args: &[&str]) -> Result<String> {
 }
 
 /// `run_git_in` variant that tags the command-history record with a `RepoId`.
-#[allow(dead_code)]
 pub async fn run_git_in_with_id(
     cwd: &Path,
     repo: Option<crate::git::types::RepoId>,
