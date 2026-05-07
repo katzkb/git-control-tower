@@ -273,6 +273,10 @@ pub struct App {
     // Worktree lists per repo (populated lazily as cross-repo PRs are selected)
     pub wt_lists_per_repo:
         std::collections::HashMap<crate::git::types::RepoId, Vec<crate::git::types::Worktree>>,
+
+    // Cross-repo worktree list lazy-load state
+    pub wt_list_inflight: HashSet<crate::git::types::RepoId>,
+    pub wt_list_requested: Option<crate::git::types::RepoId>,
 }
 
 impl App {
@@ -338,6 +342,8 @@ impl App {
             clone_root: None,
             repos: HashMap::new(),
             wt_lists_per_repo: HashMap::new(),
+            wt_list_inflight: HashSet::new(),
+            wt_list_requested: None,
         }
     }
 
@@ -529,6 +535,24 @@ impl App {
                 && entry.git_status.is_none()
             {
                 self.git_status_requested = Some(wt_path.to_string());
+            }
+        }
+
+        // Signal lazy load of cross-repo worktree list if not yet fetched
+        let selected_for_wt = self.selected_entry().cloned();
+        if let Some(entry) = selected_for_wt
+            && self.active_repo.as_ref() != Some(&entry.repo_id)
+            && !self.wt_lists_per_repo.contains_key(&entry.repo_id)
+            && !self.wt_list_inflight.contains(&entry.repo_id)
+        {
+            self.resolve_local_path(&entry.repo_id);
+            if self
+                .repos
+                .get(&entry.repo_id)
+                .and_then(|m| m.local_path.as_ref())
+                .is_some()
+            {
+                self.wt_list_requested = Some(entry.repo_id.clone());
             }
         }
     }
@@ -2014,5 +2038,95 @@ mod action_menu_cross_repo_tests {
         app.execute_action(ActionItem::CdIntoWorktree, "feat");
         assert_eq!(app.cd_path.as_deref(), Some("/tmp/clones/b/feat"));
         assert!(app.should_quit);
+    }
+}
+
+#[cfg(test)]
+mod wt_list_lazy_load_tests {
+    use super::*;
+
+    #[test]
+    fn selecting_cross_repo_entry_signals_wt_list_load() {
+        use crate::config::Config;
+        use crate::git::types::{BranchEntry, PullRequest, RepoId, RepoMeta};
+        let tmp = tempfile::tempdir().unwrap();
+        let clone_path = tmp.path().join("github.com").join("b").join("y");
+        std::fs::create_dir_all(&clone_path).unwrap();
+
+        let mut app = App::new(Config::default());
+        let active = RepoId {
+            host: None,
+            owner: "a".into(),
+            name: "x".into(),
+        };
+        let other = RepoId {
+            host: None,
+            owner: "b".into(),
+            name: "y".into(),
+        };
+        app.active_repo = Some(active);
+        app.clone_root = Some(tmp.path().to_path_buf());
+        app.repos.insert(
+            other.clone(),
+            RepoMeta {
+                id: other.clone(),
+                local_path: None,
+                local_path_resolved: false,
+            },
+        );
+        app.main_filter = MainFilter::ReviewRequested;
+        app.entries = vec![BranchEntry {
+            name: "feat".into(),
+            repo_id: other.clone(),
+            local_branch: None,
+            worktree: None,
+            pull_request: Some(PullRequest {
+                number: 1,
+                title: "x".into(),
+                author: "u".into(),
+                state: "OPEN".into(),
+                head_ref: "feat".into(),
+                updated_at: "2024".into(),
+                is_draft: false,
+                review_requests: vec![],
+                latest_reviews: vec![],
+                review_status: None,
+                repo_id: other.clone(),
+            }),
+            git_status: None,
+        }];
+        app.snap_scroll_to_entry();
+        app.request_details_for_selection();
+        assert_eq!(app.wt_list_requested.as_ref(), Some(&other));
+    }
+
+    #[test]
+    fn selecting_active_repo_entry_does_not_signal_wt_list_load() {
+        use crate::config::Config;
+        use crate::git::types::{BranchEntry, RepoId};
+        let mut app = App::new(Config::default());
+        let active = RepoId {
+            host: None,
+            owner: "a".into(),
+            name: "x".into(),
+        };
+        app.active_repo = Some(active.clone());
+        let make_branch = |name: &str| crate::git::types::Branch {
+            name: name.into(),
+            is_current: false,
+            upstream: None,
+            is_merged: false,
+        };
+        app.entries = vec![BranchEntry {
+            name: "feat".into(),
+            repo_id: active.clone(),
+            local_branch: Some(make_branch("feat")),
+            worktree: None,
+            pull_request: None,
+            git_status: None,
+        }];
+        app.snap_scroll_to_entry();
+        app.request_details_for_selection();
+        assert!(app.wt_list_requested.is_none());
     }
 }

@@ -93,6 +93,10 @@ enum AsyncResult {
         failures: Vec<String>,
         wt_paths_claimed: Vec<String>,
     },
+    WtListLoaded {
+        repo_id: crate::git::types::RepoId,
+        list: Vec<crate::git::types::Worktree>,
+    },
 }
 
 /// Display-friendly label for a worktree path: takes the last path segment.
@@ -544,6 +548,33 @@ async fn run(
             });
         }
 
+        // Spawn cross-repo worktree list load in background (non-blocking, deduplicated)
+        if let Some(repo_id) = app.wt_list_requested.take()
+            && !app.wt_list_inflight.contains(&repo_id)
+            && let Some(path) = app.repos.get(&repo_id).and_then(|m| m.local_path.clone())
+        {
+            app.wt_list_inflight.insert(repo_id.clone());
+            let tx_c = tx.clone();
+            let repo_id_c = repo_id.clone();
+            tokio::spawn(async move {
+                match run_git_in(&path, &["worktree", "list", "--porcelain"]).await {
+                    Ok(out) => {
+                        let list = crate::git::parser::parse_worktrees(&out);
+                        let _ = tx_c.send(AsyncResult::WtListLoaded {
+                            repo_id: repo_id_c,
+                            list,
+                        });
+                    }
+                    Err(_) => {
+                        let _ = tx_c.send(AsyncResult::WtListLoaded {
+                            repo_id: repo_id_c,
+                            list: Vec::new(),
+                        });
+                    }
+                }
+            });
+        }
+
         // Reload branches/worktrees on `r` refresh from Main view
         if app.branches_reload_requested {
             app.branches_reload_requested = false;
@@ -873,6 +904,12 @@ async fn run(
                         format!("{reason}\nForce remove {path}?"),
                     ));
                     app.wt_force_delete_pending_path = Some(path);
+                }
+                AsyncResult::WtListLoaded { repo_id, list } => {
+                    app.wt_list_inflight.remove(&repo_id);
+                    app.wt_lists_per_repo.insert(repo_id, list);
+                    app.rebuild_entries();
+                    app.snap_scroll_to_entry();
                 }
             }
         }
