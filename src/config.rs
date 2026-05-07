@@ -4,12 +4,34 @@ use std::path::{Path, PathBuf};
 
 const DEFAULT_WORKTREE_DIR: &str = "..";
 
+#[derive(Debug, Deserialize, Clone, Default)]
+pub struct WorkspaceConfig {
+    /// Optional root path to look up local clones for cross-repo entries.
+    /// `~` is expanded at lookup time; absent means cross-repo Worktree
+    /// actions degrade to read-only when auto-detection also fails.
+    #[serde(default)]
+    #[allow(dead_code)]
+    pub clone_root: Option<String>,
+}
+
+impl WorkspaceConfig {
+    #[allow(dead_code)]
+    pub fn clone_root_expanded(&self) -> Option<PathBuf> {
+        let raw = self.clone_root.as_deref()?;
+        let expanded = shellexpand::tilde(raw);
+        Some(PathBuf::from(expanded.into_owned()))
+    }
+}
+
 #[derive(Debug, Deserialize, Clone)]
 pub struct Config {
     #[serde(default)]
     pub worktree: WorktreeConfig,
     #[serde(default = "default_protected_branches")]
     pub protected_branches: Vec<String>,
+    #[serde(default)]
+    #[allow(dead_code)]
+    pub workspace: WorkspaceConfig,
 }
 
 fn default_protected_branches() -> Vec<String> {
@@ -21,6 +43,7 @@ impl Default for Config {
         Self {
             worktree: WorktreeConfig::default(),
             protected_branches: default_protected_branches(),
+            workspace: WorkspaceConfig::default(),
         }
     }
 }
@@ -569,5 +592,32 @@ command = "npm ci"
         let errors = run_post_create(&actions, &repo, &wt);
         assert_eq!(errors.len(), 1);
         assert!(errors[0].contains("exit 1"));
+    }
+
+    #[test]
+    fn parse_workspace_clone_root() {
+        let toml_str = r#"
+[workspace]
+clone_root = "~/workspace"
+"#;
+        let config: Config = toml::from_str(toml_str).unwrap();
+        assert_eq!(config.workspace.clone_root.as_deref(), Some("~/workspace"));
+    }
+
+    #[test]
+    fn workspace_default_empty() {
+        let config: Config = toml::from_str("").unwrap();
+        assert!(config.workspace.clone_root.is_none());
+    }
+
+    #[test]
+    fn workspace_clone_root_expanded_strips_tilde() {
+        let cfg = WorkspaceConfig {
+            clone_root: Some("~/foo".into()),
+        };
+        let path = cfg.clone_root_expanded().unwrap();
+        // No raw "~" should remain; the final component should be "foo".
+        assert!(!path.to_string_lossy().contains('~'));
+        assert!(path.ends_with("foo"));
     }
 }
