@@ -1023,12 +1023,14 @@ impl App {
         items.push(ActionItem::CopyBranchName);
 
         let wt_already_exists = entry.worktree.is_some();
-        let wt_path_for_inflight = if is_active_repo {
-            self.config.worktree_path(&entry.name)
+        let wt_path_for_inflight: Option<String> = if cross_repo_no_clone {
+            None
+        } else if is_active_repo {
+            Some(self.config.worktree_path(&entry.name))
         } else if let Some(ref root) = clone_path {
-            self.config.worktree_path_for(root, &entry.name)
+            Some(self.config.worktree_path_for(root, &entry.name))
         } else {
-            String::new()
+            None
         };
 
         if wt_already_exists {
@@ -1039,7 +1041,10 @@ impl App {
             && !entry.is_current()
             && (entry.local_branch.is_some() || entry.pull_request.is_some())
             && !cross_repo_no_clone
-            && !self.wt_inflight.contains(&wt_path_for_inflight);
+            && wt_path_for_inflight
+                .as_deref()
+                .map(|p| !self.wt_inflight.contains(p))
+                .unwrap_or(false);
         if can_create_wt {
             items.push(ActionItem::CreateWorktree);
         }
