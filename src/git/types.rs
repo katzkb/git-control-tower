@@ -146,6 +146,7 @@ pub struct Worktree {
 #[derive(Debug, Clone)]
 pub struct BranchEntry {
     pub name: String,
+    pub repo_id: RepoId,
     pub local_branch: Option<Branch>,
     pub worktree: Option<Worktree>,
     pub pull_request: Option<PullRequest>,

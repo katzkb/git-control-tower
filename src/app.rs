@@ -263,6 +263,11 @@ pub struct App {
     // Per-repo metadata (populated lazily as repos are selected)
     #[allow(dead_code)]
     pub repos: std::collections::HashMap<crate::git::types::RepoId, crate::git::types::RepoMeta>,
+
+    // Worktree lists per repo (populated lazily as cross-repo PRs are selected)
+    #[allow(dead_code)]
+    pub wt_lists_per_repo:
+        std::collections::HashMap<crate::git::types::RepoId, Vec<crate::git::types::Worktree>>,
 }
 
 impl App {
@@ -327,6 +332,7 @@ impl App {
             active_repo: None,
             clone_root: None,
             repos: HashMap::new(),
+            wt_lists_per_repo: HashMap::new(),
         }
     }
 
@@ -390,8 +396,18 @@ impl App {
     }
 
     pub fn rebuild_entries(&mut self) {
-        self.entries =
-            crate::data::merge_entries(&self.branches, &self.worktrees, self.current_prs());
+        // When `active_repo` is absent (startup couldn't infer one), unwrap_or_default
+        // produces a sentinel empty RepoId. It can't collide with any real PR's repo_id,
+        // so cross-repo entries are still keyed correctly and worktree injection no-ops
+        // safely.
+        let active = self.active_repo.clone().unwrap_or_default();
+        self.entries = crate::data::merge_entries(
+            &active,
+            &self.branches,
+            &self.worktrees,
+            self.current_prs(),
+            &self.wt_lists_per_repo,
+        );
     }
 
     pub fn filtered_entries(&self) -> Vec<&BranchEntry> {

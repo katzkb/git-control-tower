@@ -5,17 +5,25 @@ use crate::git::types::{Branch, BranchEntry, GitStatus, PullRequest, ReviewReque
 
 /// Merge local branches, worktrees, and PRs into unified BranchEntry list.
 pub fn merge_entries(
+    active_repo: &crate::git::types::RepoId,
     branches: &[Branch],
     worktrees: &[Worktree],
     pull_requests: &[PullRequest],
+    wt_lists_per_repo: &std::collections::HashMap<
+        crate::git::types::RepoId,
+        Vec<crate::git::types::Worktree>,
+    >,
 ) -> Vec<BranchEntry> {
-    let mut map: HashMap<String, BranchEntry> = HashMap::new();
+    use crate::git::types::RepoId;
+    let mut map: HashMap<(RepoId, String), BranchEntry> = HashMap::new();
 
-    // Add local branches
+    // Local branches → all keyed under active_repo
     for branch in branches {
-        map.entry(branch.name.clone())
+        let key = (active_repo.clone(), branch.name.clone());
+        map.entry(key.clone())
             .or_insert_with(|| BranchEntry {
                 name: branch.name.clone(),
+                repo_id: active_repo.clone(),
                 local_branch: None,
                 worktree: None,
                 pull_request: None,
@@ -24,12 +32,14 @@ pub fn merge_entries(
             .local_branch = Some(branch.clone());
     }
 
-    // Add worktrees (match by branch name)
+    // Active-repo worktrees
     for wt in worktrees {
         if let Some(branch_name) = &wt.branch {
-            map.entry(branch_name.clone())
+            let key = (active_repo.clone(), branch_name.clone());
+            map.entry(key.clone())
                 .or_insert_with(|| BranchEntry {
                     name: branch_name.clone(),
+                    repo_id: active_repo.clone(),
                     local_branch: None,
                     worktree: None,
                     pull_request: None,
@@ -39,17 +49,17 @@ pub fn merge_entries(
         }
     }
 
-    // Add PRs (match by head_ref, prefer OPEN over MERGED)
+    // PRs (active repo merges with branches/worktrees, other repos are PR-only)
     for pr in pull_requests {
-        let entry = map
-            .entry(pr.head_ref.clone())
-            .or_insert_with(|| BranchEntry {
-                name: pr.head_ref.clone(),
-                local_branch: None,
-                worktree: None,
-                pull_request: None,
-                git_status: None,
-            });
+        let key = (pr.repo_id.clone(), pr.head_ref.clone());
+        let entry = map.entry(key.clone()).or_insert_with(|| BranchEntry {
+            name: pr.head_ref.clone(),
+            repo_id: pr.repo_id.clone(),
+            local_branch: None,
+            worktree: None,
+            pull_request: None,
+            git_status: None,
+        });
         match (&entry.pull_request, pr.state.as_str()) {
             (Some(existing), "MERGED") if existing.state == "OPEN" => {
                 // Don't overwrite an OPEN PR with a MERGED one
@@ -58,14 +68,33 @@ pub fn merge_entries(
                 entry.pull_request = Some(pr.clone());
             }
         }
+
+        // Cross-repo worktree injection from wt_lists_per_repo
+        if pr.repo_id != *active_repo
+            && entry.worktree.is_none()
+            && let Some(wts) = wt_lists_per_repo.get(&pr.repo_id)
+            && let Some(wt) = wts
+                .iter()
+                .find(|w| w.branch.as_deref() == Some(&pr.head_ref))
+        {
+            entry.worktree = Some(wt.clone());
+        }
     }
 
-    // Sort: current branch first, then alphabetical
+    // Sort: active repo first, then RepoId string order; current branch first within active repo
     let mut entries: Vec<BranchEntry> = map.into_values().collect();
     entries.sort_by(|a, b| {
-        let a_current = a.is_current();
-        let b_current = b.is_current();
-        b_current.cmp(&a_current).then(a.name.cmp(&b.name))
+        let a_active = a.repo_id == *active_repo;
+        let b_active = b.repo_id == *active_repo;
+        b_active
+            .cmp(&a_active)
+            .then_with(|| a.repo_id.to_string().cmp(&b.repo_id.to_string()))
+            .then_with(|| {
+                let a_cur = a.is_current();
+                let b_cur = b.is_current();
+                b_cur.cmp(&a_cur)
+            })
+            .then_with(|| a.name.cmp(&b.name))
     });
 
     entries
@@ -434,6 +463,8 @@ mod tests {
 
     #[test]
     fn test_merge_entries_basic() {
+        use crate::git::types::RepoId;
+        let active = RepoId::default();
         let branches = vec![
             Branch {
                 name: "main".to_string(),
@@ -451,7 +482,7 @@ mod tests {
         let worktrees = vec![];
         let prs = vec![];
 
-        let entries = merge_entries(&branches, &worktrees, &prs);
+        let entries = merge_entries(&active, &branches, &worktrees, &prs, &Default::default());
         assert_eq!(entries.len(), 2);
         // Current branch should come first
         assert_eq!(entries[0].name, "main");
@@ -461,6 +492,8 @@ mod tests {
 
     #[test]
     fn test_merge_entries_with_pr() {
+        use crate::git::types::RepoId;
+        let active = RepoId::default();
         let branches = vec![Branch {
             name: "feature-a".to_string(),
             is_current: false,
@@ -468,7 +501,6 @@ mod tests {
             is_merged: false,
         }];
         let worktrees = vec![];
-        use crate::git::types::RepoId;
         let prs = vec![PullRequest {
             number: 42,
             title: "Add feature A".to_string(),
@@ -483,7 +515,7 @@ mod tests {
             repo_id: RepoId::default(),
         }];
 
-        let entries = merge_entries(&branches, &worktrees, &prs);
+        let entries = merge_entries(&active, &branches, &worktrees, &prs, &Default::default());
         assert_eq!(entries.len(), 1);
         assert!(entries[0].local_branch.is_some());
         assert!(entries[0].pull_request.is_some());
@@ -492,9 +524,10 @@ mod tests {
 
     #[test]
     fn test_merge_entries_remote_only_pr() {
+        use crate::git::types::RepoId;
+        let active = RepoId::default();
         let branches = vec![];
         let worktrees = vec![];
-        use crate::git::types::RepoId;
         let prs = vec![PullRequest {
             number: 99,
             title: "Remote only PR".to_string(),
@@ -509,7 +542,7 @@ mod tests {
             repo_id: RepoId::default(),
         }];
 
-        let entries = merge_entries(&branches, &worktrees, &prs);
+        let entries = merge_entries(&active, &branches, &worktrees, &prs, &Default::default());
         assert_eq!(entries.len(), 1);
         assert!(!entries[0].has_local());
         assert!(entries[0].pull_request.is_some());
@@ -517,13 +550,14 @@ mod tests {
 
     #[test]
     fn test_pr_is_merged() {
+        use crate::git::types::RepoId;
+        let active = RepoId::default();
         let branches = vec![Branch {
             name: "feature-a".to_string(),
             is_current: false,
             upstream: None,
             is_merged: false,
         }];
-        use crate::git::types::RepoId;
         let prs = vec![PullRequest {
             number: 10,
             title: "Feature A".to_string(),
@@ -538,7 +572,7 @@ mod tests {
             repo_id: RepoId::default(),
         }];
 
-        let entries = merge_entries(&branches, &[], &prs);
+        let entries = merge_entries(&active, &branches, &[], &prs, &Default::default());
         assert_eq!(entries.len(), 1);
         // git says not merged, but PR says merged
         assert!(!entries[0].is_merged());
@@ -547,13 +581,14 @@ mod tests {
 
     #[test]
     fn test_open_pr_preferred_over_merged() {
+        use crate::git::types::RepoId;
+        let active = RepoId::default();
         let branches = vec![Branch {
             name: "feature-a".to_string(),
             is_current: false,
             upstream: None,
             is_merged: false,
         }];
-        use crate::git::types::RepoId;
         let prs = vec![
             PullRequest {
                 number: 5,
@@ -583,7 +618,7 @@ mod tests {
             },
         ];
 
-        let entries = merge_entries(&branches, &[], &prs);
+        let entries = merge_entries(&active, &branches, &[], &prs, &Default::default());
         assert_eq!(entries.len(), 1);
         // OPEN PR should win over MERGED
         assert_eq!(entries[0].pr_number(), Some(10));
@@ -729,6 +764,139 @@ mod tests {
         });
         let pr = parse_graphql_search_pr(&node).unwrap();
         assert_eq!(pr.repo_id.host.as_deref(), Some("ghe.company.com"));
+    }
+
+    #[test]
+    fn merge_entries_cross_repo_collision() {
+        use crate::git::types::RepoId;
+        let active = RepoId {
+            host: None,
+            owner: "active".into(),
+            name: "repo".into(),
+        };
+        let other = RepoId {
+            host: None,
+            owner: "other".into(),
+            name: "repo".into(),
+        };
+
+        let branches = vec![Branch {
+            name: "feature/auth".to_string(),
+            is_current: false,
+            upstream: None,
+            is_merged: false,
+        }];
+        let prs = vec![
+            PullRequest {
+                number: 1,
+                title: "active PR".into(),
+                author: "a".into(),
+                state: "OPEN".into(),
+                head_ref: "feature/auth".into(),
+                updated_at: "2024".into(),
+                is_draft: false,
+                review_requests: vec![],
+                latest_reviews: vec![],
+                review_status: None,
+                repo_id: active.clone(),
+            },
+            PullRequest {
+                number: 99,
+                title: "other PR".into(),
+                author: "b".into(),
+                state: "OPEN".into(),
+                head_ref: "feature/auth".into(),
+                updated_at: "2024".into(),
+                is_draft: false,
+                review_requests: vec![],
+                latest_reviews: vec![],
+                review_status: None,
+                repo_id: other.clone(),
+            },
+        ];
+        let entries = merge_entries(&active, &branches, &[], &prs, &Default::default());
+        assert_eq!(entries.len(), 2);
+        let active_entry = entries.iter().find(|e| e.repo_id == active).unwrap();
+        assert!(active_entry.local_branch.is_some());
+        assert_eq!(active_entry.pr_number(), Some(1));
+        let other_entry = entries.iter().find(|e| e.repo_id == other).unwrap();
+        assert!(other_entry.local_branch.is_none());
+        assert_eq!(other_entry.pr_number(), Some(99));
+    }
+
+    #[test]
+    fn merge_entries_injects_worktree_from_cross_repo_list() {
+        use crate::git::types::{RepoId, Worktree};
+        let active = RepoId {
+            host: None,
+            owner: "active".into(),
+            name: "repo".into(),
+        };
+        let other = RepoId {
+            host: None,
+            owner: "other".into(),
+            name: "repo".into(),
+        };
+
+        let prs = vec![PullRequest {
+            number: 7,
+            title: "x".into(),
+            author: "u".into(),
+            state: "OPEN".into(),
+            head_ref: "feat/x".into(),
+            updated_at: "2024".into(),
+            is_draft: false,
+            review_requests: vec![],
+            latest_reviews: vec![],
+            review_status: None,
+            repo_id: other.clone(),
+        }];
+        let mut wt_lists = std::collections::HashMap::new();
+        wt_lists.insert(
+            other.clone(),
+            vec![Worktree {
+                path: "/tmp/clones/other/repo/feat/x".into(),
+                head: "abc".into(),
+                branch: Some("feat/x".into()),
+                is_bare: false,
+            }],
+        );
+
+        let entries = merge_entries(&active, &[], &[], &prs, &wt_lists);
+        assert_eq!(entries.len(), 1);
+        let entry = &entries[0];
+        assert_eq!(entry.repo_id, other);
+        assert!(entry.worktree.is_some());
+        assert_eq!(entry.worktree_path(), Some("/tmp/clones/other/repo/feat/x"));
+    }
+
+    #[test]
+    fn merge_entries_single_repo_unchanged_order() {
+        use crate::git::types::RepoId;
+        let active = RepoId {
+            host: None,
+            owner: "a".into(),
+            name: "r".into(),
+        };
+        let branches = vec![
+            Branch {
+                name: "main".to_string(),
+                is_current: true,
+                upstream: None,
+                is_merged: false,
+            },
+            Branch {
+                name: "feature".to_string(),
+                is_current: false,
+                upstream: None,
+                is_merged: false,
+            },
+        ];
+        let entries = merge_entries(&active, &branches, &[], &[], &Default::default());
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].name, "main");
+        assert_eq!(entries[1].name, "feature");
+        assert!(entries.iter().all(|e| e.repo_id == active));
     }
 
     #[test]

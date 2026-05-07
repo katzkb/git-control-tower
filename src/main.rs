@@ -411,7 +411,14 @@ async fn run(
     }
     load_branches(&mut app).await;
     let repo_info = active_id;
-    app.entries = merge_entries(&app.branches, &app.worktrees, &[]);
+    let active = app.active_repo.clone().unwrap_or_default();
+    app.entries = merge_entries(
+        &active,
+        &app.branches,
+        &app.worktrees,
+        &[],
+        &app.wt_lists_per_repo,
+    );
     app.entries_loaded = true;
     app.request_details_for_selection();
 
@@ -663,8 +670,14 @@ async fn run(
                         }
                     }
                     if app.main_filter == MainFilter::Local {
-                        app.entries =
-                            merge_entries(&app.branches, &app.worktrees, app.current_prs());
+                        let active = app.active_repo.clone().unwrap_or_default();
+                        app.entries = merge_entries(
+                            &active,
+                            &app.branches,
+                            &app.worktrees,
+                            app.current_prs(),
+                            &app.wt_lists_per_repo,
+                        );
                         let filtered_len = app.filtered_entries().len();
                         if app.sidebar_scroll >= filtered_len && filtered_len > 0 {
                             app.sidebar_scroll = filtered_len - 1;
@@ -683,8 +696,14 @@ async fn run(
                         }
                     }
                     if app.main_filter == MainFilter::MyPr {
-                        app.entries =
-                            merge_entries(&app.branches, &app.worktrees, app.current_prs());
+                        let active = app.active_repo.clone().unwrap_or_default();
+                        app.entries = merge_entries(
+                            &active,
+                            &app.branches,
+                            &app.worktrees,
+                            app.current_prs(),
+                            &app.wt_lists_per_repo,
+                        );
                         let filtered_len = app.filtered_entries().len();
                         if app.sidebar_scroll >= filtered_len && filtered_len > 0 {
                             app.sidebar_scroll = filtered_len - 1;
@@ -706,8 +725,14 @@ async fn run(
                         }
                     }
                     if app.main_filter == MainFilter::ReviewRequested {
-                        app.entries =
-                            merge_entries(&app.branches, &app.worktrees, app.current_prs());
+                        let active = app.active_repo.clone().unwrap_or_default();
+                        app.entries = merge_entries(
+                            &active,
+                            &app.branches,
+                            &app.worktrees,
+                            app.current_prs(),
+                            &app.wt_lists_per_repo,
+                        );
                         let filtered_len = app.filtered_entries().len();
                         if app.sidebar_scroll >= filtered_len && filtered_len > 0 {
                             app.sidebar_scroll = filtered_len - 1;
@@ -1081,7 +1106,14 @@ async fn refresh_entries(app: &mut App) {
             }
         }
     }
-    app.entries = merge_entries(&app.branches, &app.worktrees, app.current_prs());
+    let active = app.active_repo.clone().unwrap_or_default();
+    app.entries = merge_entries(
+        &active,
+        &app.branches,
+        &app.worktrees,
+        app.current_prs(),
+        &app.wt_lists_per_repo,
+    );
     let filtered_len = app.filtered_entries().len();
     if app.sidebar_scroll >= filtered_len && filtered_len > 0 {
         app.sidebar_scroll = filtered_len - 1;
