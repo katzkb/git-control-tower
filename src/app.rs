@@ -1056,7 +1056,7 @@ impl App {
         }
     }
 
-    fn execute_action(&mut self, action: ActionItem, target_name: &str) {
+    pub(crate) fn execute_action(&mut self, action: ActionItem, target_name: &str) {
         let entry = match self.entries.iter().find(|e| e.name == target_name).cloned() {
             Some(e) => e,
             None => return,
@@ -1978,5 +1978,41 @@ mod action_menu_cross_repo_tests {
         let menu = app.action_menu.as_ref().unwrap();
         assert!(menu.items.contains(&ActionItem::CreateWorktree));
         assert!(menu.footer.is_none());
+    }
+
+    #[test]
+    fn cd_into_worktree_cross_repo_uses_absolute_path() {
+        use crate::app::ActionItem;
+        use crate::config::Config;
+        use crate::git::types::{BranchEntry, RepoId, Worktree};
+        let mut app = App::new(Config::default());
+        let active = RepoId {
+            host: None,
+            owner: "a".into(),
+            name: "x".into(),
+        };
+        let other = RepoId {
+            host: None,
+            owner: "b".into(),
+            name: "y".into(),
+        };
+        app.active_repo = Some(active);
+        app.entries = vec![BranchEntry {
+            name: "feat".into(),
+            repo_id: other.clone(),
+            local_branch: None,
+            worktree: Some(Worktree {
+                path: "/tmp/clones/b/feat".into(),
+                head: "abc".into(),
+                branch: Some("feat".into()),
+                is_bare: false,
+            }),
+            pull_request: None,
+            git_status: None,
+        }];
+        app.snap_scroll_to_entry();
+        app.execute_action(ActionItem::CdIntoWorktree, "feat");
+        assert_eq!(app.cd_path.as_deref(), Some("/tmp/clones/b/feat"));
+        assert!(app.should_quit);
     }
 }
