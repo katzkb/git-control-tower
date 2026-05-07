@@ -1126,8 +1126,13 @@ async fn run(
             }
             let mut work: Vec<Work> = Vec::with_capacity(selected.len());
             let mut wt_paths_claimed: Vec<String> = Vec::new();
+            let active_repo = app.active_repo.clone();
             for name in selected {
-                let Some(entry) = app.entries.iter().find(|e| e.name == name) else {
+                let Some(entry) = app
+                    .entries
+                    .iter()
+                    .find(|e| e.name == name && active_repo.as_ref() == Some(&e.repo_id))
+                else {
                     continue;
                 };
                 if entry.is_current() || app.is_protected_branch(&entry.name) {
