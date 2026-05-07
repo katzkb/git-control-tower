@@ -755,6 +755,7 @@ impl App {
                 if let Some(entry) = self.selected_entry().cloned()
                     && !entry.is_current()
                     && !self.is_protected_branch(&entry.name)
+                    && self.active_repo.as_ref() == Some(&entry.repo_id)
                 {
                     if self.branch_selected.contains(&entry.name) {
                         self.branch_selected.remove(&entry.name);
