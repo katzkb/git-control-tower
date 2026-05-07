@@ -97,6 +97,23 @@ impl Config {
             .to_string_lossy()
             .to_string()
     }
+
+    /// Build a worktree path relative to a specific repo root.
+    /// `dir = ".."` produces `<repo_root>/../<branch>` (= sibling of repo).
+    #[allow(dead_code)]
+    pub fn worktree_path_for(&self, repo_root: &Path, branch_name: &str) -> String {
+        let dir = self.worktree.dir.trim();
+        let base = if dir.is_empty() {
+            DEFAULT_WORKTREE_DIR
+        } else {
+            dir
+        };
+        repo_root
+            .join(base)
+            .join(branch_name)
+            .to_string_lossy()
+            .to_string()
+    }
 }
 
 /// Run post-create actions after worktree creation.
@@ -619,5 +636,31 @@ clone_root = "~/workspace"
         // No raw "~" should remain; the final component should be "foo".
         assert!(!path.to_string_lossy().contains('~'));
         assert!(path.ends_with("foo"));
+    }
+
+    #[test]
+    fn worktree_path_for_default_dir() {
+        let config = Config::default();
+        let root = Path::new("/repos/owner/name");
+        let p = config.worktree_path_for(root, "feature/auth");
+        let expected = Path::new("/repos/owner/name")
+            .join("..")
+            .join("feature/auth");
+        assert_eq!(p, expected.to_string_lossy().to_string());
+    }
+
+    #[test]
+    fn worktree_path_for_custom_dir() {
+        let config = Config {
+            worktree: WorktreeConfig {
+                dir: "wt".to_string(),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let root = Path::new("/repos/owner/name");
+        let p = config.worktree_path_for(root, "feature/x");
+        let expected = Path::new("/repos/owner/name").join("wt").join("feature/x");
+        assert_eq!(p, expected.to_string_lossy().to_string());
     }
 }
