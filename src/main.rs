@@ -1263,6 +1263,7 @@ async fn refresh_entries(app: &mut App) {
     if app.sidebar_scroll >= filtered_len && filtered_len > 0 {
         app.sidebar_scroll = filtered_len - 1;
     }
+    app.snap_scroll_to_entry();
 }
 
 async fn load_branches(app: &mut App) {
