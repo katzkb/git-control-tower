@@ -254,6 +254,12 @@ pub struct App {
 
     // Loaded TOML config (protected_branches, worktree, …)
     pub config: crate::config::Config,
+
+    // Cross-repo context (set at startup)
+    #[allow(dead_code)]
+    pub active_repo: Option<crate::git::types::RepoId>,
+    #[allow(dead_code)]
+    pub clone_root: Option<std::path::PathBuf>,
 }
 
 impl App {
@@ -315,6 +321,8 @@ impl App {
             commits_reload_requested: false,
             spinner_tick: 0,
             config,
+            active_repo: None,
+            clone_root: None,
         }
     }
 

@@ -387,6 +387,21 @@ async fn run(
     let mut pr_inflight: HashSet<u64> = HashSet::new();
     let mut status_inflight: HashSet<String> = HashSet::new();
 
+    let active_root = run_git(&["rev-parse", "--show-toplevel"])
+        .await
+        .ok()
+        .map(|s| std::path::PathBuf::from(s.trim()));
+    let active_id = run_git(&["remote", "get-url", "origin"])
+        .await
+        .ok()
+        .and_then(|url| extract_repo_info(url.trim()));
+    app.active_repo = active_id.clone();
+    app.clone_root = match (&active_root, &active_id) {
+        (Some(p), Some(id)) => infer_clone_root(p, id),
+        _ => None,
+    }
+    .or_else(|| app.config.workspace.clone_root_expanded());
+
     // Phase 1: Fast local loads (blocking, ~170ms)
     if let Ok(output) = run_git(LOG_ARGS).await {
         app.commits = parse_log(&output);
@@ -395,10 +410,7 @@ async fn run(
         app.worktrees = parse_worktrees(&output);
     }
     load_branches(&mut app).await;
-    let repo_info = run_git(&["remote", "get-url", "origin"])
-        .await
-        .ok()
-        .and_then(|url| extract_repo_info(url.trim()));
+    let repo_info = active_id;
     app.entries = merge_entries(&app.branches, &app.worktrees, &[]);
     app.entries_loaded = true;
     app.request_details_for_selection();
@@ -1327,6 +1339,33 @@ fn extract_repo_info(remote_url: &str) -> Option<RepoId> {
     })
 }
 
+/// If `local_path` ends with `<…>/<host>/<owner>/<name>`, strip that suffix
+/// and return the prefix. `RepoId.host == None` is treated as `github.com`
+/// for the purpose of suffix matching.
+fn infer_clone_root(
+    local_path: &std::path::Path,
+    repo_id: &crate::git::types::RepoId,
+) -> Option<std::path::PathBuf> {
+    let host = repo_id.host.as_deref().unwrap_or("github.com");
+    let mut comps: Vec<&std::ffi::OsStr> = local_path.iter().collect();
+    if comps.len() < 3 {
+        return None;
+    }
+    let last = comps.pop()?;
+    let owner = comps.pop()?;
+    let host_seg = comps.pop()?;
+    if last != std::ffi::OsStr::new(repo_id.name.as_str()) {
+        return None;
+    }
+    if owner != std::ffi::OsStr::new(repo_id.owner.as_str()) {
+        return None;
+    }
+    if host_seg != std::ffi::OsStr::new(host) {
+        return None;
+    }
+    Some(comps.iter().collect::<std::path::PathBuf>())
+}
+
 /// Extract the hostname from a git remote URL.
 /// Returns None for unrecognized formats.
 fn extract_gh_hostname(remote_url: &str) -> Option<String> {
@@ -1365,6 +1404,44 @@ fn extract_gh_hostname(remote_url: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn infer_clone_root_ghq_layout() {
+        use std::path::PathBuf;
+        let local = PathBuf::from("/Users/me/workspace/github.com/owner/repo");
+        let id = RepoId {
+            host: None,
+            owner: "owner".into(),
+            name: "repo".into(),
+        };
+        let root = infer_clone_root(&local, &id).expect("should strip suffix");
+        assert_eq!(root, PathBuf::from("/Users/me/workspace"));
+    }
+
+    #[test]
+    fn infer_clone_root_ghe_layout() {
+        use std::path::PathBuf;
+        let local = PathBuf::from("/work/ghe.company.com/team/svc");
+        let id = RepoId {
+            host: Some("ghe.company.com".into()),
+            owner: "team".into(),
+            name: "svc".into(),
+        };
+        let root = infer_clone_root(&local, &id).expect("should strip suffix");
+        assert_eq!(root, PathBuf::from("/work"));
+    }
+
+    #[test]
+    fn infer_clone_root_mismatch_returns_none() {
+        use std::path::PathBuf;
+        let local = PathBuf::from("/Users/me/somewhere/repo-x");
+        let id = RepoId {
+            host: None,
+            owner: "owner".into(),
+            name: "repo-x".into(),
+        };
+        assert!(infer_clone_root(&local, &id).is_none());
+    }
 
     #[test]
     fn test_extract_hostname_ssh() {
