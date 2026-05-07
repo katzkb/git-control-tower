@@ -33,7 +33,7 @@ demos-f3: $(TARGET)
 	$(VHS_ENV) vhs $(TAPES_DIR)/f3-hooks.tape
 
 demos-f4: $(TARGET)
-	$(VHS_ENV) vhs $(TAPES_DIR)/cross-repo.tape
+	$(VHS_ENV) vhs $(TAPES_DIR)/f4-cross-repo.tape
 
 $(TARGET):
 	cargo build --release
