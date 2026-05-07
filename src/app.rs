@@ -33,6 +33,11 @@ impl MainFilter {
     }
 }
 
+pub enum SidebarRow<'a> {
+    Header { repo_id: crate::git::types::RepoId },
+    Entry(&'a crate::git::types::BranchEntry),
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ActionItem {
     CreateWorktree,
@@ -431,6 +436,39 @@ impl App {
                 passes_filter && passes_search
             })
             .collect()
+    }
+
+    /// Build the sidebar rendering rows. Returns a flat list of headers and
+    /// entries; cross-repo grouping kicks in only for My PR / Review when
+    /// `entries` span more than one repo.
+    pub fn sidebar_rows(&self) -> Vec<SidebarRow<'_>> {
+        let filtered = self.filtered_entries();
+        let group_active = matches!(
+            self.main_filter,
+            MainFilter::MyPr | MainFilter::ReviewRequested
+        );
+        let repo_set: std::collections::HashSet<_> =
+            filtered.iter().map(|e| e.repo_id.clone()).collect();
+        let do_group = group_active && repo_set.len() > 1;
+
+        let mut rows = Vec::with_capacity(filtered.len() + repo_set.len());
+        if !do_group {
+            for e in filtered {
+                rows.push(SidebarRow::Entry(e));
+            }
+            return rows;
+        }
+        let mut last_repo: Option<crate::git::types::RepoId> = None;
+        for e in filtered {
+            if last_repo.as_ref() != Some(&e.repo_id) {
+                rows.push(SidebarRow::Header {
+                    repo_id: e.repo_id.clone(),
+                });
+                last_repo = Some(e.repo_id.clone());
+            }
+            rows.push(SidebarRow::Entry(e));
+        }
+        rows
     }
 
     pub fn selected_entry(&self) -> Option<&BranchEntry> {
@@ -1425,6 +1463,164 @@ mod resolve_local_path_tests {
         let meta = app.repos.get(&id).unwrap();
         assert!(meta.local_path_resolved);
         assert!(meta.local_path.is_none());
+    }
+}
+
+#[cfg(test)]
+mod sidebar_rows_tests {
+    use super::*;
+
+    #[test]
+    fn render_rows_groups_when_multi_repo() {
+        use crate::app::SidebarRow;
+        use crate::config::Config;
+        use crate::git::types::{BranchEntry, PullRequest, RepoId};
+        let mut app = App::new(Config::default());
+        let active = RepoId {
+            host: None,
+            owner: "a".into(),
+            name: "r1".into(),
+        };
+        let other = RepoId {
+            host: None,
+            owner: "b".into(),
+            name: "r2".into(),
+        };
+        app.active_repo = Some(active.clone());
+        app.main_filter = MainFilter::ReviewRequested;
+        let make_pr = |num: u64, head: &str, repo: &RepoId| PullRequest {
+            number: num,
+            title: "x".into(),
+            author: "u".into(),
+            state: "OPEN".into(),
+            head_ref: head.into(),
+            updated_at: "2024".into(),
+            is_draft: false,
+            review_requests: vec![],
+            latest_reviews: vec![],
+            review_status: None,
+            repo_id: repo.clone(),
+        };
+        app.entries = vec![
+            BranchEntry {
+                name: "f1".into(),
+                repo_id: active.clone(),
+                local_branch: None,
+                worktree: None,
+                pull_request: Some(make_pr(1, "f1", &active)),
+                git_status: None,
+            },
+            BranchEntry {
+                name: "f2".into(),
+                repo_id: other.clone(),
+                local_branch: None,
+                worktree: None,
+                pull_request: Some(make_pr(2, "f2", &other)),
+                git_status: None,
+            },
+        ];
+        let rows = app.sidebar_rows();
+        let header_count = rows
+            .iter()
+            .filter(|r| matches!(r, SidebarRow::Header { .. }))
+            .count();
+        let entry_count = rows
+            .iter()
+            .filter(|r| matches!(r, SidebarRow::Entry(_)))
+            .count();
+        assert_eq!(header_count, 2);
+        assert_eq!(entry_count, 2);
+    }
+
+    #[test]
+    fn render_rows_no_headers_when_single_repo() {
+        use crate::app::SidebarRow;
+        use crate::config::Config;
+        use crate::git::types::{BranchEntry, PullRequest, RepoId};
+        let mut app = App::new(Config::default());
+        let active = RepoId {
+            host: None,
+            owner: "a".into(),
+            name: "r1".into(),
+        };
+        app.active_repo = Some(active.clone());
+        app.main_filter = MainFilter::ReviewRequested;
+        let make_pr = |num: u64, head: &str| PullRequest {
+            number: num,
+            title: "x".into(),
+            author: "u".into(),
+            state: "OPEN".into(),
+            head_ref: head.into(),
+            updated_at: "2024".into(),
+            is_draft: false,
+            review_requests: vec![],
+            latest_reviews: vec![],
+            review_status: None,
+            repo_id: active.clone(),
+        };
+        app.entries = vec![
+            BranchEntry {
+                name: "f1".into(),
+                repo_id: active.clone(),
+                local_branch: None,
+                worktree: None,
+                pull_request: Some(make_pr(1, "f1")),
+                git_status: None,
+            },
+            BranchEntry {
+                name: "f2".into(),
+                repo_id: active.clone(),
+                local_branch: None,
+                worktree: None,
+                pull_request: Some(make_pr(2, "f2")),
+                git_status: None,
+            },
+        ];
+        let rows = app.sidebar_rows();
+        assert_eq!(
+            rows.iter()
+                .filter(|r| matches!(r, SidebarRow::Header { .. }))
+                .count(),
+            0
+        );
+        assert_eq!(rows.len(), 2);
+    }
+
+    #[test]
+    fn render_rows_local_filter_never_groups() {
+        use crate::app::SidebarRow;
+        use crate::config::Config;
+        use crate::git::types::{BranchEntry, RepoId};
+        let mut app = App::new(Config::default());
+        let active = RepoId {
+            host: None,
+            owner: "a".into(),
+            name: "r1".into(),
+        };
+        app.active_repo = Some(active.clone());
+        app.main_filter = MainFilter::Local;
+        // Local mode: filtered_entries requires has_local. Give entries a local branch.
+        let make_branch = |name: &str| crate::git::types::Branch {
+            name: name.into(),
+            is_current: false,
+            upstream: None,
+            is_merged: false,
+        };
+        app.entries = vec![BranchEntry {
+            name: "f1".into(),
+            repo_id: active.clone(),
+            local_branch: Some(make_branch("f1")),
+            worktree: None,
+            pull_request: None,
+            git_status: None,
+        }];
+        let rows = app.sidebar_rows();
+        assert_eq!(
+            rows.iter()
+                .filter(|r| matches!(r, SidebarRow::Header { .. }))
+                .count(),
+            0
+        );
     }
 }
 
