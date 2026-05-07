@@ -385,7 +385,6 @@ impl App {
         // Clamp scroll to valid range
         if item_count > 0 {
             self.sidebar_scroll = self.sidebar_scroll.min(item_count - 1);
-            self.snap_scroll_to_entry();
         } else {
             self.sidebar_scroll = 0;
         }
