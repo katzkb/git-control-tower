@@ -771,6 +771,7 @@ impl App {
                         (e.is_merged() || e.pr_is_merged())
                             && !e.is_current()
                             && !self.is_protected_branch(&e.name)
+                            && self.active_repo.as_ref() == Some(&e.repo_id)
                     })
                     .map(|e| e.name.clone())
                     .collect();
