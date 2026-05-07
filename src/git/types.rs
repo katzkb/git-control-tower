@@ -2,7 +2,7 @@ use std::fmt;
 
 use serde::Deserialize;
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Default)]
 pub struct RepoId {
     /// `None` means github.com (canonical default for GitHub Enterprise omitted).
     pub host: Option<String>,
@@ -81,6 +81,8 @@ pub struct PullRequest {
     pub latest_reviews: Vec<LatestReview>,
     #[serde(skip)]
     pub review_status: Option<ReviewStatus>,
+    #[serde(skip)]
+    pub repo_id: RepoId,
 }
 
 #[derive(Debug, Clone, Deserialize)]

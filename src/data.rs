@@ -216,6 +216,17 @@ pub async fn fetch_local_prs(
         }
     }
 
+    let repo_id_for_local = crate::git::types::RepoId {
+        host: hostname.map(|h| h.to_string()),
+        owner: owner.to_string(),
+        name: repo.to_string(),
+    };
+    for pr in &mut all_prs {
+        if pr.repo_id.owner.is_empty() {
+            pr.repo_id = repo_id_for_local.clone();
+        }
+    }
+
     (all_prs, errors)
 }
 
@@ -257,15 +268,97 @@ fn parse_graphql_pr(node: &serde_json::Value) -> Option<PullRequest> {
         review_requests,
         latest_reviews: Vec::new(),
         review_status: None,
+        repo_id: Default::default(),
     })
 }
 
-/// Fetch PRs authored by the current user (`gh pr list --author @me`).
-pub async fn fetch_my_prs(show_merged: bool) -> (Vec<PullRequest>, Vec<String>) {
-    fetch_pr_list(&["--author", "@me"], show_merged).await
+/// Parse a GraphQL `search.nodes[]` PR (with `repository` field) into PullRequest.
+fn parse_graphql_search_pr(node: &serde_json::Value) -> Option<PullRequest> {
+    let mut pr = parse_graphql_pr(node)?;
+    let repo_owner = node["repository"]["owner"]["login"].as_str()?.to_string();
+    let repo_name = node["repository"]["name"].as_str()?.to_string();
+    let repo_url = node["repository"]["url"].as_str().unwrap_or("");
+    let host = host_from_url(repo_url);
+    pr.repo_id = crate::git::types::RepoId {
+        host,
+        owner: repo_owner,
+        name: repo_name,
+    };
+    if let Some(arr) = node["latestReviews"]["nodes"].as_array() {
+        pr.latest_reviews = arr
+            .iter()
+            .filter_map(|r| {
+                Some(crate::git::types::LatestReview {
+                    author: r["author"]["login"].as_str()?.to_string(),
+                    state: r["state"].as_str()?.to_string(),
+                })
+            })
+            .collect();
+    }
+    Some(pr)
 }
 
-/// Fetch PRs with review requested from the current user.
+fn host_from_url(url: &str) -> Option<String> {
+    let rest = url
+        .strip_prefix("https://")
+        .or_else(|| url.strip_prefix("http://"))?;
+    let host = rest.split('/').next()?;
+    if host == "github.com" {
+        None
+    } else {
+        Some(host.to_string())
+    }
+}
+
+// gh api graphql does not accept --hostname here; v1 supports github.com only.
+// Cross-host (GHE) PR aggregation will require routing through per-host gh config.
+async fn fetch_search_prs(query_str: &str, limit: u32) -> (Vec<PullRequest>, Vec<String>) {
+    let escaped_query = query_str.replace('\\', "\\\\").replace('"', "\\\"");
+    let query = format!(
+        r#"{{ search(query: "{escaped_query}", type: ISSUE, first: {limit}) {{ nodes {{ ... on PullRequest {{ number title state headRefName updatedAt isDraft author {{ login }} repository {{ name url owner {{ login }} }} reviewRequests(first: 10) {{ nodes {{ requestedReviewer {{ ... on User {{ login }} }} }} }} latestReviews(first: 20) {{ nodes {{ author {{ login }} state }} }} }} }} }} }}"#
+    );
+    let query_arg = format!("query={query}");
+    let args = vec!["api", "graphql", "-f", &query_arg];
+    match run_gh(&args).await {
+        Ok(output) => match serde_json::from_str::<serde_json::Value>(&output) {
+            Ok(json) => {
+                let mut prs = Vec::new();
+                if let Some(arr) = json["data"]["search"]["nodes"].as_array() {
+                    for node in arr {
+                        if let Some(pr) = parse_graphql_search_pr(node) {
+                            prs.push(pr);
+                        }
+                    }
+                }
+                (prs, Vec::new())
+            }
+            Err(e) => {
+                debug_log(&format!("  → GraphQL search parse error: {e}"));
+                (Vec::new(), vec![format!("search parse error: {e}")])
+            }
+        },
+        Err(e) => {
+            debug_log(&format!("  → GraphQL search fetch error: {e}"));
+            (Vec::new(), vec![format!("search fetch failed: {e}")])
+        }
+    }
+}
+
+/// Fetch PRs authored by the current user via cross-repo GraphQL search.
+pub async fn fetch_my_prs(show_merged: bool) -> (Vec<PullRequest>, Vec<String>) {
+    let mut q = String::from("is:pr author:@me");
+    if !show_merged {
+        q.push_str(" is:open");
+    }
+    // When show_merged is on we lose the OPEN-only narrowing, so widen the limit
+    // to compensate (the previous fetch_pr_list returned 100 open + 50 merged).
+    let limit = if show_merged { 150 } else { 100 };
+    let (mut prs, errors) = fetch_search_prs(&q, limit).await;
+    prs.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+    (prs, errors)
+}
+
+/// Fetch PRs with review requested from the current user via cross-repo GraphQL search.
 /// Runs separate queries and merges results to avoid GHE `OR` incompatibility.
 /// When `include_team` is true, also includes team review requests.
 pub async fn fetch_review_prs(
@@ -273,24 +366,40 @@ pub async fn fetch_review_prs(
     include_team: bool,
     gh_user: &str,
 ) -> (Vec<PullRequest>, Vec<String>) {
-    let mut queries = vec!["review-requested:@me", "reviewed-by:@me"];
+    let mut queries: Vec<String> = vec![
+        "is:pr review-requested:@me".into(),
+        "is:pr reviewed-by:@me".into(),
+    ];
     if include_team {
-        queries.push("team-review-requested:@me");
+        queries.push("is:pr team-review-requested:@me".into());
+    }
+    if !show_merged {
+        for q in &mut queries {
+            q.push_str(" is:open");
+        }
     }
 
     let mut all_prs = Vec::new();
     let mut all_errors = Vec::new();
-    let mut seen: HashSet<u64> = HashSet::new();
-    let mut reviewed_numbers: HashSet<u64> = HashSet::new();
+    let mut seen: HashSet<(crate::git::types::RepoId, u64)> = HashSet::new();
+    let mut reviewed_keys: HashSet<(crate::git::types::RepoId, u64)> = HashSet::new();
 
-    for query in &queries {
-        let (prs, errors) = fetch_pr_list(&["--search", query], show_merged).await;
+    // Two separate sets:
+    // - `seen` deduplicates PRs across queries (keyed by RepoId+number).
+    // - `reviewed_keys` records every PR returned by the reviewed-by query, even
+    //   if `seen` rejects it as a duplicate. This is intentional: the me-only
+    //   filter below uses `reviewed_keys` as a predicate, not as a display list.
+    const REVIEWED_BY_INDEX: usize = 1;
+    for (idx, query) in queries.iter().enumerate() {
+        let is_reviewed = idx == REVIEWED_BY_INDEX;
+        let (prs, errors) = fetch_search_prs(query, 100).await;
         all_errors.extend(errors);
         for pr in prs {
-            if *query == "reviewed-by:@me" {
-                reviewed_numbers.insert(pr.number);
+            let key = (pr.repo_id.clone(), pr.number);
+            if is_reviewed {
+                reviewed_keys.insert(key.clone());
             }
-            if seen.insert(pr.number) {
+            if seen.insert(key) {
                 all_prs.push(pr);
             }
         }
@@ -306,7 +415,8 @@ pub async fn fetch_review_prs(
     // When me-only, exclude PRs that only have team review requests
     if !include_team && !gh_user.is_empty() {
         all_prs.retain(|pr| {
-            reviewed_numbers.contains(&pr.number)
+            let key = (pr.repo_id.clone(), pr.number);
+            reviewed_keys.contains(&key)
                 || pr
                     .review_requests
                     .iter()
@@ -314,69 +424,8 @@ pub async fn fetch_review_prs(
         });
     }
 
-    // Sort by updated_at descending for consistent ordering
     all_prs.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
-
     (all_prs, all_errors)
-}
-
-/// Common helper for fetching PR lists with a filter.
-/// `filter_args` is passed directly to `gh pr list` (e.g., `["--author", "@me"]`).
-/// Returns (prs, errors) where errors contains any fetch/parse failures.
-async fn fetch_pr_list(filter_args: &[&str], show_merged: bool) -> (Vec<PullRequest>, Vec<String>) {
-    let pr_fields =
-        "number,title,author,state,headRefName,updatedAt,isDraft,reviewRequests,latestReviews";
-    let filter_label = filter_args.join(" ");
-    let mut prs = Vec::new();
-    let mut errors = Vec::new();
-
-    // Always fetch open PRs
-    let mut args = vec!["pr", "list"];
-    args.extend_from_slice(filter_args);
-    args.extend_from_slice(&["--json", pr_fields, "--limit", "100"]);
-    match run_gh(&args).await {
-        Ok(output) => match serde_json::from_str::<Vec<PullRequest>>(&output) {
-            Ok(open) => prs.extend(open),
-            Err(e) => {
-                debug_log(&format!(
-                    "  → pr list [{filter_label}] JSON parse error: {e}"
-                ));
-                errors.push(format!("pr list [{filter_label}] parse error: {e}"));
-            }
-        },
-        Err(e) => {
-            debug_log(&format!("  → pr list [{filter_label}] fetch error: {e}"));
-            errors.push(format!("pr list [{filter_label}] failed: {e}"));
-        }
-    }
-
-    // Optionally fetch merged PRs
-    if show_merged {
-        let mut args = vec!["pr", "list"];
-        args.extend_from_slice(filter_args);
-        args.extend_from_slice(&["--state", "merged", "--json", pr_fields, "--limit", "50"]);
-        match run_gh(&args).await {
-            Ok(output) => match serde_json::from_str::<Vec<PullRequest>>(&output) {
-                Ok(merged) => prs.extend(merged),
-                Err(e) => {
-                    debug_log(&format!(
-                        "  → pr list [{filter_label}] (merged) JSON parse error: {e}"
-                    ));
-                    errors.push(format!(
-                        "pr list [{filter_label}] (merged) parse error: {e}"
-                    ));
-                }
-            },
-            Err(e) => {
-                debug_log(&format!(
-                    "  → pr list [{filter_label}] (merged) fetch error: {e}"
-                ));
-                errors.push(format!("pr list [{filter_label}] (merged) failed: {e}"));
-            }
-        }
-    }
-
-    (prs, errors)
 }
 
 #[cfg(test)]
@@ -419,6 +468,7 @@ mod tests {
             is_merged: false,
         }];
         let worktrees = vec![];
+        use crate::git::types::RepoId;
         let prs = vec![PullRequest {
             number: 42,
             title: "Add feature A".to_string(),
@@ -430,6 +480,7 @@ mod tests {
             is_draft: false,
             latest_reviews: vec![],
             review_status: None,
+            repo_id: RepoId::default(),
         }];
 
         let entries = merge_entries(&branches, &worktrees, &prs);
@@ -443,6 +494,7 @@ mod tests {
     fn test_merge_entries_remote_only_pr() {
         let branches = vec![];
         let worktrees = vec![];
+        use crate::git::types::RepoId;
         let prs = vec![PullRequest {
             number: 99,
             title: "Remote only PR".to_string(),
@@ -454,6 +506,7 @@ mod tests {
             is_draft: false,
             latest_reviews: vec![],
             review_status: None,
+            repo_id: RepoId::default(),
         }];
 
         let entries = merge_entries(&branches, &worktrees, &prs);
@@ -470,6 +523,7 @@ mod tests {
             upstream: None,
             is_merged: false,
         }];
+        use crate::git::types::RepoId;
         let prs = vec![PullRequest {
             number: 10,
             title: "Feature A".to_string(),
@@ -481,6 +535,7 @@ mod tests {
             is_draft: false,
             latest_reviews: vec![],
             review_status: None,
+            repo_id: RepoId::default(),
         }];
 
         let entries = merge_entries(&branches, &[], &prs);
@@ -498,6 +553,7 @@ mod tests {
             upstream: None,
             is_merged: false,
         }];
+        use crate::git::types::RepoId;
         let prs = vec![
             PullRequest {
                 number: 5,
@@ -510,6 +566,7 @@ mod tests {
                 is_draft: false,
                 latest_reviews: vec![],
                 review_status: None,
+                repo_id: RepoId::default(),
             },
             PullRequest {
                 number: 10,
@@ -522,6 +579,7 @@ mod tests {
                 is_draft: false,
                 latest_reviews: vec![],
                 review_status: None,
+                repo_id: RepoId::default(),
             },
         ];
 
@@ -624,6 +682,53 @@ mod tests {
         assert_eq!(pr.review_requests[0].login.as_deref(), Some("bob"));
         assert_eq!(pr.review_requests[1].login, None);
         assert_eq!(pr.review_requests[2].login, None);
+    }
+
+    #[test]
+    fn parse_graphql_search_pr_with_repo() {
+        let node = serde_json::json!({
+            "number": 42,
+            "title": "Cross repo",
+            "state": "OPEN",
+            "headRefName": "feat",
+            "updatedAt": "2024-01-15T00:00:00Z",
+            "isDraft": false,
+            "author": { "login": "alice" },
+            "repository": {
+                "name": "repo",
+                "owner": { "login": "owner" },
+                "url": "https://github.com/owner/repo"
+            },
+            "reviewRequests": { "nodes": [] },
+            "latestReviews": { "nodes": [] }
+        });
+        let pr = parse_graphql_search_pr(&node).unwrap();
+        assert_eq!(pr.number, 42);
+        assert_eq!(pr.repo_id.owner, "owner");
+        assert_eq!(pr.repo_id.name, "repo");
+        assert!(pr.repo_id.host.is_none());
+    }
+
+    #[test]
+    fn parse_graphql_search_pr_with_ghe_repo() {
+        let node = serde_json::json!({
+            "number": 1,
+            "title": "GHE",
+            "state": "OPEN",
+            "headRefName": "x",
+            "updatedAt": "2024-01-15T00:00:00Z",
+            "isDraft": false,
+            "author": { "login": "a" },
+            "repository": {
+                "name": "svc",
+                "owner": { "login": "team" },
+                "url": "https://ghe.company.com/team/svc"
+            },
+            "reviewRequests": { "nodes": [] },
+            "latestReviews": { "nodes": [] }
+        });
+        let pr = parse_graphql_search_pr(&node).unwrap();
+        assert_eq!(pr.repo_id.host.as_deref(), Some("ghe.company.com"));
     }
 
     #[test]

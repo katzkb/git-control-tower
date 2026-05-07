@@ -1543,6 +1543,7 @@ mod tests {
 
     #[test]
     fn test_compute_review_status_no_user() {
+        use crate::git::types::RepoId;
         let pr = PullRequest {
             number: 1,
             title: String::new(),
@@ -1554,13 +1555,14 @@ mod tests {
             is_draft: false,
             latest_reviews: vec![],
             review_status: None,
+            repo_id: RepoId::default(),
         };
         assert_eq!(compute_review_status(&pr, ""), ReviewStatus::NeedsReview);
     }
 
     #[test]
     fn test_compute_review_status_no_matching_review() {
-        use crate::git::types::LatestReview;
+        use crate::git::types::{LatestReview, RepoId};
         let pr = PullRequest {
             number: 1,
             title: String::new(),
@@ -1575,6 +1577,7 @@ mod tests {
                 state: "APPROVED".to_string(),
             }],
             review_status: None,
+            repo_id: RepoId::default(),
         };
         assert_eq!(
             compute_review_status(&pr, "katzkb"),
@@ -1584,7 +1587,7 @@ mod tests {
 
     #[test]
     fn test_compute_review_status_approved() {
-        use crate::git::types::LatestReview;
+        use crate::git::types::{LatestReview, RepoId};
         let pr = PullRequest {
             number: 1,
             title: String::new(),
@@ -1599,13 +1602,14 @@ mod tests {
                 state: "APPROVED".to_string(),
             }],
             review_status: None,
+            repo_id: RepoId::default(),
         };
         assert_eq!(compute_review_status(&pr, "katzkb"), ReviewStatus::Approved);
     }
 
     #[test]
     fn test_compute_review_status_changes_requested() {
-        use crate::git::types::LatestReview;
+        use crate::git::types::{LatestReview, RepoId};
         let pr = PullRequest {
             number: 1,
             title: String::new(),
@@ -1620,6 +1624,7 @@ mod tests {
                 state: "CHANGES_REQUESTED".to_string(),
             }],
             review_status: None,
+            repo_id: RepoId::default(),
         };
         assert_eq!(
             compute_review_status(&pr, "katzkb"),
