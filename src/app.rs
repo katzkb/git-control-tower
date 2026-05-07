@@ -510,6 +510,32 @@ impl App {
         }
     }
 
+    /// Find the next entry-row index after `from`, skipping headers. None if no entry follows.
+    fn next_entry_index(&self, from: usize) -> Option<usize> {
+        let rows = self.sidebar_rows();
+        let mut next = from + 1;
+        while next < rows.len() && matches!(rows[next], SidebarRow::Header { .. }) {
+            next += 1;
+        }
+        if next < rows.len() { Some(next) } else { None }
+    }
+
+    /// Find the previous entry-row index before `from`, skipping headers. None if no entry precedes.
+    fn prev_entry_index(&self, from: usize) -> Option<usize> {
+        if from == 0 {
+            return None;
+        }
+        let rows = self.sidebar_rows();
+        let mut prev = from - 1;
+        while matches!(rows.get(prev), Some(SidebarRow::Header { .. })) {
+            if prev == 0 {
+                return None;
+            }
+            prev -= 1;
+        }
+        Some(prev)
+    }
+
     /// Return the cached PR detail for the currently selected entry, if available.
     pub fn selected_pr_detail(&self) -> Option<&PrDetail> {
         let entry = self.selected_entry()?;
@@ -714,24 +740,13 @@ impl App {
     fn handle_main_key(&mut self, code: KeyCode) {
         match code {
             KeyCode::Char('j') | KeyCode::Down => {
-                let rows = self.sidebar_rows();
-                let mut next = self.sidebar_scroll + 1;
-                while next < rows.len() && matches!(rows[next], SidebarRow::Header { .. }) {
-                    next += 1;
-                }
-                if next < rows.len() {
+                if let Some(next) = self.next_entry_index(self.sidebar_scroll) {
                     self.sidebar_scroll = next;
                     self.request_details_for_selection();
                 }
             }
             KeyCode::Char('k') | KeyCode::Up if self.sidebar_scroll > 0 => {
-                let rows = self.sidebar_rows();
-                let mut prev = self.sidebar_scroll.saturating_sub(1);
-                while prev > 0 && matches!(rows[prev], SidebarRow::Header { .. }) {
-                    prev -= 1;
-                }
-                // If we landed on a Header at index 0, no Entry exists above; stay put.
-                if !matches!(rows.get(prev), Some(SidebarRow::Header { .. })) {
+                if let Some(prev) = self.prev_entry_index(self.sidebar_scroll) {
                     self.sidebar_scroll = prev;
                     self.request_details_for_selection();
                 }
@@ -967,23 +982,13 @@ impl App {
                 self.request_details_for_selection();
             }
             KeyCode::Down => {
-                let rows = self.sidebar_rows();
-                let mut next = self.sidebar_scroll + 1;
-                while next < rows.len() && matches!(rows[next], SidebarRow::Header { .. }) {
-                    next += 1;
-                }
-                if next < rows.len() {
+                if let Some(next) = self.next_entry_index(self.sidebar_scroll) {
                     self.sidebar_scroll = next;
                     self.request_details_for_selection();
                 }
             }
             KeyCode::Up if self.sidebar_scroll > 0 => {
-                let rows = self.sidebar_rows();
-                let mut prev = self.sidebar_scroll.saturating_sub(1);
-                while prev > 0 && matches!(rows[prev], SidebarRow::Header { .. }) {
-                    prev -= 1;
-                }
-                if !matches!(rows.get(prev), Some(SidebarRow::Header { .. })) {
+                if let Some(prev) = self.prev_entry_index(self.sidebar_scroll) {
                     self.sidebar_scroll = prev;
                     self.request_details_for_selection();
                 }
