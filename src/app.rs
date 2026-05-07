@@ -377,6 +377,7 @@ impl App {
         // Clamp scroll to valid range
         if item_count > 0 {
             self.sidebar_scroll = self.sidebar_scroll.min(item_count - 1);
+            self.snap_scroll_to_entry();
         } else {
             self.sidebar_scroll = 0;
         }
@@ -472,7 +473,33 @@ impl App {
     }
 
     pub fn selected_entry(&self) -> Option<&BranchEntry> {
-        self.filtered_entries().into_iter().nth(self.sidebar_scroll)
+        let rows = self.sidebar_rows();
+        match rows.get(self.sidebar_scroll)? {
+            SidebarRow::Entry(e) => Some(*e),
+            SidebarRow::Header { .. } => None,
+        }
+    }
+
+    /// If `sidebar_scroll` lands on a Header, advance to the next Entry. If past
+    /// the end, clamp to the last Entry. No-op if already on an Entry.
+    pub fn snap_scroll_to_entry(&mut self) {
+        // Collect row kinds into a plain bool vec (true = is_header) to avoid holding
+        // a borrow on self while mutating sidebar_scroll.
+        let is_header: Vec<bool> = self
+            .sidebar_rows()
+            .iter()
+            .map(|r| matches!(r, SidebarRow::Header { .. }))
+            .collect();
+        if is_header.is_empty() {
+            self.sidebar_scroll = 0;
+            return;
+        }
+        while self.sidebar_scroll < is_header.len() && is_header[self.sidebar_scroll] {
+            self.sidebar_scroll += 1;
+        }
+        if self.sidebar_scroll >= is_header.len() {
+            self.sidebar_scroll = is_header.len().saturating_sub(1);
+        }
     }
 
     /// Return the cached PR detail for the currently selected entry, if available.
@@ -557,6 +584,7 @@ impl App {
                     self.search_query.clear();
                     self.sidebar_scroll = self.search_pre_scroll;
                     self.sidebar_offset = 0;
+                    self.snap_scroll_to_entry();
                     self.request_details_for_selection();
                 } else if matches!(self.active_view, ActiveView::Log | ActiveView::History) {
                     self.active_view = ActiveView::Main;
@@ -580,6 +608,7 @@ impl App {
                 self.sidebar_scroll = 0;
                 self.sidebar_offset = 0;
                 self.rebuild_entries();
+                self.snap_scroll_to_entry();
                 if !self.local_prs_loaded {
                     self.pr_fetch_requested = Some(MainFilter::Local);
                 }
@@ -592,6 +621,7 @@ impl App {
                 self.sidebar_scroll = 0;
                 self.sidebar_offset = 0;
                 self.rebuild_entries();
+                self.snap_scroll_to_entry();
                 if !self.my_prs_loaded {
                     self.pr_fetch_requested = Some(MainFilter::MyPr);
                 }
@@ -604,6 +634,7 @@ impl App {
                 self.sidebar_scroll = 0;
                 self.sidebar_offset = 0;
                 self.rebuild_entries();
+                self.snap_scroll_to_entry();
                 if !self.review_prs_loaded {
                     self.pr_fetch_requested = Some(MainFilter::ReviewRequested);
                 }
@@ -652,17 +683,29 @@ impl App {
     }
 
     fn handle_main_key(&mut self, code: KeyCode) {
-        let filtered_len = self.filtered_entries().len();
         match code {
-            KeyCode::Char('j') | KeyCode::Down
-                if filtered_len > 0 && self.sidebar_scroll + 1 < filtered_len =>
-            {
-                self.sidebar_scroll += 1;
-                self.request_details_for_selection();
+            KeyCode::Char('j') | KeyCode::Down => {
+                let rows = self.sidebar_rows();
+                let mut next = self.sidebar_scroll + 1;
+                while next < rows.len() && matches!(rows[next], SidebarRow::Header { .. }) {
+                    next += 1;
+                }
+                if next < rows.len() {
+                    self.sidebar_scroll = next;
+                    self.request_details_for_selection();
+                }
             }
             KeyCode::Char('k') | KeyCode::Up if self.sidebar_scroll > 0 => {
-                self.sidebar_scroll = self.sidebar_scroll.saturating_sub(1);
-                self.request_details_for_selection();
+                let rows = self.sidebar_rows();
+                let mut prev = self.sidebar_scroll.saturating_sub(1);
+                while prev > 0 && matches!(rows[prev], SidebarRow::Header { .. }) {
+                    prev -= 1;
+                }
+                // If we landed on a Header at index 0, no Entry exists above; stay put.
+                if !matches!(rows.get(prev), Some(SidebarRow::Header { .. })) {
+                    self.sidebar_scroll = prev;
+                    self.request_details_for_selection();
+                }
             }
             KeyCode::Char(' ') => {
                 if let Some(entry) = self.selected_entry().cloned()
@@ -793,6 +836,7 @@ impl App {
                     self.pr_fetch_requested = Some(self.main_filter);
                     self.sidebar_scroll = 0;
                     self.sidebar_offset = 0;
+                    self.snap_scroll_to_entry();
                 }
             }
             KeyCode::Char('t') if self.main_filter == MainFilter::ReviewRequested => {
@@ -803,6 +847,7 @@ impl App {
                 self.pr_fetch_requested = Some(MainFilter::ReviewRequested);
                 self.sidebar_scroll = 0;
                 self.sidebar_offset = 0;
+                self.snap_scroll_to_entry();
             }
             KeyCode::Char('/') => {
                 self.search_pre_scroll = self.sidebar_scroll;
@@ -844,6 +889,7 @@ impl App {
                 self.search_active = false;
                 self.search_query.clear();
                 self.sidebar_scroll = self.search_pre_scroll;
+                self.snap_scroll_to_entry();
                 self.request_details_for_selection();
             }
             KeyCode::Enter => {
@@ -855,24 +901,37 @@ impl App {
                 self.search_query.pop();
                 self.sidebar_scroll = 0;
                 self.sidebar_offset = 0;
+                self.snap_scroll_to_entry();
                 self.request_details_for_selection();
             }
             KeyCode::Char(c) => {
                 self.search_query.push(c);
                 self.sidebar_scroll = 0;
                 self.sidebar_offset = 0;
+                self.snap_scroll_to_entry();
                 self.request_details_for_selection();
             }
             KeyCode::Down => {
-                let len = self.filtered_entries().len();
-                if len > 0 && self.sidebar_scroll + 1 < len {
-                    self.sidebar_scroll += 1;
+                let rows = self.sidebar_rows();
+                let mut next = self.sidebar_scroll + 1;
+                while next < rows.len() && matches!(rows[next], SidebarRow::Header { .. }) {
+                    next += 1;
+                }
+                if next < rows.len() {
+                    self.sidebar_scroll = next;
                     self.request_details_for_selection();
                 }
             }
             KeyCode::Up if self.sidebar_scroll > 0 => {
-                self.sidebar_scroll -= 1;
-                self.request_details_for_selection();
+                let rows = self.sidebar_rows();
+                let mut prev = self.sidebar_scroll.saturating_sub(1);
+                while prev > 0 && matches!(rows[prev], SidebarRow::Header { .. }) {
+                    prev -= 1;
+                }
+                if !matches!(rows.get(prev), Some(SidebarRow::Header { .. })) {
+                    self.sidebar_scroll = prev;
+                    self.request_details_for_selection();
+                }
             }
             _ => {}
         }
@@ -1463,6 +1522,79 @@ mod resolve_local_path_tests {
         let meta = app.repos.get(&id).unwrap();
         assert!(meta.local_path_resolved);
         assert!(meta.local_path.is_none());
+    }
+}
+
+#[cfg(test)]
+mod cursor_skip_tests {
+    use super::*;
+
+    #[test]
+    fn cursor_moves_skips_headers_in_grouped_view() {
+        use crate::app::SidebarRow;
+        use crate::config::Config;
+        use crate::git::types::{BranchEntry, PullRequest, RepoId};
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        let mut app = App::new(Config::default());
+        let active = RepoId {
+            host: None,
+            owner: "a".into(),
+            name: "x".into(),
+        };
+        let other = RepoId {
+            host: None,
+            owner: "b".into(),
+            name: "y".into(),
+        };
+        app.active_repo = Some(active.clone());
+        app.main_filter = MainFilter::ReviewRequested;
+        let make_pr = |num: u64, head: &str, repo: &RepoId| PullRequest {
+            number: num,
+            title: "t".into(),
+            author: "u".into(),
+            state: "OPEN".into(),
+            head_ref: head.into(),
+            updated_at: "2024".into(),
+            is_draft: false,
+            review_requests: vec![],
+            latest_reviews: vec![],
+            review_status: None,
+            repo_id: repo.clone(),
+        };
+        app.entries = vec![
+            BranchEntry {
+                name: "e1".into(),
+                repo_id: active.clone(),
+                local_branch: None,
+                worktree: None,
+                pull_request: Some(make_pr(1, "e1", &active)),
+                git_status: None,
+            },
+            BranchEntry {
+                name: "e2".into(),
+                repo_id: other.clone(),
+                local_branch: None,
+                worktree: None,
+                pull_request: Some(make_pr(2, "e2", &other)),
+                git_status: None,
+            },
+        ];
+        // rows = [Header(active), Entry(e1), Header(other), Entry(e2)] → indices 0..=3
+        // Initial: snap to first Entry (= 1)
+        app.snap_scroll_to_entry();
+        assert_eq!(app.sidebar_scroll, 1);
+
+        // j → should jump from index 1 to index 3 (skip Header at index 2)
+        app.handle_key(KeyEvent::new(KeyCode::Char('j'), KeyModifiers::NONE));
+        let rows = app.sidebar_rows();
+        assert_eq!(app.sidebar_scroll, 3);
+        assert!(matches!(rows[app.sidebar_scroll], SidebarRow::Entry(_)));
+
+        // k → should jump back from 3 to 1
+        app.handle_key(KeyEvent::new(KeyCode::Char('k'), KeyModifiers::NONE));
+        let rows = app.sidebar_rows();
+        assert_eq!(app.sidebar_scroll, 1);
+        assert!(matches!(rows[app.sidebar_scroll], SidebarRow::Entry(_)));
     }
 }
 
