@@ -993,13 +993,7 @@ impl App {
         let wt_path_for_inflight = if is_active_repo {
             self.config.worktree_path(&entry.name)
         } else if let Some(ref root) = clone_path {
-            // Interim inline path-building logic until Task 13 introduces worktree_path_for.
-            let dir = self.config.worktree.dir.trim();
-            let base_dir = if dir.is_empty() { ".." } else { dir };
-            root.join(base_dir)
-                .join(&entry.name)
-                .to_string_lossy()
-                .to_string()
+            self.config.worktree_path_for(root, &entry.name)
         } else {
             String::new()
         };
