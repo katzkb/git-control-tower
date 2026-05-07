@@ -262,12 +262,10 @@ pub struct App {
     pub config: crate::config::Config,
 
     // Cross-repo context (set at startup)
-    #[allow(dead_code)]
     pub active_repo: Option<crate::git::types::RepoId>,
     pub clone_root: Option<std::path::PathBuf>,
 
     // Per-repo metadata (populated lazily as repos are selected)
-    #[allow(dead_code)]
     pub repos: std::collections::HashMap<crate::git::types::RepoId, crate::git::types::RepoMeta>,
 
     // Worktree lists per repo (populated lazily as cross-repo PRs are selected)
@@ -1244,7 +1242,6 @@ impl App {
     /// Resolve a repo's local clone path under `clone_root`. Idempotent: only
     /// hits the filesystem once per repo. Sets `local_path_resolved = true`
     /// regardless of outcome to prevent re-tries.
-    #[allow(dead_code)]
     pub fn resolve_local_path(&mut self, id: &crate::git::types::RepoId) {
         // Snapshot clone_root first (no borrow on self.repos held).
         let root = self.clone_root.clone();

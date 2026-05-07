@@ -10,12 +10,10 @@ pub struct WorkspaceConfig {
     /// `~` is expanded at lookup time; absent means cross-repo Worktree
     /// actions degrade to read-only when auto-detection also fails.
     #[serde(default)]
-    #[allow(dead_code)]
     pub clone_root: Option<String>,
 }
 
 impl WorkspaceConfig {
-    #[allow(dead_code)]
     pub fn clone_root_expanded(&self) -> Option<PathBuf> {
         let raw = self.clone_root.as_deref()?;
         let expanded = shellexpand::tilde(raw);
@@ -30,7 +28,6 @@ pub struct Config {
     #[serde(default = "default_protected_branches")]
     pub protected_branches: Vec<String>,
     #[serde(default)]
-    #[allow(dead_code)]
     pub workspace: WorkspaceConfig,
 }
 
