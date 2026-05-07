@@ -419,7 +419,6 @@ async fn run(
         app.repos
             .entry(id.clone())
             .or_insert_with(|| crate::git::types::RepoMeta {
-                id,
                 local_path: active_root.clone(),
                 local_path_resolved: true,
             });
@@ -1470,7 +1469,6 @@ fn seed_repos_from_prs(
         repos
             .entry(pr.repo_id.clone())
             .or_insert_with(|| crate::git::types::RepoMeta {
-                id: pr.repo_id.clone(),
                 local_path: None,
                 local_path_resolved: false,
             });

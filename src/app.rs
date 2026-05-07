@@ -1601,7 +1601,6 @@ mod resolve_local_path_tests {
         app.repos.insert(
             id.clone(),
             crate::git::types::RepoMeta {
-                id: id.clone(),
                 local_path: None,
                 local_path_resolved: false,
             },
@@ -1627,7 +1626,6 @@ mod resolve_local_path_tests {
         app.repos.insert(
             id.clone(),
             crate::git::types::RepoMeta {
-                id: id.clone(),
                 local_path: None,
                 local_path_resolved: false,
             },
@@ -1955,7 +1953,6 @@ mod action_menu_cross_repo_tests {
         app.repos.insert(
             other.clone(),
             RepoMeta {
-                id: other.clone(),
                 local_path: None,
                 local_path_resolved: true,
             },
@@ -2015,7 +2012,6 @@ mod action_menu_cross_repo_tests {
         app.repos.insert(
             other.clone(),
             RepoMeta {
-                id: other.clone(),
                 local_path: Some(clone_path),
                 local_path_resolved: true,
             },
@@ -2180,7 +2176,6 @@ mod wt_list_lazy_load_tests {
         app.repos.insert(
             other.clone(),
             RepoMeta {
-                id: other.clone(),
                 local_path: None,
                 local_path_resolved: false,
             },

@@ -20,9 +20,7 @@ impl fmt::Display for RepoId {
 }
 
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct RepoMeta {
-    pub id: RepoId,
     /// Resolved lazily on first selection. `None` after `local_path_resolved == true`
     /// means we tried but the clone path doesn't exist.
     pub local_path: Option<std::path::PathBuf>,
