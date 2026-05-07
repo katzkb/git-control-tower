@@ -736,15 +736,7 @@ async fn run(
                             }
                         }
                     }
-                    for pr in &app.local_prs {
-                        app.repos.entry(pr.repo_id.clone()).or_insert_with(|| {
-                            crate::git::types::RepoMeta {
-                                id: pr.repo_id.clone(),
-                                local_path: None,
-                                local_path_resolved: false,
-                            }
-                        });
-                    }
+                    seed_repos_from_prs(&mut app.repos, &app.local_prs);
                     if app.main_filter == MainFilter::Local {
                         let active = app.active_repo.clone().unwrap_or_default();
                         app.entries = merge_entries(
@@ -771,15 +763,7 @@ async fn run(
                             }
                         }
                     }
-                    for pr in &app.my_prs {
-                        app.repos.entry(pr.repo_id.clone()).or_insert_with(|| {
-                            crate::git::types::RepoMeta {
-                                id: pr.repo_id.clone(),
-                                local_path: None,
-                                local_path_resolved: false,
-                            }
-                        });
-                    }
+                    seed_repos_from_prs(&mut app.repos, &app.my_prs);
                     if app.main_filter == MainFilter::MyPr {
                         let active = app.active_repo.clone().unwrap_or_default();
                         app.entries = merge_entries(
@@ -809,15 +793,7 @@ async fn run(
                             }
                         }
                     }
-                    for pr in &app.review_prs {
-                        app.repos.entry(pr.repo_id.clone()).or_insert_with(|| {
-                            crate::git::types::RepoMeta {
-                                id: pr.repo_id.clone(),
-                                local_path: None,
-                                local_path_resolved: false,
-                            }
-                        });
-                    }
+                    seed_repos_from_prs(&mut app.repos, &app.review_prs);
                     if app.main_filter == MainFilter::ReviewRequested {
                         let active = app.active_repo.clone().unwrap_or_default();
                         app.entries = merge_entries(
@@ -1474,6 +1450,24 @@ fn copy_via_osc52(text: &str) {
     if let Ok(mut tty) = std::fs::OpenOptions::new().write(true).open("/dev/tty") {
         let _ = tty.write_all(osc52.as_bytes());
         let _ = tty.flush();
+    }
+}
+
+/// Seed `repos` map with stub entries for every repo referenced by `prs`.
+/// Called after each PR list arrives from the network so that cross-repo
+/// entries have a `RepoMeta` record even before a clone is resolved.
+fn seed_repos_from_prs(
+    repos: &mut std::collections::HashMap<crate::git::types::RepoId, crate::git::types::RepoMeta>,
+    prs: &[PullRequest],
+) {
+    for pr in prs {
+        repos
+            .entry(pr.repo_id.clone())
+            .or_insert_with(|| crate::git::types::RepoMeta {
+                id: pr.repo_id.clone(),
+                local_path: None,
+                local_path_resolved: false,
+            });
     }
 }
 
