@@ -43,6 +43,60 @@ case "${1:-}" in
       fi
     elif [[ "$query" == *"repository("* ]]; then
       cat "$GH_DIR/local-prs-${DEMO_SCENE}.json"
+    elif [[ "$query" == *"search(query:"*"review-requested:@me"* ]]; then
+      # Cross-repo review-requested PRs — return multi-repo fixture
+      cat <<'JSON'
+{
+  "data": {
+    "search": {
+      "nodes": [
+        {
+          "number": 45,
+          "title": "Add OAuth login flow",
+          "state": "OPEN",
+          "headRefName": "feature/oauth",
+          "updatedAt": "2026-05-06T10:00:00Z",
+          "isDraft": false,
+          "author": {"login": "alice"},
+          "repository": {"name": "git-control-tower", "url": "https://github.com/katzkb/git-control-tower", "owner": {"login": "katzkb"}},
+          "reviewRequests": {"nodes": []},
+          "latestReviews": {"nodes": []}
+        },
+        {
+          "number": 12,
+          "title": "Fix login bug",
+          "state": "OPEN",
+          "headRefName": "fix/login-bug",
+          "updatedAt": "2026-05-05T09:00:00Z",
+          "isDraft": false,
+          "author": {"login": "bob"},
+          "repository": {"name": "web", "url": "https://github.com/org-x/web", "owner": {"login": "org-x"}},
+          "reviewRequests": {"nodes": []},
+          "latestReviews": {"nodes": [{"author": {"login": "katzkb"}, "state": "APPROVED"}]}
+        },
+        {
+          "number": 5,
+          "title": "Improve zsh prompt",
+          "state": "OPEN",
+          "headRefName": "feature/zsh-fix",
+          "updatedAt": "2026-05-04T08:00:00Z",
+          "isDraft": false,
+          "author": {"login": "charlie"},
+          "repository": {"name": "dotfiles", "url": "https://github.com/katzkb/dotfiles", "owner": {"login": "katzkb"}},
+          "reviewRequests": {"nodes": [{"requestedReviewer": {"login": "katzkb"}}]},
+          "latestReviews": {"nodes": []}
+        }
+      ]
+    }
+  }
+}
+JSON
+    elif [[ "$query" == *"search(query:"*"reviewed-by:@me"* ]]; then
+      echo '{"data":{"search":{"nodes":[]}}}'
+    elif [[ "$query" == *"search(query:"*"team-review-requested:@me"* ]]; then
+      echo '{"data":{"search":{"nodes":[]}}}'
+    elif [[ "$query" == *"search(query:"*"author:@me"* ]]; then
+      echo '{"data":{"search":{"nodes":[]}}}'
     else
       echo "gh-stub: unsupported graphql query" >&2
       exit 1
