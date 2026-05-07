@@ -44,7 +44,10 @@ case "${1:-}" in
     elif [[ "$query" == *"repository("* ]]; then
       cat "$GH_DIR/local-prs-${DEMO_SCENE}.json"
     elif [[ "$query" == *"search(query:"*"review-requested:@me"* ]]; then
-      # Cross-repo review-requested PRs — return multi-repo fixture
+      # Cross-repo review-requested PRs — return multi-repo fixture.
+      # All three PRs request review from `katzkb-demo` (= viewer-login.txt)
+      # so they survive fetch_review_prs's me-only filter, which requires
+      # either the user in `reviewed_keys` or as a requested reviewer.
       cat <<'JSON'
 {
   "data": {
@@ -59,7 +62,7 @@ case "${1:-}" in
           "isDraft": false,
           "author": {"login": "alice"},
           "repository": {"name": "git-control-tower", "url": "https://github.com/katzkb/git-control-tower", "owner": {"login": "katzkb"}},
-          "reviewRequests": {"nodes": []},
+          "reviewRequests": {"nodes": [{"requestedReviewer": {"login": "katzkb-demo"}}]},
           "latestReviews": {"nodes": []}
         },
         {
@@ -71,8 +74,8 @@ case "${1:-}" in
           "isDraft": false,
           "author": {"login": "bob"},
           "repository": {"name": "web", "url": "https://github.com/org-x/web", "owner": {"login": "org-x"}},
-          "reviewRequests": {"nodes": []},
-          "latestReviews": {"nodes": [{"author": {"login": "katzkb"}, "state": "APPROVED"}]}
+          "reviewRequests": {"nodes": [{"requestedReviewer": {"login": "katzkb-demo"}}]},
+          "latestReviews": {"nodes": [{"author": {"login": "katzkb-demo"}, "state": "APPROVED"}]}
         },
         {
           "number": 5,
@@ -83,8 +86,8 @@ case "${1:-}" in
           "isDraft": false,
           "author": {"login": "charlie"},
           "repository": {"name": "dotfiles", "url": "https://github.com/katzkb/dotfiles", "owner": {"login": "katzkb"}},
-          "reviewRequests": {"nodes": [{"requestedReviewer": {"login": "katzkb"}}]},
-          "latestReviews": {"nodes": []}
+          "reviewRequests": {"nodes": [{"requestedReviewer": {"login": "katzkb-demo"}}]},
+          "latestReviews": {"nodes": [{"author": {"login": "katzkb-demo"}, "state": "CHANGES_REQUESTED"}]}
         }
       ]
     }
