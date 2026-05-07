@@ -41,8 +41,15 @@ const LOG_ARGS: &[&str] = &[
 ];
 
 enum AsyncResult {
-    PrDetail(PrDetail),
-    PrDetailError(u64, String),
+    PrDetail {
+        repo_id: crate::git::types::RepoId,
+        detail: PrDetail,
+    },
+    PrDetailError {
+        repo_id: crate::git::types::RepoId,
+        number: u64,
+        error: String,
+    },
     GitStatus {
         wt_path: String,
         status: GitStatus,
@@ -384,7 +391,7 @@ async fn run(
     app.verbose = verbose;
     let mut events = EventHandler::new(Duration::from_millis(80));
     let (tx, mut rx) = mpsc::unbounded_channel::<AsyncResult>();
-    let mut pr_inflight: HashSet<u64> = HashSet::new();
+    let mut pr_inflight: HashSet<(crate::git::types::RepoId, u64)> = HashSet::new();
     let mut status_inflight: HashSet<String> = HashSet::new();
 
     let active_root = run_git(&["rev-parse", "--show-toplevel"])
@@ -487,38 +494,50 @@ async fn run(
         }
 
         // Spawn PR detail load in background (non-blocking, deduplicated)
-        if let Some(number) = app.pr_detail_requested.take()
-            && !pr_inflight.contains(&number)
+        if let Some((repo_id, number)) = app.pr_detail_requested.take()
+            && !pr_inflight.contains(&(repo_id.clone(), number))
         {
-            pr_inflight.insert(number);
+            pr_inflight.insert((repo_id.clone(), number));
             let tx = tx.clone();
+            let repo_arg = format!("{}/{}", repo_id.owner, repo_id.name);
             tokio::spawn(async move {
                 let num_str = number.to_string();
-                let result = run_gh(&[
+                let mut args = vec![
                     "pr",
                     "view",
                     &num_str,
+                    "--repo",
+                    repo_arg.as_str(),
                     "--json",
                     "number,title,author,state,body,additions,deletions,headRefName",
-                ])
-                .await;
+                ];
+                // For GHE hosts, add --hostname
+                let hostname_buf;
+                if let Some(h) = &repo_id.host {
+                    hostname_buf = h.clone();
+                    args.push("--hostname");
+                    args.push(hostname_buf.as_str());
+                }
+                let result = run_gh(&args).await;
                 match result {
                     Ok(output) => match serde_json::from_str::<PrDetail>(&output) {
                         Ok(detail) => {
-                            let _ = tx.send(AsyncResult::PrDetail(detail));
+                            let _ = tx.send(AsyncResult::PrDetail { repo_id, detail });
                         }
                         Err(e) => {
-                            let _ = tx.send(AsyncResult::PrDetailError(
+                            let _ = tx.send(AsyncResult::PrDetailError {
+                                repo_id,
                                 number,
-                                format!("PR #{number} parse error: {e}"),
-                            ));
+                                error: format!("PR #{number} parse error: {e}"),
+                            });
                         }
                     },
                     Err(e) => {
-                        let _ = tx.send(AsyncResult::PrDetailError(
+                        let _ = tx.send(AsyncResult::PrDetailError {
+                            repo_id,
                             number,
-                            format!("PR #{number} fetch failed: {e}"),
-                        ));
+                            error: format!("PR #{number} fetch failed: {e}"),
+                        });
                     }
                 }
             });
@@ -612,16 +631,21 @@ async fn run(
         // Receive completed background results (non-blocking)
         while let Ok(result) = rx.try_recv() {
             match result {
-                AsyncResult::PrDetail(detail) => {
-                    pr_inflight.remove(&detail.number);
-                    app.pr_detail_cache.insert(detail.number, detail);
+                AsyncResult::PrDetail { repo_id, detail } => {
+                    let key = (repo_id.clone(), detail.number);
+                    pr_inflight.remove(&key);
+                    app.pr_detail_cache.insert(key, detail);
                 }
-                AsyncResult::PrDetailError(number, error_msg) => {
-                    pr_inflight.remove(&number);
+                AsyncResult::PrDetailError {
+                    repo_id,
+                    number,
+                    error,
+                } => {
+                    pr_inflight.remove(&(repo_id, number));
                     app.notification =
                         Some(Notification::error(format!("Failed to load PR #{number}")));
-                    if app.verbose && !app.verbose_errors.contains(&error_msg) {
-                        app.verbose_errors.push(error_msg);
+                    if app.verbose && !app.verbose_errors.contains(&error) {
+                        app.verbose_errors.push(error);
                     }
                 }
                 AsyncResult::GitStatus { wt_path, status } => {
@@ -1075,8 +1099,17 @@ async fn run(
         }
 
         // Open PR in browser if requested
-        if let Some(pr_number) = app.open_pr_requested.take() {
-            let _ = run_gh(&["pr", "view", &pr_number.to_string(), "--web"]).await;
+        if let Some((repo_id, pr_number)) = app.open_pr_requested.take() {
+            let repo_arg = format!("{}/{}", repo_id.owner, repo_id.name);
+            let num = pr_number.to_string();
+            let mut args = vec!["pr", "view", &num, "--web", "--repo", repo_arg.as_str()];
+            let hostname_buf;
+            if let Some(h) = &repo_id.host {
+                hostname_buf = h.clone();
+                args.push("--hostname");
+                args.push(hostname_buf.as_str());
+            }
+            let _ = run_gh(&args).await;
         }
 
         // Copy branch name to clipboard if requested

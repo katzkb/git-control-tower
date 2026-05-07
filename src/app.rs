@@ -207,10 +207,10 @@ pub struct App {
     pub include_team_reviews: bool,
     pub pr_fetch_requested: Option<MainFilter>,
 
-    // PR Detail (for detail pane, cached by PR number)
-    pub pr_detail_cache: HashMap<u64, PrDetail>,
+    // PR Detail (for detail pane, cached by (RepoId, PR number))
+    pub pr_detail_cache: HashMap<(crate::git::types::RepoId, u64), PrDetail>,
     pub pr_detail_scroll: usize,
-    pub pr_detail_requested: Option<u64>,
+    pub pr_detail_requested: Option<(crate::git::types::RepoId, u64)>,
 
     // Git status loading
     pub git_status_requested: Option<String>, // worktree path
@@ -243,7 +243,7 @@ pub struct App {
     pub quit_pressed_during_progress: bool,
     pub branch_selected: HashSet<String>,
     pub branch_delete_requested: bool,
-    pub open_pr_requested: Option<u64>,
+    pub open_pr_requested: Option<(crate::git::types::RepoId, u64)>,
     pub copy_branch_requested: Option<String>,
     pub branch_create_requested: Option<(String, String)>, // (source, name)
     pub branches_reload_requested: bool,
@@ -441,7 +441,7 @@ impl App {
     pub fn selected_pr_detail(&self) -> Option<&PrDetail> {
         let entry = self.selected_entry()?;
         let pr_num = entry.pr_number()?;
-        self.pr_detail_cache.get(&pr_num)
+        self.pr_detail_cache.get(&(entry.repo_id.clone(), pr_num))
     }
 
     /// Signal that the selection changed; request PR detail and git status as needed.
@@ -452,9 +452,11 @@ impl App {
         if let Some(entry) = selected {
             // Request PR detail if entry has a PR and it's not cached
             if let Some(pr_num) = entry.pr_number()
-                && !self.pr_detail_cache.contains_key(&pr_num)
+                && !self
+                    .pr_detail_cache
+                    .contains_key(&(entry.repo_id.clone(), pr_num))
             {
-                self.pr_detail_requested = Some(pr_num);
+                self.pr_detail_requested = Some((entry.repo_id.clone(), pr_num));
             }
 
             // Request git status if entry has a worktree and status not yet loaded
@@ -960,7 +962,7 @@ impl App {
             }
             ActionItem::OpenPrInBrowser => {
                 if let Some(pr) = &entry.pull_request {
-                    self.open_pr_requested = Some(pr.number);
+                    self.open_pr_requested = Some((entry.repo_id.clone(), pr.number));
                 }
             }
             ActionItem::CopyBranchName => {
@@ -1314,6 +1316,55 @@ mod text_edit_tests {
             crossterm::event::KeyModifiers::NONE,
         ));
         assert!(app.should_quit);
+    }
+}
+
+#[cfg(test)]
+mod pr_detail_cache_tests {
+    use super::*;
+
+    #[test]
+    fn pr_detail_cache_keyed_by_repo_id() {
+        use crate::config::Config;
+        use crate::git::types::{PrDetail, RepoId};
+        let mut app = App::new(Config::default());
+        let id_a = RepoId {
+            host: None,
+            owner: "a".into(),
+            name: "x".into(),
+        };
+        let id_b = RepoId {
+            host: None,
+            owner: "b".into(),
+            name: "x".into(),
+        };
+        let detail_a = PrDetail {
+            number: 1,
+            title: "A".into(),
+            author: "u".into(),
+            state: "OPEN".into(),
+            body: String::new(),
+            additions: 0,
+            deletions: 0,
+            head_ref: "f".into(),
+        };
+        let detail_b = PrDetail {
+            number: 1,
+            title: "B".into(),
+            author: "u".into(),
+            state: "OPEN".into(),
+            body: String::new(),
+            additions: 0,
+            deletions: 0,
+            head_ref: "f".into(),
+        };
+        app.pr_detail_cache
+            .insert((id_a.clone(), 1), detail_a.clone());
+        app.pr_detail_cache
+            .insert((id_b.clone(), 1), detail_b.clone());
+        assert_eq!(app.pr_detail_cache.len(), 2);
+        assert_eq!(app.pr_detail_cache.get(&(id_a, 1)).unwrap().title, "A");
+        assert_eq!(app.pr_detail_cache.get(&(id_b, 1)).unwrap().title, "B");
     }
 }
 
