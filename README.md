@@ -157,7 +157,9 @@ For cross-repo PRs, `Create Worktree` and `cd into Worktree` operate on the loca
 
 If neither path resolves, cross-repo entries remain visible but `Create Worktree` is greyed out with a one-line hint pointing at the expected clone location.
 
-**Limitations (v1):** Only github.com is searched (PRs on GitHub Enterprise hosts are not aggregated). Bulk delete (`d` after Space-selection) still operates on active-repo branches only.
+**Cross-host coverage:** My PR / My Review fan out across every host present in the repos gct has discovered locally (origin remotes), so a workspace mixing github.com clones with GitHub Enterprise clones surfaces PRs from both. Hosts you are authenticated to but have never cloned from are skipped — clone any one repo from that host (or `cd` into one) so gct can pick it up.
+
+**Limitations (v1):** Bulk delete (`d` after Space-selection) still operates on active-repo branches only.
 
 ### Worktree Settings
 

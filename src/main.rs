@@ -639,8 +639,9 @@ async fn run(
                 }
                 MainFilter::MyPr => {
                     let show_merged = app.show_merged;
+                    let hosts = app.known_hosts();
                     tokio::spawn(async move {
-                        let (prs, errors) = data::fetch_my_prs(show_merged).await;
+                        let (prs, errors) = data::fetch_my_prs(show_merged, &hosts).await;
                         let _ = tx.send(AsyncResult::MyPrList(prs, errors));
                     });
                 }
@@ -660,9 +661,11 @@ async fn run(
                         let show_merged = app.show_merged;
                         let include_team = app.include_team_reviews;
                         let gh_user = app.gh_user.clone();
+                        let hosts = app.known_hosts();
                         tokio::spawn(async move {
                             let (prs, errors) =
-                                data::fetch_review_prs(show_merged, include_team, &gh_user).await;
+                                data::fetch_review_prs(show_merged, include_team, &gh_user, &hosts)
+                                    .await;
                             let _ = tx.send(AsyncResult::ReviewPrList(prs, errors));
                         });
                     }
