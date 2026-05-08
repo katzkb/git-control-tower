@@ -1263,6 +1263,22 @@ impl App {
         self.config.protected_branches.iter().any(|b| b == name)
     }
 
+    /// Hosts the user can reasonably be expected to have PRs on, derived from
+    /// the origin remotes of every repo we have metadata for. Empty repo map
+    /// falls back to `[None]` (default host = github.com) so cross-repo
+    /// aggregation behaves identically to the single-host case before any
+    /// repo metadata is collected. The output is unique-by-host and sorted
+    /// (None first) for deterministic ordering.
+    pub fn known_hosts(&self) -> Vec<Option<String>> {
+        use std::collections::BTreeSet;
+        let set: BTreeSet<Option<String>> = self.repos.keys().map(|id| id.host.clone()).collect();
+        if set.is_empty() {
+            vec![None]
+        } else {
+            set.into_iter().collect()
+        }
+    }
+
     /// Resolve a repo's local clone path under `clone_root`. Idempotent: only
     /// hits the filesystem once per repo. Sets `local_path_resolved = true`
     /// regardless of outcome to prevent re-tries.
@@ -1576,6 +1592,77 @@ mod pr_detail_cache_tests {
         assert_eq!(app.pr_detail_cache.len(), 2);
         assert_eq!(app.pr_detail_cache.get(&(id_a, 1)).unwrap().title, "A");
         assert_eq!(app.pr_detail_cache.get(&(id_b, 1)).unwrap().title, "B");
+    }
+}
+
+#[cfg(test)]
+mod known_hosts_tests {
+    use super::*;
+    use crate::config::Config;
+    use crate::git::types::{RepoId, RepoMeta};
+
+    fn meta() -> RepoMeta {
+        RepoMeta {
+            local_path: None,
+            local_path_resolved: false,
+        }
+    }
+
+    #[test]
+    fn known_hosts_empty_repos_returns_default_host() {
+        // Without any repo metadata we still want a single-host search against
+        // the default host (github.com) so My PR / My Review behave as before.
+        let app = App::new(Config::default());
+        assert_eq!(app.known_hosts(), vec![None]);
+    }
+
+    #[test]
+    fn known_hosts_dedups_multiple_repos_per_host() {
+        let mut app = App::new(Config::default());
+        for (owner, name) in [("a", "x"), ("b", "y"), ("c", "z")] {
+            app.repos.insert(
+                RepoId {
+                    host: None,
+                    owner: owner.into(),
+                    name: name.into(),
+                },
+                meta(),
+            );
+        }
+        assert_eq!(app.known_hosts(), vec![None]);
+    }
+
+    #[test]
+    fn known_hosts_returns_unique_hosts_across_mixed_repos() {
+        let mut app = App::new(Config::default());
+        // Two github.com repos and two GHES repos on the same host.
+        for (host, owner, name) in [
+            (None, "katzkb", "gct"),
+            (None, "katzkb", "dotfiles"),
+            (Some("ghe.example.com"), "team", "svc"),
+            (Some("ghe.example.com"), "team", "infra"),
+            (Some("ghe.other.com"), "alice", "tools"),
+        ] {
+            app.repos.insert(
+                RepoId {
+                    host: host.map(|s| s.to_string()),
+                    owner: owner.into(),
+                    name: name.into(),
+                },
+                meta(),
+            );
+        }
+        // `known_hosts` collects via BTreeSet, so the output is already sorted
+        // with `None` (= github.com) before any `Some(host)` entries — the
+        // sort here would be a no-op and is intentionally omitted.
+        assert_eq!(
+            app.known_hosts(),
+            vec![
+                None,
+                Some("ghe.example.com".to_string()),
+                Some("ghe.other.com".to_string()),
+            ]
+        );
     }
 }
 

@@ -339,44 +339,140 @@ fn host_from_url(url: &str) -> Option<String> {
     }
 }
 
-// gh api graphql does not accept --hostname here; v1 supports github.com only.
-// Cross-host (GHE) PR aggregation will require routing through per-host gh config.
+/// Deduplicate a host list while preserving first-occurrence order.
+/// Empty input falls back to `[None]` so callers always run at least one
+/// search query against the default host (github.com).
+///
+/// Defence-in-depth: callers in this crate (notably `App::known_hosts`)
+/// already produce a unique list, but `fetch_search_prs` runs this guard
+/// regardless so any future caller that forwards a raw list still gets
+/// the empty-input fallback and dedup behaviour for free.
+fn dedup_hosts(hosts: &[Option<String>]) -> Vec<Option<String>> {
+    let mut seen: HashSet<Option<String>> = HashSet::new();
+    let mut out: Vec<Option<String>> = Vec::with_capacity(hosts.len());
+    for h in hosts {
+        if seen.insert(h.clone()) {
+            out.push(h.clone());
+        }
+    }
+    if out.is_empty() { vec![None] } else { out }
+}
+
+/// Merge per-host search results: concatenate PRs in input order, prefix
+/// per-host failures with `[<label>] ` so the caller can attribute errors
+/// to the originating host.
+fn merge_search_results(
+    results: Vec<(String, Result<Vec<PullRequest>, String>)>,
+) -> (Vec<PullRequest>, Vec<String>) {
+    let mut prs: Vec<PullRequest> = Vec::new();
+    let mut errors: Vec<String> = Vec::new();
+    for (label, result) in results {
+        match result {
+            Ok(host_prs) => prs.extend(host_prs),
+            Err(msg) => errors.push(format!("[{label}] {msg}")),
+        }
+    }
+    (prs, errors)
+}
+
+// Hosts to search are supplied by the caller; an empty slice falls back to
+// the default host (github.com) via dedup_hosts.
 // TODO(future): GitHub's search index supports up to 1000 results; if very active
 // reviewers report missing PRs, paginate via search.pageInfo.endCursor.
-async fn fetch_search_prs(query_str: &str, limit: u32) -> (Vec<PullRequest>, Vec<String>) {
+async fn fetch_search_prs(
+    query_str: &str,
+    limit: u32,
+    hosts: &[Option<String>],
+) -> (Vec<PullRequest>, Vec<String>) {
     let escaped_query = query_str.replace('\\', "\\\\").replace('"', "\\\"");
     let query = format!(
         r#"{{ search(query: "{escaped_query}", type: ISSUE, first: {limit}) {{ nodes {{ ... on PullRequest {{ number title state headRefName updatedAt isDraft author {{ login }} repository {{ name url owner {{ login }} }} reviewRequests(first: 10) {{ nodes {{ requestedReviewer {{ ... on User {{ login }} }} }} }} latestReviews(first: 20) {{ nodes {{ author {{ login }} state }} }} }} }} }} }}"#
     );
     let query_arg = format!("query={query}");
-    let args = vec!["api", "graphql", "-f", &query_arg];
-    match run_gh(&args).await {
-        Ok(output) => match serde_json::from_str::<serde_json::Value>(&output) {
-            Ok(json) => {
-                let mut prs = Vec::new();
-                if let Some(arr) = json["data"]["search"]["nodes"].as_array() {
-                    for node in arr {
-                        if let Some(pr) = parse_graphql_search_pr(node) {
-                            prs.push(pr);
+
+    // Run one search per host in parallel. Hosts are deduplicated and an
+    // empty list falls back to a single default-host (github.com) query so
+    // the previous single-host behaviour is preserved when no repo metadata
+    // has been collected yet.
+    let unique_hosts = dedup_hosts(hosts);
+    // Keep `(label, JoinHandle<Result<...>>)` pairs so that the host label is
+    // attached to errors regardless of whether they originate inside the task
+    // (Err returned from the closure) or from the join itself (panic / cancel).
+    type SearchHandle = (
+        String,
+        tokio::task::JoinHandle<Result<Vec<PullRequest>, String>>,
+    );
+    let mut handles: Vec<SearchHandle> = Vec::with_capacity(unique_hosts.len());
+    for host in unique_hosts {
+        let query_arg = query_arg.clone();
+        let label = host.as_deref().unwrap_or("github.com").to_string();
+        let handle = tokio::spawn(async move {
+            let mut args: Vec<String> = vec![
+                "api".to_string(),
+                "graphql".to_string(),
+                "-f".to_string(),
+                query_arg,
+            ];
+            if let Some(h) = host.as_deref() {
+                args.push("--hostname".to_string());
+                args.push(h.to_string());
+            }
+            let arg_refs: Vec<&str> = args.iter().map(String::as_str).collect();
+            match run_gh(&arg_refs).await {
+                Ok(output) => match serde_json::from_str::<serde_json::Value>(&output) {
+                    Ok(json) => {
+                        let mut host_prs = Vec::new();
+                        if let Some(arr) = json["data"]["search"]["nodes"].as_array() {
+                            for node in arr {
+                                if let Some(pr) = parse_graphql_search_pr(node) {
+                                    host_prs.push(pr);
+                                }
+                            }
                         }
+                        Ok(host_prs)
                     }
+                    Err(e) => {
+                        debug_log(&format!("  → GraphQL search parse error: {e}"));
+                        Err(format!("search parse error: {e}"))
+                    }
+                },
+                Err(e) => {
+                    debug_log(&format!("  → GraphQL search fetch error: {e}"));
+                    Err(format!("search fetch failed: {e}"))
                 }
-                (prs, Vec::new())
             }
-            Err(e) => {
-                debug_log(&format!("  → GraphQL search parse error: {e}"));
-                (Vec::new(), vec![format!("search parse error: {e}")])
-            }
-        },
-        Err(e) => {
-            debug_log(&format!("  → GraphQL search fetch error: {e}"));
-            (Vec::new(), vec![format!("search fetch failed: {e}")])
-        }
+        });
+        handles.push((label, handle));
     }
+
+    let mut collected: Vec<(String, Result<Vec<PullRequest>, String>)> =
+        Vec::with_capacity(handles.len());
+    for (label, handle) in handles {
+        let result = match handle.await {
+            Ok(r) => r,
+            Err(e) => {
+                debug_log(&format!(
+                    "  → GraphQL search task join error ({label}): {e}"
+                ));
+                Err(format!("search task join failed: {e}"))
+            }
+        };
+        collected.push((label, result));
+    }
+
+    // PRs from multiple hosts naturally cannot collide because parse_graphql_search_pr
+    // tags each PR with the host extracted from repository.url, and downstream merging
+    // is keyed by (RepoId, head_ref) where RepoId.host disambiguates.
+    merge_search_results(collected)
 }
 
-/// Fetch PRs authored by the current user via cross-repo GraphQL search.
-pub async fn fetch_my_prs(show_merged: bool) -> (Vec<PullRequest>, Vec<String>) {
+/// Fetch PRs authored by the current user via cross-repo GraphQL search,
+/// fanning out across every host in `hosts` (an empty slice falls back to
+/// the default host).
+pub async fn fetch_my_prs(
+    show_merged: bool,
+    hosts: &[Option<String>],
+) -> (Vec<PullRequest>, Vec<String>) {
     let mut q = String::from("is:pr author:@me");
     if !show_merged {
         q.push_str(" is:open");
@@ -386,7 +482,7 @@ pub async fn fetch_my_prs(show_merged: bool) -> (Vec<PullRequest>, Vec<String>) 
     // TODO(future): GitHub's search index supports up to 1000 results; if very active
     // reviewers report missing PRs, paginate via search.pageInfo.endCursor.
     let limit = if show_merged { 150 } else { 100 };
-    let (mut prs, errors) = fetch_search_prs(&q, limit).await;
+    let (mut prs, errors) = fetch_search_prs(&q, limit, hosts).await;
     prs.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
     (prs, errors)
 }
@@ -398,6 +494,7 @@ pub async fn fetch_review_prs(
     show_merged: bool,
     include_team: bool,
     gh_user: &str,
+    hosts: &[Option<String>],
 ) -> (Vec<PullRequest>, Vec<String>) {
     let mut queries: Vec<String> = vec![
         "is:pr review-requested:@me".into(),
@@ -425,7 +522,7 @@ pub async fn fetch_review_prs(
     const REVIEWED_BY_INDEX: usize = 1;
     for (idx, query) in queries.iter().enumerate() {
         let is_reviewed = idx == REVIEWED_BY_INDEX;
-        let (prs, errors) = fetch_search_prs(query, 100).await;
+        let (prs, errors) = fetch_search_prs(query, 100, hosts).await;
         all_errors.extend(errors);
         for pr in prs {
             let key = (pr.repo_id.clone(), pr.number);
@@ -923,5 +1020,132 @@ mod tests {
         assert_eq!(prs[0].review_requests.len(), 2);
         assert_eq!(prs[0].review_requests[0].login.as_deref(), Some("bob"));
         assert_eq!(prs[0].review_requests[1].login, None);
+    }
+
+    // ----- dedup_hosts -----
+
+    #[test]
+    fn dedup_hosts_empty_falls_back_to_default_host() {
+        // Empty input must fall back to a single default-host (None = github.com)
+        // entry so callers that have no repo metadata yet still get one query.
+        assert_eq!(dedup_hosts(&[]), vec![None]);
+    }
+
+    #[test]
+    fn dedup_hosts_preserves_first_occurrence_order() {
+        let input = vec![
+            Some("ghe.example.com".to_string()),
+            None,
+            Some("ghe.example.com".to_string()),
+            None,
+            Some("ghe.other.com".to_string()),
+        ];
+        assert_eq!(
+            dedup_hosts(&input),
+            vec![
+                Some("ghe.example.com".to_string()),
+                None,
+                Some("ghe.other.com".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn dedup_hosts_single_none_preserved() {
+        assert_eq!(dedup_hosts(&[None]), vec![None]);
+    }
+
+    #[test]
+    fn dedup_hosts_single_some_preserved() {
+        let h = Some("ghe.example.com".to_string());
+        assert_eq!(dedup_hosts(std::slice::from_ref(&h)), vec![h]);
+    }
+
+    // ----- merge_search_results -----
+
+    fn pr_with_id(number: u64, host: Option<&str>, owner: &str, name: &str) -> PullRequest {
+        PullRequest {
+            number,
+            title: format!("PR {number}"),
+            author: "alice".into(),
+            state: "OPEN".into(),
+            head_ref: format!("feature-{number}"),
+            updated_at: "2024-01-15T00:00:00Z".into(),
+            is_draft: false,
+            review_requests: vec![],
+            latest_reviews: vec![],
+            review_status: None,
+            repo_id: crate::git::types::RepoId {
+                host: host.map(|s| s.to_string()),
+                owner: owner.into(),
+                name: name.into(),
+            },
+        }
+    }
+
+    #[test]
+    fn merge_search_results_concatenates_successes() {
+        let results = vec![
+            (
+                "github.com".to_string(),
+                Ok(vec![pr_with_id(1, None, "katzkb", "gct")]),
+            ),
+            (
+                "ghe.example.com".to_string(),
+                Ok(vec![
+                    pr_with_id(2, Some("ghe.example.com"), "team", "svc"),
+                    pr_with_id(3, Some("ghe.example.com"), "team", "svc"),
+                ]),
+            ),
+        ];
+        let (prs, errors) = merge_search_results(results);
+        assert_eq!(prs.len(), 3);
+        assert_eq!(prs[0].number, 1);
+        assert_eq!(prs[1].number, 2);
+        assert_eq!(prs[2].number, 3);
+        assert!(errors.is_empty());
+    }
+
+    #[test]
+    fn merge_search_results_labels_errors_with_host() {
+        let results: Vec<(String, Result<Vec<PullRequest>, String>)> = vec![
+            (
+                "github.com".to_string(),
+                Ok(vec![pr_with_id(1, None, "katzkb", "gct")]),
+            ),
+            (
+                "ghe.example.com".to_string(),
+                Err("auth expired".to_string()),
+            ),
+        ];
+        let (prs, errors) = merge_search_results(results);
+        assert_eq!(prs.len(), 1);
+        assert_eq!(prs[0].number, 1);
+        assert_eq!(errors, vec!["[ghe.example.com] auth expired".to_string()]);
+    }
+
+    #[test]
+    fn merge_search_results_all_failures() {
+        let results: Vec<(String, Result<Vec<PullRequest>, String>)> = vec![
+            ("github.com".to_string(), Err("network".to_string())),
+            ("ghe.example.com".to_string(), Err("auth".to_string())),
+        ];
+        let (prs, errors) = merge_search_results(results);
+        assert!(prs.is_empty());
+        assert_eq!(
+            errors,
+            vec![
+                "[github.com] network".to_string(),
+                "[ghe.example.com] auth".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn merge_search_results_empty_input() {
+        let results: Vec<(String, Result<Vec<PullRequest>, String>)> = vec![];
+        let (prs, errors) = merge_search_results(results);
+        assert!(prs.is_empty());
+        assert!(errors.is_empty());
     }
 }
