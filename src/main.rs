@@ -514,10 +514,12 @@ async fn run(
         {
             pr_inflight.insert((repo_id.clone(), number));
             let tx = tx.clone();
-            let repo_arg = format!("{}/{}", repo_id.owner, repo_id.name);
+            // `gh pr view` doesn't accept --hostname; the host (if any) is
+            // embedded into --repo as `[HOST/]OWNER/REPO`.
+            let repo_arg = repo_id.repo_arg();
             tokio::spawn(async move {
                 let num_str = number.to_string();
-                let mut args = vec![
+                let args = vec![
                     "pr",
                     "view",
                     &num_str,
@@ -526,13 +528,6 @@ async fn run(
                     "--json",
                     "number,title,author,state,body,additions,deletions,headRefName",
                 ];
-                // For GHE hosts, add --hostname
-                let hostname_buf;
-                if let Some(h) = &repo_id.host {
-                    hostname_buf = h.clone();
-                    args.push("--hostname");
-                    args.push(hostname_buf.as_str());
-                }
                 let result = run_gh(&args).await;
                 match result {
                     Ok(output) => match serde_json::from_str::<PrDetail>(&output) {
@@ -1219,15 +1214,10 @@ async fn run(
 
         // Open PR in browser if requested
         if let Some((repo_id, pr_number)) = app.open_pr_requested.take() {
-            let repo_arg = format!("{}/{}", repo_id.owner, repo_id.name);
+            // `gh pr view --web` doesn't accept --hostname; embed host into --repo.
+            let repo_arg = repo_id.repo_arg();
             let num = pr_number.to_string();
-            let mut args = vec!["pr", "view", &num, "--web", "--repo", repo_arg.as_str()];
-            let hostname_buf;
-            if let Some(h) = &repo_id.host {
-                hostname_buf = h.clone();
-                args.push("--hostname");
-                args.push(hostname_buf.as_str());
-            }
+            let args = vec!["pr", "view", &num, "--web", "--repo", repo_arg.as_str()];
             let _ = run_gh(&args).await;
         }
 
