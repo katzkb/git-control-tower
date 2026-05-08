@@ -342,6 +342,11 @@ fn host_from_url(url: &str) -> Option<String> {
 /// Deduplicate a host list while preserving first-occurrence order.
 /// Empty input falls back to `[None]` so callers always run at least one
 /// search query against the default host (github.com).
+///
+/// Defence-in-depth: callers in this crate (notably `App::known_hosts`)
+/// already produce a unique list, but `fetch_search_prs` runs this guard
+/// regardless so any future caller that forwards a raw list still gets
+/// the empty-input fallback and dedup behaviour for free.
 fn dedup_hosts(hosts: &[Option<String>]) -> Vec<Option<String>> {
     let mut seen: HashSet<Option<String>> = HashSet::new();
     let mut out: Vec<Option<String>> = Vec::with_capacity(hosts.len());
@@ -390,11 +395,18 @@ async fn fetch_search_prs(
     // the previous single-host behaviour is preserved when no repo metadata
     // has been collected yet.
     let unique_hosts = dedup_hosts(hosts);
-    let mut handles = Vec::with_capacity(unique_hosts.len());
+    // Keep `(label, JoinHandle<Result<...>>)` pairs so that the host label is
+    // attached to errors regardless of whether they originate inside the task
+    // (Err returned from the closure) or from the join itself (panic / cancel).
+    type SearchHandle = (
+        String,
+        tokio::task::JoinHandle<Result<Vec<PullRequest>, String>>,
+    );
+    let mut handles: Vec<SearchHandle> = Vec::with_capacity(unique_hosts.len());
     for host in unique_hosts {
         let query_arg = query_arg.clone();
         let label = host.as_deref().unwrap_or("github.com").to_string();
-        handles.push(tokio::spawn(async move {
+        let handle = tokio::spawn(async move {
             let mut args: Vec<String> = vec![
                 "api".to_string(),
                 "graphql".to_string(),
@@ -406,7 +418,7 @@ async fn fetch_search_prs(
                 args.push(h.to_string());
             }
             let arg_refs: Vec<&str> = args.iter().map(String::as_str).collect();
-            let result: Result<Vec<PullRequest>, String> = match run_gh(&arg_refs).await {
+            match run_gh(&arg_refs).await {
                 Ok(output) => match serde_json::from_str::<serde_json::Value>(&output) {
                     Ok(json) => {
                         let mut host_prs = Vec::new();
@@ -428,24 +440,24 @@ async fn fetch_search_prs(
                     debug_log(&format!("  → GraphQL search fetch error: {e}"));
                     Err(format!("search fetch failed: {e}"))
                 }
-            };
-            (label, result)
-        }));
+            }
+        });
+        handles.push((label, handle));
     }
 
     let mut collected: Vec<(String, Result<Vec<PullRequest>, String>)> =
         Vec::with_capacity(handles.len());
-    for handle in handles {
-        match handle.await {
-            Ok(pair) => collected.push(pair),
+    for (label, handle) in handles {
+        let result = match handle.await {
+            Ok(r) => r,
             Err(e) => {
-                debug_log(&format!("  → GraphQL search task join error: {e}"));
-                collected.push((
-                    "task".to_string(),
-                    Err(format!("search task join failed: {e}")),
+                debug_log(&format!(
+                    "  → GraphQL search task join error ({label}): {e}"
                 ));
+                Err(format!("search task join failed: {e}"))
             }
-        }
+        };
+        collected.push((label, result));
     }
 
     // PRs from multiple hosts naturally cannot collide because parse_graphql_search_pr

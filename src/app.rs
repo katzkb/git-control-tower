@@ -1652,10 +1652,11 @@ mod known_hosts_tests {
                 meta(),
             );
         }
-        let mut hosts = app.known_hosts();
-        hosts.sort();
+        // `known_hosts` collects via BTreeSet, so the output is already sorted
+        // with `None` (= github.com) before any `Some(host)` entries — the
+        // sort here would be a no-op and is intentionally omitted.
         assert_eq!(
-            hosts,
+            app.known_hosts(),
             vec![
                 None,
                 Some("ghe.example.com".to_string()),
