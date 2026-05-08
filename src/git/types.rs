@@ -19,6 +19,18 @@ impl fmt::Display for RepoId {
     }
 }
 
+impl RepoId {
+    /// `[HOST/]OWNER/REPO` form accepted by `gh --repo`.
+    /// Use this whenever building a `gh` command — `gh pr <sub>` does not
+    /// accept `--hostname`, so the host must be embedded in `--repo` instead.
+    pub fn repo_arg(&self) -> String {
+        match &self.host {
+            Some(h) => format!("{h}/{}/{}", self.owner, self.name),
+            None => format!("{}/{}", self.owner, self.name),
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct RepoMeta {
     /// Resolved lazily on first selection. `None` after `local_path_resolved == true`
@@ -210,6 +222,26 @@ mod repo_id_tests {
             name: "repo".into(),
         };
         assert_eq!(id.to_string(), "org/repo@ghe.company.com");
+    }
+
+    #[test]
+    fn repo_arg_omits_host_for_github_com() {
+        let id = RepoId {
+            host: None,
+            owner: "katzkb".into(),
+            name: "git-control-tower".into(),
+        };
+        assert_eq!(id.repo_arg(), "katzkb/git-control-tower");
+    }
+
+    #[test]
+    fn repo_arg_includes_host_for_ghe() {
+        let id = RepoId {
+            host: Some("ghe.company.com".into()),
+            owner: "org".into(),
+            name: "repo".into(),
+        };
+        assert_eq!(id.repo_arg(), "ghe.company.com/org/repo");
     }
 
     #[test]
