@@ -85,7 +85,9 @@ fn format_op_line(op: &OpProgress, now: Instant) -> Line<'static> {
         .clone()
         .or_else(|| op.error.clone())
         .unwrap_or_else(|| "starting…".to_string());
-    let elapsed = now
+    // Freeze the timer at finished_at for completed ops; live ops keep ticking.
+    let end = op.finished_at.unwrap_or(now);
+    let elapsed = end
         .saturating_duration_since(op.op_started_at)
         .as_secs_f32();
     let row_style = if matches!(op.current_step, OpStep::Done { success: true }) {
@@ -193,6 +195,25 @@ mod tests {
         let txt: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
         assert!(txt.contains("✓"));
         assert!(txt.contains("git worktree remove /wt/a"));
+    }
+
+    #[test]
+    fn format_op_line_elapsed_frozen_after_finish() {
+        let mut op = OpProgress::new("a".into());
+        op.current_step = OpStep::Done { success: true };
+        op.finished_at = Some(op.op_started_at + Duration::from_secs(2));
+        // Render long after completion: timer must stay at the finish time.
+        let line = format_op_line(&op, op.op_started_at + Duration::from_secs(100));
+        let txt: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
+        assert!(txt.contains("2.0s"), "expected frozen elapsed, got: {txt}");
+    }
+
+    #[test]
+    fn format_op_line_elapsed_ticks_while_running() {
+        let op = OpProgress::new("a".into());
+        let line = format_op_line(&op, op.op_started_at + Duration::from_secs(5));
+        let txt: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
+        assert!(txt.contains("5.0s"), "expected live elapsed, got: {txt}");
     }
 
     #[test]
