@@ -91,6 +91,8 @@ pub struct OpProgress {
     pub label: String,
     pub current_step: OpStep,
     pub op_started_at: Instant,
+    /// Set when the op reaches `Done`; freezes the elapsed-time display.
+    pub finished_at: Option<Instant>,
     pub last_command: Option<String>,
     pub error: Option<String>,
 }
@@ -101,6 +103,7 @@ impl OpProgress {
             label,
             current_step: OpStep::RunningWtRemove, // overwritten by first OpStepBegin
             op_started_at: Instant::now(),
+            finished_at: None,
             last_command: None,
             error: None,
         }
@@ -155,6 +158,9 @@ impl ProgressTracker {
         if let Some(op) = self.ops.get_mut(&op_id) {
             op.current_step = OpStep::Done { success };
             op.error = error;
+            if op.finished_at.is_none() {
+                op.finished_at = Some(Instant::now());
+            }
         }
     }
 
@@ -164,6 +170,7 @@ impl ProgressTracker {
         for op in self.ops.values_mut() {
             if !op.is_done() {
                 op.current_step = OpStep::Done { success: false };
+                op.finished_at = Some(Instant::now());
                 if op.error.is_none() {
                     op.error = Some("interrupted".to_string());
                 }
