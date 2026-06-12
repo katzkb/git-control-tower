@@ -50,15 +50,27 @@ pub enum ActionItem {
 }
 
 impl ActionItem {
+    /// Short label shown inside the action menu; the group header
+    /// (`group_label`) carries the "worktree"/"branch" context.
     pub fn label(&self) -> &'static str {
         match self {
-            Self::CreateWorktree => "Create worktree",
-            Self::CdIntoWorktree => "cd into worktree",
-            Self::DeleteWorktree => "Delete worktree",
-            Self::CreateBranch => "Create branch from this",
-            Self::DeleteBranch => "Delete branch",
+            Self::CreateWorktree => "Create",
+            Self::CdIntoWorktree => "Go to (cd)",
+            Self::DeleteWorktree => "Delete",
+            Self::CreateBranch => "Create from this",
+            Self::DeleteBranch => "Delete",
             Self::OpenPrInBrowser => "Open PR in browser",
             Self::CopyBranchName => "Copy branch name",
+        }
+    }
+
+    /// Section header shown above this item's group in the action menu;
+    /// None = ungrouped top section.
+    pub fn group_label(&self) -> Option<&'static str> {
+        match self {
+            Self::OpenPrInBrowser | Self::CopyBranchName => None,
+            Self::CdIntoWorktree | Self::CreateWorktree | Self::DeleteWorktree => Some("Worktree"),
+            Self::CreateBranch | Self::DeleteBranch => Some("Branch"),
         }
     }
 }
