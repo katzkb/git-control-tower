@@ -10,7 +10,7 @@ A terminal UI tool that acts as a "control tower" for Git/GitHub workflows. Over
 - **Filter modes** — Switch between Local branches (`1`), your PRs (`2`), and review-requested PRs (`3`). Toggle merged PRs with `m` and team reviews with `t`.
 - **Search** — Press `/` to filter branches by name. Matches are highlighted. Press `Enter` to keep the filter active.
 - **Review status** — Color-coded review indicators: needs review (red), approved (green), changes requested (yellow).
-- **Action menu** — Press `Enter` to open a context-sensitive menu: copy branch name, open PR in browser, cd into worktree, create/delete worktree, delete branch.
+- **Action menu** — Press `Enter` to open a context-sensitive menu: copy branch name and open PR in browser, plus actions grouped into Worktree (go to / create / delete) and Branch (create from this / delete) sections.
 - **Worktree management** — Create worktrees from branches or PRs. Auto-run post-create hooks (copy files, create symlinks, run commands). Force delete worktrees with untracked files.
 - **Branch cleanup** — Multi-select branches with `Space`, select all merged with `a`, batch delete with `d`. Force deletes squash-merged branches.
 - **Commit log** — View commit history with `l`.
