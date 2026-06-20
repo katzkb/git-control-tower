@@ -895,11 +895,14 @@ impl App {
                     return;
                 }
                 let wt_path = if is_active {
-                    self.config.worktree_path(&entry.name)
+                    self.config.worktree_path(&entry.repo_id.name, &entry.name)
                 } else {
                     // unwrap is safe: cross_repo_no_clone is false above
-                    self.config
-                        .worktree_path_for(clone_path.as_ref().unwrap(), &entry.name)
+                    self.config.worktree_path_for(
+                        clone_path.as_ref().unwrap(),
+                        &entry.repo_id.name,
+                        &entry.name,
+                    )
                 };
                 if self.wt_inflight.contains(&wt_path) {
                     return;
@@ -1045,9 +1048,12 @@ impl App {
         let wt_path_for_inflight: Option<String> = if cross_repo_no_clone {
             None
         } else if is_active_repo {
-            Some(self.config.worktree_path(&entry.name))
+            Some(self.config.worktree_path(&entry.repo_id.name, &entry.name))
         } else if let Some(ref root) = clone_path {
-            Some(self.config.worktree_path_for(root, &entry.name))
+            Some(
+                self.config
+                    .worktree_path_for(root, &entry.repo_id.name, &entry.name),
+            )
         } else {
             None
         };
