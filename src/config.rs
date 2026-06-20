@@ -228,23 +228,24 @@ fn run_command(command: &str, work_dir: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
-/// Load config from the first valid file found:
-/// 1. `.gct.toml` (project-local, git repository root via `git rev-parse --show-toplevel`)
+/// Load config by deep-merging every existing config file in priority order
+/// (later layers override earlier ones key-by-key):
+/// 1. `~/.gct.toml` (global, lowest priority)
 /// 2. `~/.config/gct/config.toml` (global)
-/// 3. `~/.gct.toml` (global)
+/// 3. `.gct.toml` at the git repository root (project-local, highest priority)
+///
+/// Nested tables (`[worktree]`, `[workspace]`) are merged key-by-key, so a
+/// project-local file can override individual settings while inheriting the
+/// rest from the global config. Scalars and arrays are replaced wholesale.
 ///
 /// Must be called before TUI initialization (eprintln warnings).
 pub fn load_config() -> Config {
-    let candidates = config_paths();
-    for path in &candidates {
-        match fs::read_to_string(path) {
-            Ok(content) => match toml::from_str::<Config>(&content) {
-                Ok(config) => return config,
-                Err(e) => {
-                    eprintln!("Warning: failed to parse {}: {e}", path.display());
-                    continue;
-                }
-            },
+    // `config_paths()` is ordered highest → lowest priority; reverse it so we
+    // apply lowest first and let higher-priority layers override.
+    let mut layers = Vec::new();
+    for path in config_paths().into_iter().rev() {
+        match fs::read_to_string(&path) {
+            Ok(content) => layers.push((path, content)),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
             Err(e) => {
                 eprintln!("Warning: failed to read {}: {e}", path.display());
@@ -252,7 +253,36 @@ pub fn load_config() -> Config {
             }
         }
     }
-    Config::default()
+    merge_layers(&layers)
+}
+
+/// Parse TOML layers in increasing priority order and deep-merge them.
+/// Invalid layers are skipped with a warning; serde defaults fill the rest.
+fn merge_layers(layers: &[(PathBuf, String)]) -> Config {
+    let mut merged = toml::Table::new();
+    for (path, content) in layers {
+        match toml::from_str::<toml::Table>(content) {
+            Ok(t) => merge_tables(&mut merged, t),
+            Err(e) => eprintln!("Warning: failed to parse {}: {e}", path.display()),
+        }
+    }
+    toml::Value::Table(merged).try_into().unwrap_or_else(|e| {
+        eprintln!("Warning: invalid merged config: {e}");
+        Config::default()
+    })
+}
+
+/// Deep-merge `overlay` into `base`. Nested tables are merged key-by-key;
+/// scalars and arrays from `overlay` replace those in `base`.
+fn merge_tables(base: &mut toml::Table, overlay: toml::Table) {
+    for (k, v) in overlay {
+        match (base.get_mut(&k), v) {
+            (Some(toml::Value::Table(bt)), toml::Value::Table(ot)) => merge_tables(bt, ot),
+            (_, v) => {
+                base.insert(k, v);
+            }
+        }
+    }
 }
 
 fn config_paths() -> Vec<PathBuf> {
@@ -758,5 +788,91 @@ clone_root = "~/workspace"
             .join("../wt/name")
             .join("feature/x");
         assert_eq!(p, expected.to_string_lossy().to_string());
+    }
+
+    // --- config merge ---
+
+    fn layer(content: &str) -> (PathBuf, String) {
+        (PathBuf::from("test.toml"), content.to_string())
+    }
+
+    #[test]
+    fn merge_local_overrides_global_scalar() {
+        let global = layer("[worktree]\ndir = \"..\"\n");
+        let local = layer("[worktree]\ndir = \"../wt\"\n");
+        let config = merge_layers(&[global, local]);
+        assert_eq!(config.worktree.dir, "../wt");
+    }
+
+    #[test]
+    fn merge_keeps_global_when_local_absent() {
+        let global =
+            layer("[workspace]\nclone_root = \"~/workspace\"\n\n[worktree]\ndir = \"..\"\n");
+        let local = layer("[worktree]\ndir = \"../wt\"\n");
+        let config = merge_layers(&[global, local]);
+        // local overrides dir, but global's clone_root is preserved.
+        assert_eq!(config.worktree.dir, "../wt");
+        assert_eq!(config.workspace.clone_root.as_deref(), Some("~/workspace"));
+    }
+
+    #[test]
+    fn merge_nested_table_preserves_sibling_keys() {
+        let global = layer(
+            "[worktree]\ndir = \"..\"\n\n[[worktree.post_create]]\ntype = \"command\"\ncommand = \"npm ci\"\n",
+        );
+        let local = layer("[worktree]\ndir = \"../wt\"\n");
+        let config = merge_layers(&[global, local]);
+        assert_eq!(config.worktree.dir, "../wt");
+        // post_create from global survives because local only set `dir`.
+        assert_eq!(config.worktree.post_create.len(), 1);
+    }
+
+    #[test]
+    fn merge_local_array_replaces_global() {
+        let global = layer("protected_branches = [\"main\"]\n");
+        let local = layer("protected_branches = [\"x\", \"y\"]\n");
+        let config = merge_layers(&[global, local]);
+        assert_eq!(
+            config.protected_branches,
+            vec!["x".to_string(), "y".to_string()]
+        );
+    }
+
+    #[test]
+    fn merge_empty_layers_is_default() {
+        let config = merge_layers(&[]);
+        let default = Config::default();
+        assert_eq!(config.worktree.dir, default.worktree.dir);
+        assert_eq!(config.protected_branches, default.protected_branches);
+        assert!(config.workspace.clone_root.is_none());
+    }
+
+    #[test]
+    fn merge_single_layer_applies_defaults() {
+        let local = layer("[worktree]\ndir = \"../wt\"\n");
+        let config = merge_layers(&[local]);
+        assert_eq!(config.worktree.dir, "../wt");
+        // Unspecified fields fall back to serde defaults.
+        assert_eq!(config.protected_branches, default_protected_branches());
+    }
+
+    #[test]
+    fn merge_skips_invalid_layer() {
+        let bad = layer("this is = not = valid toml\n");
+        let good = layer("[worktree]\ndir = \"../wt\"\n");
+        let config = merge_layers(&[bad, good]);
+        assert_eq!(config.worktree.dir, "../wt");
+    }
+
+    #[test]
+    fn merge_tables_recurses_and_replaces_arrays() {
+        let mut base: toml::Table = toml::from_str("[a]\nx = 1\ny = 2\narr = [1, 2]\n").unwrap();
+        let overlay: toml::Table = toml::from_str("[a]\ny = 9\narr = [3]\n").unwrap();
+        merge_tables(&mut base, overlay);
+        let a = base["a"].as_table().unwrap();
+        assert_eq!(a["x"].as_integer(), Some(1)); // untouched sibling kept
+        assert_eq!(a["y"].as_integer(), Some(9)); // overridden
+        // array replaced wholesale, not appended
+        assert_eq!(a["arr"].as_array().unwrap().len(), 1);
     }
 }
