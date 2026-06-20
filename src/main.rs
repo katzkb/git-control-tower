@@ -1050,7 +1050,9 @@ async fn run(
                 }
             };
 
-            let wt_path = app.config.worktree_path_for(&target_root, &branch_name);
+            let wt_path =
+                app.config
+                    .worktree_path_for(&target_root, &entry.repo_id.name, &branch_name);
             app.wt_inflight.insert(wt_path.clone());
             if let Some(parent) = std::path::Path::new(&wt_path).parent() {
                 let _ = std::fs::create_dir_all(parent);

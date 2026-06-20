@@ -78,18 +78,29 @@ impl Default for WorktreeConfig {
 }
 
 impl Config {
-    /// Build the worktree path for a given branch name.
-    /// Default produces `../{branch_name}` (e.g. `../feature/auth`).
-    /// Custom dir produces `{dir}/{branch_name}`.
-    /// Slashes in branch names become directory separators.
-    pub fn worktree_path(&self, branch_name: &str) -> String {
+    /// Resolve the configured base dir, substituting the `{repo}` placeholder.
+    /// Trims whitespace; empty (or whitespace-only) falls back to
+    /// `DEFAULT_WORKTREE_DIR`. When `{repo}` is absent the string is returned
+    /// unchanged, so existing configs behave exactly as before.
+    fn resolved_base(&self, repo_name: &str) -> String {
         let dir = self.worktree.dir.trim();
         let base = if dir.is_empty() {
             DEFAULT_WORKTREE_DIR
         } else {
             dir
         };
-        Path::new(base)
+        base.replace("{repo}", repo_name)
+    }
+
+    /// Build the worktree path for a given branch name.
+    /// Default produces `../{branch_name}` (e.g. `../feature/auth`).
+    /// Custom dir produces `{dir}/{branch_name}`.
+    /// The `{repo}` token in `dir` expands to the repository name, so
+    /// `dir = "../wt/{repo}"` produces `../wt/{repo}/{branch_name}`.
+    /// Slashes in branch names become directory separators.
+    pub fn worktree_path(&self, repo_name: &str, branch_name: &str) -> String {
+        let base = self.resolved_base(repo_name);
+        Path::new(&base)
             .join(branch_name)
             .to_string_lossy()
             .to_string()
@@ -97,15 +108,17 @@ impl Config {
 
     /// Build a worktree path relative to a specific repo root.
     /// `dir = ".."` produces `<repo_root>/../<branch>` (= sibling of repo).
-    pub fn worktree_path_for(&self, repo_root: &Path, branch_name: &str) -> String {
-        let dir = self.worktree.dir.trim();
-        let base = if dir.is_empty() {
-            DEFAULT_WORKTREE_DIR
-        } else {
-            dir
-        };
+    /// The `{repo}` token in `dir` expands to the repository name, so
+    /// `dir = "../wt/{repo}"` produces `<repo_root>/../wt/{repo}/<branch>`.
+    pub fn worktree_path_for(
+        &self,
+        repo_root: &Path,
+        repo_name: &str,
+        branch_name: &str,
+    ) -> String {
+        let base = self.resolved_base(repo_name);
         repo_root
-            .join(base)
+            .join(&base)
             .join(branch_name)
             .to_string_lossy()
             .to_string()
@@ -300,7 +313,10 @@ mod tests {
     #[test]
     fn test_default_worktree_path() {
         let config = Config::default();
-        assert_eq!(config.worktree_path("feature/auth"), "../feature/auth");
+        assert_eq!(
+            config.worktree_path("name", "feature/auth"),
+            "../feature/auth"
+        );
     }
 
     #[test]
@@ -314,7 +330,71 @@ mod tests {
         };
         let expected = Path::new("../wt").join("feature/auth");
         assert_eq!(
-            config.worktree_path("feature/auth"),
+            config.worktree_path("name", "feature/auth"),
+            expected.to_string_lossy()
+        );
+    }
+
+    #[test]
+    fn test_worktree_path_repo_placeholder() {
+        let config = Config {
+            worktree: WorktreeConfig {
+                dir: "../wt/{repo}".to_string(),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let expected = Path::new("../wt/myrepo").join("feature/auth");
+        assert_eq!(
+            config.worktree_path("myrepo", "feature/auth"),
+            expected.to_string_lossy()
+        );
+    }
+
+    #[test]
+    fn test_worktree_path_no_placeholder_ignores_repo_name() {
+        let config = Config {
+            worktree: WorktreeConfig {
+                dir: "../wt".to_string(),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        // Passing any repo name must not change a dir without `{repo}`.
+        let expected = Path::new("../wt").join("feature/auth");
+        assert_eq!(
+            config.worktree_path("anything", "feature/auth"),
+            expected.to_string_lossy()
+        );
+    }
+
+    #[test]
+    fn test_worktree_path_empty_dir_with_repo_name() {
+        let config = Config {
+            worktree: WorktreeConfig {
+                dir: "  ".to_string(),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        assert_eq!(
+            config.worktree_path("myrepo", "feature/auth"),
+            "../feature/auth"
+        );
+    }
+
+    #[test]
+    fn test_worktree_path_placeholder_only() {
+        let config = Config {
+            worktree: WorktreeConfig {
+                dir: "{repo}".to_string(),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let expected = Path::new("myrepo").join("br");
+        assert_eq!(
+            config.worktree_path("myrepo", "br"),
             expected.to_string_lossy()
         );
     }
@@ -366,7 +446,10 @@ dir = "../wt"
             },
             ..Default::default()
         };
-        assert_eq!(config.worktree_path("feature/auth"), "../feature/auth");
+        assert_eq!(
+            config.worktree_path("name", "feature/auth"),
+            "../feature/auth"
+        );
     }
 
     #[test]
@@ -638,7 +721,7 @@ clone_root = "~/workspace"
     fn worktree_path_for_default_dir() {
         let config = Config::default();
         let root = Path::new("/repos/owner/name");
-        let p = config.worktree_path_for(root, "feature/auth");
+        let p = config.worktree_path_for(root, "name", "feature/auth");
         let expected = Path::new("/repos/owner/name")
             .join("..")
             .join("feature/auth");
@@ -655,8 +738,25 @@ clone_root = "~/workspace"
             ..Default::default()
         };
         let root = Path::new("/repos/owner/name");
-        let p = config.worktree_path_for(root, "feature/x");
+        let p = config.worktree_path_for(root, "name", "feature/x");
         let expected = Path::new("/repos/owner/name").join("wt").join("feature/x");
+        assert_eq!(p, expected.to_string_lossy().to_string());
+    }
+
+    #[test]
+    fn test_worktree_path_for_repo_placeholder() {
+        let config = Config {
+            worktree: WorktreeConfig {
+                dir: "../wt/{repo}".to_string(),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let root = Path::new("/repos/owner/name");
+        let p = config.worktree_path_for(root, "name", "feature/x");
+        let expected = Path::new("/repos/owner/name")
+            .join("../wt/name")
+            .join("feature/x");
         assert_eq!(p, expected.to_string_lossy().to_string());
     }
 }

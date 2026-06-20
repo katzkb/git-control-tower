@@ -167,6 +167,11 @@ If neither path resolves, cross-repo entries remain visible but `Create Worktree
 [worktree]
 # Base directory for new worktrees (default: "..")
 # Branch name becomes the subdirectory: feature/auth → ../feature/auth
+#
+# The `{repo}` token expands to the repository name, so a single global
+# config can keep every repo's worktrees apart, e.g.:
+#   dir = "../wt/{repo}"   # feature/auth → ../wt/<repo-name>/feature/auth
+# A `dir` without `{repo}` behaves exactly as before (backward compatible).
 dir = ".."
 
 # Post-create hooks run automatically after worktree creation.
