@@ -281,8 +281,12 @@ pub struct App {
     // Spinner animation
     spinner_tick: usize,
 
-    // Loaded TOML config (protected_branches, worktree, …)
+    // Loaded TOML config (protected_branches, worktree, …) for the active repo.
     pub config: crate::config::Config,
+
+    // Merged global config layers (home-dir files only), used to resolve a
+    // per-repo effective config for cross-repo worktree operations.
+    pub global_layers: toml::Table,
 
     // Cross-repo context (set at startup)
     pub active_repo: Option<crate::git::types::RepoId>,
@@ -359,6 +363,7 @@ impl App {
             commits_reload_requested: false,
             spinner_tick: 0,
             config,
+            global_layers: toml::Table::new(),
             active_repo: None,
             clone_root: None,
             repos: HashMap::new(),
@@ -898,8 +903,11 @@ impl App {
                     self.config.worktree_path(&entry.repo_id.name, &entry.name)
                 } else {
                     // unwrap is safe: cross_repo_no_clone is false above
-                    self.config.worktree_path_for(
-                        clone_path.as_ref().unwrap(),
+                    let root = clone_path.as_ref().unwrap();
+                    // Cross-repo: resolve the target repo's own config so its
+                    // `.gct.toml` applies (must match main.rs's creation path).
+                    self.resolve_repo_config(root).worktree_path_for(
+                        root,
                         &entry.repo_id.name,
                         &entry.name,
                     )
@@ -1050,10 +1058,12 @@ impl App {
         } else if is_active_repo {
             Some(self.config.worktree_path(&entry.repo_id.name, &entry.name))
         } else if let Some(ref root) = clone_path {
-            Some(
-                self.config
-                    .worktree_path_for(root, &entry.repo_id.name, &entry.name),
-            )
+            // Cross-repo: resolve the target repo's own config (matches main.rs).
+            Some(self.resolve_repo_config(root).worktree_path_for(
+                root,
+                &entry.repo_id.name,
+                &entry.name,
+            ))
         } else {
             None
         };
@@ -1302,6 +1312,13 @@ impl App {
         } else {
             set.into_iter().collect()
         }
+    }
+
+    /// Effective config for a specific repo root: the global layers overlaid
+    /// with `<repo_root>/.gct.toml`. Used for cross-repo worktree operations so
+    /// the target repo's own `.gct.toml` applies (not the launching repo's).
+    pub fn resolve_repo_config(&self, repo_root: &std::path::Path) -> crate::config::Config {
+        crate::config::resolve_config(&self.global_layers, Some(repo_root))
     }
 
     /// Resolve a repo's local clone path under `clone_root`. Idempotent: only
