@@ -130,13 +130,38 @@ gct --verbose
 
 ## Configuration
 
-gct reads configuration from the first file found in this order:
+gct deep-merges every config file it finds, from lowest to highest priority:
 
-1. `.gct.toml` in the repository root (project-local)
+1. `~/.gct.toml` (global, lowest priority)
 2. `~/.config/gct/config.toml` (global)
-3. `~/.gct.toml` (global)
+3. `.gct.toml` in the repository root (project-local, highest priority)
 
-Project-local config is useful for per-repo worktree hooks (e.g. copying `.env`, running `npm ci`).
+Higher-priority files override lower ones **key by key**: nested tables
+(`[worktree]`, `[workspace]`) are merged, so a project-local `.gct.toml` can
+override individual settings while inheriting the rest from your global config.
+Scalars and arrays (e.g. `worktree.dir`, `protected_branches`) are replaced
+wholesale by the highest-priority file that sets them.
+
+For example, with a global `~/.config/gct/config.toml`:
+
+```toml
+[workspace]
+clone_root = "~/workspace"
+
+[worktree]
+dir = "../wt/{repo}"
+```
+
+a repo-specific `.gct.toml` containing only:
+
+```toml
+[worktree]
+dir = "../custom"
+```
+
+uses `../custom` for that repo's worktrees while still inheriting `clone_root`
+from the global config. Project-local config is also useful for per-repo
+worktree hooks (e.g. copying `.env`, running `npm ci`).
 
 ### Cross-repo Reviews
 
@@ -156,6 +181,8 @@ For cross-repo PRs, `Create Worktree` and `cd into Worktree` operate on the loca
    gct then expects clones at `<clone_root>/<host>/<owner>/<name>`.
 
 If neither path resolves, cross-repo entries remain visible but `Create Worktree` is greyed out with a one-line hint pointing at the expected clone location.
+
+**Per-repo config for cross-repo worktrees:** when you create a worktree for another repo, gct applies that **target repo's** `.gct.toml` (merged on top of your global config), not the `.gct.toml` of the repo you launched gct from. So each repo's `worktree.dir` and `post_create` hooks take effect even when created from elsewhere.
 
 **Cross-host coverage:** My PR / My Review fan out across every host present in the repos gct has discovered locally (origin remotes), so a workspace mixing github.com clones with GitHub Enterprise clones surfaces PRs from both. Hosts you are authenticated to but have never cloned from are skipped — clone any one repo from that host (or `cd` into one) so gct can pick it up.
 

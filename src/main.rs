@@ -394,6 +394,9 @@ async fn run(
 ) -> (anyhow::Result<()>, Option<String>) {
     let mut app = App::new(config);
     app.verbose = verbose;
+    // Global (home-dir) config layers, used to resolve a per-target-repo
+    // effective config for cross-repo worktree operations.
+    app.global_layers = config::load_global_layers();
     let mut events = EventHandler::new(Duration::from_millis(80));
     let (tx, mut rx) = mpsc::unbounded_channel::<AsyncResult>();
     let mut pr_inflight: HashSet<(crate::git::types::RepoId, u64)> = HashSet::new();
@@ -1050,9 +1053,15 @@ async fn run(
                 }
             };
 
-            let wt_path =
-                app.config
-                    .worktree_path_for(&target_root, &entry.repo_id.name, &branch_name);
+            // Active repo uses the launch config; cross-repo resolves the
+            // target repo's own config (global layers + <target_root>/.gct.toml).
+            let cfg = if is_active {
+                app.config.clone()
+            } else {
+                config::resolve_config(&app.global_layers, Some(&target_root))
+            };
+
+            let wt_path = cfg.worktree_path_for(&target_root, &entry.repo_id.name, &branch_name);
             app.wt_inflight.insert(wt_path.clone());
             if let Some(parent) = std::path::Path::new(&wt_path).parent() {
                 let _ = std::fs::create_dir_all(parent);
@@ -1060,7 +1069,7 @@ async fn run(
 
             let is_active_with_local =
                 is_active && app.branches.iter().any(|b| b.name == branch_name);
-            let post_create = app.config.worktree.post_create.clone();
+            let post_create = cfg.worktree.post_create.clone();
             let target_repo_for_send = if is_active {
                 None
             } else {

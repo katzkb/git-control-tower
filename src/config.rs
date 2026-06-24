@@ -228,45 +228,80 @@ fn run_command(command: &str, work_dir: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
-/// Load config from the first valid file found:
-/// 1. `.gct.toml` (project-local, git repository root via `git rev-parse --show-toplevel`)
+/// Load the effective config for the current directory's repository:
+/// global layers overlaid with the repo-local `.gct.toml` (if any).
+///
+/// Layers are deep-merged in priority order (later overrides earlier):
+/// 1. `~/.gct.toml` (global, lowest priority)
 /// 2. `~/.config/gct/config.toml` (global)
-/// 3. `~/.gct.toml` (global)
+/// 3. `.gct.toml` at the git repository root (project-local, highest priority)
+///
+/// Nested tables (`[worktree]`, `[workspace]`) are merged key-by-key, so a
+/// project-local file can override individual settings while inheriting the
+/// rest from the global config. Scalars and arrays are replaced wholesale.
 ///
 /// Must be called before TUI initialization (eprintln warnings).
 pub fn load_config() -> Config {
-    let candidates = config_paths();
-    for path in &candidates {
-        match fs::read_to_string(path) {
-            Ok(content) => match toml::from_str::<Config>(&content) {
-                Ok(config) => return config,
-                Err(e) => {
-                    eprintln!("Warning: failed to parse {}: {e}", path.display());
-                    continue;
-                }
-            },
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
-            Err(e) => {
-                eprintln!("Warning: failed to read {}: {e}", path.display());
-                continue;
+    resolve_config(&load_global_layers(), git_repo_root().as_deref())
+}
+
+/// Read a TOML file and deep-merge it into `merged`. A missing file is ignored;
+/// read/parse errors are warned about and skipped.
+fn read_and_merge(path: &Path, merged: &mut toml::Table) {
+    match fs::read_to_string(path) {
+        Ok(content) => match toml::from_str::<toml::Table>(&content) {
+            Ok(t) => merge_tables(merged, t),
+            Err(e) => eprintln!("Warning: failed to parse {}: {e}", path.display()),
+        },
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => eprintln!("Warning: failed to read {}: {e}", path.display()),
+    }
+}
+
+/// Deep-merge only the global (home-dir) config files into a raw table.
+/// Order: `~/.gct.toml` (low) then `~/.config/gct/config.toml` (high).
+/// The result is the base onto which any repo-local `.gct.toml` is overlaid.
+pub fn load_global_layers() -> toml::Table {
+    let mut merged = toml::Table::new();
+    if let Some(home) = home_dir() {
+        // config_paths_for_home() is ordered high→low; reverse to apply low→high.
+        for path in config_paths_for_home(&home).into_iter().rev() {
+            read_and_merge(&path, &mut merged);
+        }
+    }
+    merged
+}
+
+/// Resolve the effective Config for a specific repository: the global layers
+/// overlaid with `<repo_root>/.gct.toml` (if present). `repo_root = None`
+/// yields the global-only config. This is what cross-repo worktree operations
+/// use so the target repo's own `.gct.toml` applies (the launching repo's
+/// project-local config does not leak into other repos).
+pub fn resolve_config(global: &toml::Table, repo_root: Option<&Path>) -> Config {
+    let mut merged = global.clone();
+    if let Some(root) = repo_root {
+        read_and_merge(&root.join(".gct.toml"), &mut merged);
+    }
+    toml::Value::Table(merged).try_into().unwrap_or_else(|e| {
+        eprintln!("Warning: invalid merged config: {e}");
+        Config::default()
+    })
+}
+
+/// Deep-merge `overlay` into `base`. Nested tables are merged key-by-key;
+/// scalars and arrays from `overlay` replace those in `base`.
+fn merge_tables(base: &mut toml::Table, overlay: toml::Table) {
+    for (k, v) in overlay {
+        match (base.get_mut(&k), v) {
+            (Some(toml::Value::Table(bt)), toml::Value::Table(ot)) => merge_tables(bt, ot),
+            (_, v) => {
+                base.insert(k, v);
             }
         }
     }
-    Config::default()
 }
 
-fn config_paths() -> Vec<PathBuf> {
-    let mut paths = Vec::new();
-    if let Some(root) = git_repo_root() {
-        paths.push(root.join(".gct.toml"));
-    }
-    if let Some(home) = home_dir() {
-        paths.extend(config_paths_for_home(&home));
-    }
-    paths
-}
-
-fn git_repo_root() -> Option<PathBuf> {
+pub fn git_repo_root() -> Option<PathBuf> {
     std::process::Command::new("git")
         .args(["rev-parse", "--show-toplevel"])
         .output()
@@ -422,19 +457,6 @@ dir = "../wt"
         assert_eq!(paths.len(), 2);
         assert_eq!(paths[0], home.join(".config/gct/config.toml"));
         assert_eq!(paths[1], home.join(".gct.toml"));
-    }
-
-    #[test]
-    fn test_config_paths_includes_local() {
-        let paths = config_paths();
-        // When run inside a git repo, first entry should be .gct.toml at repo root
-        if git_repo_root().is_some() {
-            assert!(paths[0].ends_with(".gct.toml"));
-        }
-        // Global paths should be present if home is available
-        if home_dir().is_some() {
-            assert!(paths.len() >= 2);
-        }
     }
 
     #[test]
@@ -758,5 +780,152 @@ clone_root = "~/workspace"
             .join("../wt/name")
             .join("feature/x");
         assert_eq!(p, expected.to_string_lossy().to_string());
+    }
+
+    // --- config merge ---
+
+    /// Deep-merge TOML source layers (low→high priority) into a Config,
+    /// mirroring `read_and_merge` semantics (invalid layers are skipped).
+    fn merge_strs(layers: &[&str]) -> Config {
+        let mut merged = toml::Table::new();
+        for content in layers {
+            if let Ok(t) = toml::from_str::<toml::Table>(content) {
+                merge_tables(&mut merged, t);
+            }
+        }
+        toml::Value::Table(merged)
+            .try_into()
+            .unwrap_or_else(|_| Config::default())
+    }
+
+    #[test]
+    fn merge_local_overrides_global_scalar() {
+        let config = merge_strs(&[
+            "[worktree]\ndir = \"..\"\n",
+            "[worktree]\ndir = \"../wt\"\n",
+        ]);
+        assert_eq!(config.worktree.dir, "../wt");
+    }
+
+    #[test]
+    fn merge_keeps_global_when_local_absent() {
+        let config = merge_strs(&[
+            "[workspace]\nclone_root = \"~/workspace\"\n\n[worktree]\ndir = \"..\"\n",
+            "[worktree]\ndir = \"../wt\"\n",
+        ]);
+        // local overrides dir, but global's clone_root is preserved.
+        assert_eq!(config.worktree.dir, "../wt");
+        assert_eq!(config.workspace.clone_root.as_deref(), Some("~/workspace"));
+    }
+
+    #[test]
+    fn merge_nested_table_preserves_sibling_keys() {
+        let config = merge_strs(&[
+            "[worktree]\ndir = \"..\"\n\n[[worktree.post_create]]\ntype = \"command\"\ncommand = \"npm ci\"\n",
+            "[worktree]\ndir = \"../wt\"\n",
+        ]);
+        assert_eq!(config.worktree.dir, "../wt");
+        // post_create from global survives because local only set `dir`.
+        assert_eq!(config.worktree.post_create.len(), 1);
+    }
+
+    #[test]
+    fn merge_local_array_replaces_global() {
+        let config = merge_strs(&[
+            "protected_branches = [\"main\"]\n",
+            "protected_branches = [\"x\", \"y\"]\n",
+        ]);
+        assert_eq!(
+            config.protected_branches,
+            vec!["x".to_string(), "y".to_string()]
+        );
+    }
+
+    #[test]
+    fn merge_empty_layers_is_default() {
+        let config = merge_strs(&[]);
+        let default = Config::default();
+        assert_eq!(config.worktree.dir, default.worktree.dir);
+        assert_eq!(config.protected_branches, default.protected_branches);
+        assert!(config.workspace.clone_root.is_none());
+    }
+
+    #[test]
+    fn merge_single_layer_applies_defaults() {
+        let config = merge_strs(&["[worktree]\ndir = \"../wt\"\n"]);
+        assert_eq!(config.worktree.dir, "../wt");
+        // Unspecified fields fall back to serde defaults.
+        assert_eq!(config.protected_branches, default_protected_branches());
+    }
+
+    #[test]
+    fn merge_skips_invalid_layer() {
+        let config = merge_strs(&[
+            "this is = not = valid toml\n",
+            "[worktree]\ndir = \"../wt\"\n",
+        ]);
+        assert_eq!(config.worktree.dir, "../wt");
+    }
+
+    #[test]
+    fn merge_tables_recurses_and_replaces_arrays() {
+        let mut base: toml::Table = toml::from_str("[a]\nx = 1\ny = 2\narr = [1, 2]\n").unwrap();
+        let overlay: toml::Table = toml::from_str("[a]\ny = 9\narr = [3]\n").unwrap();
+        merge_tables(&mut base, overlay);
+        let a = base["a"].as_table().unwrap();
+        assert_eq!(a["x"].as_integer(), Some(1)); // untouched sibling kept
+        assert_eq!(a["y"].as_integer(), Some(9)); // overridden
+        // array replaced wholesale, not appended
+        assert_eq!(a["arr"].as_array().unwrap().len(), 1);
+    }
+
+    // --- resolve_config (per-repo overlay) ---
+
+    #[test]
+    fn resolve_config_repo_root_none() {
+        let global: toml::Table = toml::from_str("[worktree]\ndir = \"../g\"\n").unwrap();
+        let config = resolve_config(&global, None);
+        assert_eq!(config.worktree.dir, "../g");
+    }
+
+    #[test]
+    fn resolve_config_no_local_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let global: toml::Table = toml::from_str("[worktree]\ndir = \"../g\"\n").unwrap();
+        // No .gct.toml in tmp dir → global values stay.
+        let config = resolve_config(&global, Some(tmp.path()));
+        assert_eq!(config.worktree.dir, "../g");
+    }
+
+    #[test]
+    fn resolve_config_overlays_repo_local() {
+        let tmp = tempfile::tempdir().unwrap();
+        fs::write(
+            tmp.path().join(".gct.toml"),
+            "[worktree]\ndir = \"../custom\"\n",
+        )
+        .unwrap();
+        let global: toml::Table = toml::from_str("[worktree]\ndir = \"..\"\n").unwrap();
+        let config = resolve_config(&global, Some(tmp.path()));
+        assert_eq!(config.worktree.dir, "../custom");
+    }
+
+    #[test]
+    fn resolve_config_inherits_global_when_key_absent() {
+        let tmp = tempfile::tempdir().unwrap();
+        // Repo-local only overrides worktree.dir.
+        fs::write(
+            tmp.path().join(".gct.toml"),
+            "[worktree]\ndir = \"../custom\"\n",
+        )
+        .unwrap();
+        let global: toml::Table = toml::from_str(
+            "[workspace]\nclone_root = \"~/workspace\"\n\n[worktree]\ndir = \"..\"\n",
+        )
+        .unwrap();
+        let config = resolve_config(&global, Some(tmp.path()));
+        assert_eq!(config.worktree.dir, "../custom");
+        // clone_root is inherited from the global layers.
+        assert_eq!(config.workspace.clone_root.as_deref(), Some("~/workspace"));
     }
 }
