@@ -79,7 +79,7 @@ eval "$(gct shell-init bash)"
 gct shell-init fish | source
 ```
 
-This wraps `gct` with a shell function that captures the worktree path and runs `cd` in your shell.
+This wraps `gct` with a shell function that captures the worktree path and runs `cd` in your shell. The same wrapper also powers the `gct cd <branch>` command (see [Usage](#usage)).
 
 ## Usage
 
@@ -92,7 +92,16 @@ gct --version
 
 # Enable verbose error output
 gct --verbose
+
+# Jump straight into an existing worktree (no TUI)
+gct cd feature/login
 ```
+
+`gct cd <branch>` prints the path of the worktree checked out for `<branch>` and
+cd's into it via the shell wrapper. It requires the shell integration from
+[Setup](#setup). If no worktree exists for the branch, it exits non-zero and
+prints nothing — create the worktree from the TUI first (action menu → Worktree →
+create).
 
 ## Keybindings
 
