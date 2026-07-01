@@ -38,9 +38,18 @@ pub fn parse_log(output: &str) -> Vec<Commit> {
 /// Parse output of `git branch -vv`
 /// `base_hash` is the full commit hash of the repository's default branch (e.g., main).
 pub fn parse_branches(output: &str, merged_output: &str, base_hash: &str) -> Vec<Branch> {
+    // `git branch --merged` prefixes the current branch with `* ` and branches
+    // checked out in linked worktrees with `+ `; strip either so the name matches.
     let merged_names: Vec<&str> = merged_output
         .lines()
-        .map(|l| l.trim().trim_start_matches("* "))
+        .filter_map(|l| {
+            let t = l.trim();
+            let name = t
+                .strip_prefix("* ")
+                .or_else(|| t.strip_prefix("+ "))
+                .unwrap_or(t);
+            (!name.is_empty()).then_some(name)
+        })
         .collect();
 
     output
@@ -176,6 +185,21 @@ mod tests {
         assert_eq!(branches[2].name, "old-branch");
         assert!(branches[2].is_merged);
         assert!(branches[2].upstream.is_none());
+    }
+
+    #[test]
+    fn test_merged_branch_checked_out_in_worktree() {
+        // A merged branch checked out in a linked worktree is prefixed with `+`
+        // in `git branch --merged` output; it must still be detected as merged.
+        let output = "* main       abc1234 [origin/main] latest commit\n\
+                       + wt-branch  ghi9012 (/path/wt) merged work\n";
+        let merged = "* main\n+ wt-branch\n";
+        let base_hash = "abc1234567890abcdef1234567890abcdef12345678";
+        let branches = parse_branches(output, merged, base_hash);
+
+        assert_eq!(branches[1].name, "wt-branch");
+        assert!(!branches[1].is_current);
+        assert!(branches[1].is_merged);
     }
 
     #[test]

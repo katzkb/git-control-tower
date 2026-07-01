@@ -95,13 +95,39 @@ gct --verbose
 
 # Jump straight into an existing worktree (no TUI)
 gct cd feature/login
+
+# Create (or reuse) a worktree for a branch, then cd into it
+gct wt feature/login
+
+# List worktrees or branches (plain text, for scripting)
+gct ls              # worktrees, as `branch<TAB>path`
+gct ls branches
+
+# Delete merged branches and their worktrees (dry-run by default)
+gct prune           # show what would be deleted
+gct prune --yes     # actually delete
+
+# Shell completion
+eval "$(gct completions zsh)"
 ```
 
-`gct cd <branch>` prints the path of the worktree checked out for `<branch>` and
-cd's into it via the shell wrapper. It requires the shell integration from
-[Setup](#setup). If no worktree exists for the branch, it exits non-zero and
-prints nothing — create the worktree from the TUI first (action menu → Worktree →
-create).
+These subcommands run without launching the TUI:
+
+- **`gct cd <branch>`** — print the path of the worktree checked out for `<branch>`
+  and cd into it via the shell wrapper. Requires the shell integration from
+  [Setup](#setup). If no worktree exists it exits non-zero and prints nothing —
+  use `gct wt` to create one.
+- **`gct wt <branch>`** — the create-side complement to `cd`: reuse the branch's
+  worktree or create one (applying the `post_create` hooks from your config), then
+  cd into it. Also requires the shell integration.
+- **`gct ls [worktrees|branches]`** — plain-text listing for scripting, e.g.
+  ``gct cd "$(gct ls | fzf | cut -f1)"``. Worktrees print as `branch<TAB>path`.
+- **`gct prune [--dry-run] [--yes] [--force]`** — delete merged branches and their
+  worktrees (protected and current branches are skipped). Lists candidates only
+  unless `--yes` is given; `--force` uses `worktree remove --force` and `branch -D`.
+
+> `cd` and `wt` emit a bare worktree path that the shell wrapper cd's into; `ls`
+> and `prune` print informational output and never change your directory.
 
 ## Keybindings
 
