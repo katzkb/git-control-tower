@@ -323,6 +323,14 @@ async fn main() -> anyhow::Result<()> {
         return Ok(());
     }
 
+    // Handle `cd <branch>` subcommand: print the worktree path for the branch so
+    // the shell wrapper can cd into it. Runs without launching the TUI and does
+    // not need `gh`, so it's dispatched before the TUI-oriented prerequisite check.
+    if args.get(1).map(|s| s.as_str()) == Some("cd") {
+        let code = run_cd(args.get(2).map(|s| s.as_str())).await;
+        process::exit(code);
+    }
+
     // Initialize debug logging (GCT_DEBUG=1 or --verbose enables it)
     let verbose = std::env::args().any(|a| a == "--verbose");
     crate::git::command::init_debug_log(verbose);
@@ -384,6 +392,57 @@ async fn check_prerequisites() {
         eprintln!("Error: not a git repository.");
         eprintln!("Please run gct from inside a git repository.");
         process::exit(1);
+    }
+}
+
+/// Find the worktree checked out for `branch` and return its path.
+/// Pure helper over an already-parsed worktree list so it can be unit-tested.
+fn worktree_path_for_branch(
+    worktrees: &[crate::git::types::Worktree],
+    branch: &str,
+) -> Option<String> {
+    worktrees
+        .iter()
+        .find(|wt| wt.branch.as_deref() == Some(branch))
+        .map(|wt| wt.path.clone())
+}
+
+/// Implements `gct cd <branch>`: print the branch's worktree path to stdout (the
+/// shell wrapper cd's into it) and return an exit code. On any failure nothing is
+/// written to stdout and a non-zero code is returned so the wrapper does not cd.
+async fn run_cd(branch: Option<&str>) -> i32 {
+    let branch = match branch {
+        Some(b) if !b.is_empty() => b,
+        _ => {
+            eprintln!("Usage: gct cd <branch>");
+            return 1;
+        }
+    };
+
+    if run_git(&["rev-parse", "--git-dir"]).await.is_err() {
+        eprintln!("Error: not a git repository.");
+        return 1;
+    }
+
+    let output = match run_git(&["worktree", "list", "--porcelain"]).await {
+        Ok(output) => output,
+        Err(e) => {
+            eprintln!("Error: failed to list worktrees: {e}");
+            return 1;
+        }
+    };
+
+    match worktree_path_for_branch(&parse_worktrees(&output), branch) {
+        Some(path) => {
+            println!("{path}");
+            0
+        }
+        None => {
+            eprintln!(
+                "Error: no worktree for branch '{branch}'.\nCreate one in the gct TUI (action menu → Worktree → create)."
+            );
+            1
+        }
     }
 }
 
@@ -1339,6 +1398,7 @@ A terminal TUI for Git/GitHub branch, PR, and worktree management.
 
 USAGE:
     gct [OPTIONS]
+    gct cd <BRANCH>
     gct shell-init <SHELL>
 
 OPTIONS:
@@ -1347,6 +1407,12 @@ OPTIONS:
         --verbose     Surface silenced errors for troubleshooting
 
 SUBCOMMANDS:
+    cd <BRANCH>
+        Print the worktree path for BRANCH and cd into it (requires shell
+        integration — see `shell-init`). Exits non-zero without printing a
+        path if no worktree exists for BRANCH.
+        Example: gct cd feature/login
+
     shell-init <SHELL>
         Print shell wrapper code for `cd into worktree` support.
         SHELL is one of: zsh, bash, fish (default: zsh).
@@ -1607,6 +1673,43 @@ fn extract_gh_hostname(remote_url: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn wt(path: &str, branch: Option<&str>, is_bare: bool) -> crate::git::types::Worktree {
+        crate::git::types::Worktree {
+            path: path.to_string(),
+            head: "abc123".to_string(),
+            branch: branch.map(|s| s.to_string()),
+            is_bare,
+        }
+    }
+
+    #[test]
+    fn worktree_path_for_branch_found() {
+        let wts = vec![
+            wt("/repo", Some("main"), false),
+            wt("/repo-feature", Some("feature/x"), false),
+        ];
+        assert_eq!(
+            worktree_path_for_branch(&wts, "feature/x").as_deref(),
+            Some("/repo-feature")
+        );
+    }
+
+    #[test]
+    fn worktree_path_for_branch_not_found() {
+        let wts = vec![wt("/repo", Some("main"), false)];
+        assert!(worktree_path_for_branch(&wts, "feature/x").is_none());
+    }
+
+    #[test]
+    fn worktree_path_for_branch_ignores_detached_and_bare() {
+        // A detached/bare worktree has no branch and must never match.
+        let wts = vec![
+            wt("/repo-bare", None, true),
+            wt("/repo-detached", None, false),
+        ];
+        assert!(worktree_path_for_branch(&wts, "feature/x").is_none());
+    }
 
     #[test]
     fn infer_clone_root_ghq_layout() {
