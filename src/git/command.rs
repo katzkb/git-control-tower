@@ -2,11 +2,45 @@ use std::collections::VecDeque;
 use std::fs::{File, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::process::Stdio;
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
 use tokio::process::Command;
+
+/// Upper bound on a single `git`/`gh` invocation. Guards against a stalled
+/// network call, proxy hang, or an interactive prompt waiting on stdin —
+/// none of which should ever freeze the app indefinitely.
+const CMD_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Runs `cmd` to completion, enforcing [`CMD_TIMEOUT`] and closing stdin so a
+/// stray interactive prompt (credential/auth/pager/editor) can't block on
+/// input that will never arrive. Shared by every code path that spawns
+/// `git`/`gh` so no invocation can hang forever.
+async fn run_with_timeout(cmd: &mut Command) -> std::io::Result<std::process::Output> {
+    run_with_timeout_for(cmd, CMD_TIMEOUT).await
+}
+
+/// Parameterized over the timeout duration so tests can exercise the
+/// timeout path without waiting out the real [`CMD_TIMEOUT`].
+async fn run_with_timeout_for(
+    cmd: &mut Command,
+    timeout_duration: Duration,
+) -> std::io::Result<std::process::Output> {
+    cmd.stdin(Stdio::null())
+        // Defense in depth: even with stdin closed, make sure git/gh don't
+        // themselves attempt an interactive prompt.
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .env("GH_PROMPT_DISABLED", "1");
+    match tokio::time::timeout(timeout_duration, cmd.output()).await {
+        Ok(result) => result,
+        Err(_) => Err(std::io::Error::new(
+            std::io::ErrorKind::TimedOut,
+            format!("command timed out after {timeout_duration:?}"),
+        )),
+    }
+}
 
 static DEBUG_LOG: OnceLock<Option<Mutex<File>>> = OnceLock::new();
 
@@ -186,7 +220,9 @@ async fn run_cmd_tagged(
     let started_at = Instant::now();
     let owned_args: Vec<String> = args.iter().map(|s| s.to_string()).collect();
 
-    let output = match Command::new(executable).args(args).output().await {
+    let mut cmd = Command::new(executable);
+    cmd.args(args);
+    let output = match run_with_timeout(&mut cmd).await {
         Ok(o) => o,
         Err(e) => {
             push_record(CommandRecord {
@@ -196,7 +232,7 @@ async fn run_cmd_tagged(
                 success: false,
                 duration: started_at.elapsed(),
                 output_bytes: 0,
-                error: Some(format!("spawn failed: {e}")),
+                error: Some(e.to_string()),
                 repo,
             });
             return Err(anyhow::Error::new(e))
@@ -254,12 +290,9 @@ async fn run_cmd_in_dir_tagged(
     let started_at = Instant::now();
     let owned_args: Vec<String> = args.iter().map(|s| s.to_string()).collect();
 
-    let output = match Command::new(executable)
-        .args(args)
-        .current_dir(cwd)
-        .output()
-        .await
-    {
+    let mut cmd = Command::new(executable);
+    cmd.args(args).current_dir(cwd);
+    let output = match run_with_timeout(&mut cmd).await {
         Ok(o) => o,
         Err(e) => {
             push_record(CommandRecord {
@@ -269,7 +302,7 @@ async fn run_cmd_in_dir_tagged(
                 success: false,
                 duration: started_at.elapsed(),
                 output_bytes: 0,
-                error: Some(format!("spawn failed: {e}")),
+                error: Some(e.to_string()),
                 repo,
             });
             return Err(anyhow::Error::new(e))
@@ -340,5 +373,30 @@ mod plumbing_tests {
         let history = command_history_snapshot();
         let last = history.first().expect("history should have an entry");
         assert!(last.repo.is_some());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn run_with_timeout_for_times_out_on_slow_command() {
+        let mut cmd = Command::new("sh");
+        cmd.args(["-c", "sleep 2"]);
+        let err = run_with_timeout_for(&mut cmd, Duration::from_millis(50))
+            .await
+            .expect_err("slow command should time out");
+        assert_eq!(err.kind(), std::io::ErrorKind::TimedOut);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn run_with_timeout_closes_stdin() {
+        // `cat` with no args reads from stdin until EOF. With stdin closed
+        // it should see EOF immediately and exit, instead of hanging
+        // forever waiting on input that will never arrive.
+        let mut cmd = Command::new("cat");
+        let output = tokio::time::timeout(Duration::from_secs(5), run_with_timeout(&mut cmd))
+            .await
+            .expect("cat should not hang waiting on stdin")
+            .expect("cat should exit successfully on closed stdin");
+        assert!(output.stdout.is_empty());
     }
 }
