@@ -265,19 +265,98 @@ fn format_branch_name(name: &str, search_query: &str, base_style: Style) -> Vec<
     if search_query.is_empty() {
         return vec![Span::styled(format!(" {name}"), base_style)];
     }
-    let lower_name = name.to_lowercase();
-    let lower_query = search_query.to_lowercase();
-    if let Some(start) = lower_name.find(&lower_query) {
-        let end = start + lower_query.len();
+    // Match on Vec<char> throughout so slicing is always char-boundary safe,
+    // even when a char's lowercase form changes byte length (e.g. Turkish İ).
+    let name_chars: Vec<char> = name.chars().collect();
+    let lower_name_chars: Vec<char> = name_chars
+        .iter()
+        .map(|c| c.to_lowercase().next().unwrap_or(*c))
+        .collect();
+    let lower_query_chars: Vec<char> = search_query.to_lowercase().chars().collect();
+    if let Some(start) = lower_name_chars
+        .windows(lower_query_chars.len())
+        .position(|w| w == lower_query_chars.as_slice())
+    {
+        let end = start + lower_query_chars.len();
         let highlight_style = base_style
             .add_modifier(Modifier::UNDERLINED)
             .fg(Color::Cyan);
         vec![
-            Span::styled(format!(" {}", &name[..start]), base_style),
-            Span::styled(name[start..end].to_string(), highlight_style),
-            Span::styled(name[end..].to_string(), base_style),
+            Span::styled(
+                format!(" {}", name_chars[..start].iter().collect::<String>()),
+                base_style,
+            ),
+            Span::styled(
+                name_chars[start..end].iter().collect::<String>(),
+                highlight_style,
+            ),
+            Span::styled(name_chars[end..].iter().collect::<String>(), base_style),
         ]
     } else {
         vec![Span::styled(format!(" {name}"), base_style)]
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn plain_style() -> Style {
+        Style::default()
+    }
+
+    fn spans_to_string(spans: &[Span<'static>]) -> String {
+        spans.iter().map(|s| s.content.as_ref()).collect()
+    }
+
+    #[test]
+    fn no_query_returns_plain_name() {
+        let spans = format_branch_name("feature/login", "", plain_style());
+        assert_eq!(spans_to_string(&spans), " feature/login");
+    }
+
+    #[test]
+    fn ascii_match_highlights_substring() {
+        let spans = format_branch_name("feature/login", "log", plain_style());
+        assert_eq!(spans.len(), 3);
+        assert_eq!(spans_to_string(&spans), " feature/login");
+        assert_eq!(spans[1].content.as_ref(), "log");
+    }
+
+    #[test]
+    fn case_insensitive_match() {
+        let spans = format_branch_name("Feature/LOGIN", "log", plain_style());
+        assert_eq!(spans.len(), 3);
+        assert_eq!(spans[1].content.as_ref(), "LOG");
+    }
+
+    #[test]
+    fn no_match_returns_plain_name() {
+        let spans = format_branch_name("feature/login", "zzz", plain_style());
+        assert_eq!(spans.len(), 1);
+        assert_eq!(spans_to_string(&spans), " feature/login");
+    }
+
+    #[test]
+    fn multibyte_lowercase_expansion_does_not_panic() {
+        // 'İ' (U+0130) lowercases to two chars ("i" + combining dot above),
+        // which previously caused byte-offset/char-boundary mismatches.
+        let spans = format_branch_name("featureİ/login", "login", plain_style());
+        assert_eq!(spans.len(), 3);
+        assert_eq!(spans_to_string(&spans), " featureİ/login");
+        assert_eq!(spans[1].content.as_ref(), "login");
+    }
+
+    #[test]
+    fn other_multibyte_branch_names_do_not_panic() {
+        let spans = format_branch_name("feature/ログイン-test", "test", plain_style());
+        assert_eq!(spans.len(), 3);
+        assert_eq!(spans_to_string(&spans), " feature/ログイン-test");
+        assert_eq!(spans[1].content.as_ref(), "test");
+
+        let spans = format_branch_name("αβγδε", "γδ", plain_style());
+        assert_eq!(spans.len(), 3);
+        assert_eq!(spans_to_string(&spans), " αβγδε");
+        assert_eq!(spans[1].content.as_ref(), "γδ");
     }
 }
