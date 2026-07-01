@@ -97,6 +97,52 @@ enum AsyncResult {
         repo_id: crate::git::types::RepoId,
         list: Vec<crate::git::types::Worktree>,
     },
+    BranchesReloaded(BranchesReloadData),
+    CommitsReloaded(Option<Vec<crate::git::types::Commit>>),
+    BranchCreated {
+        name: String,
+        source: String,
+    },
+    BranchCreateError(String),
+}
+
+/// Result of a background branches/worktrees refresh. `None` for a field
+/// means that particular git call failed, so the caller should keep the
+/// previously-loaded value rather than overwrite it with an empty one.
+struct BranchesReloadData {
+    branches: Option<Vec<crate::git::types::Branch>>,
+    worktrees: Option<Vec<crate::git::types::Worktree>>,
+    errors: Vec<String>,
+}
+
+/// Fetches branches + worktrees without touching `App`, so it can run inside
+/// `tokio::spawn` without blocking the event loop. Reuses `load_branches_cli`,
+/// which already performs the same branch/default-branch/merged/rev-parse
+/// sequence for the `gct ls` command.
+async fn fetch_branches_and_worktrees() -> BranchesReloadData {
+    let mut errors = Vec::new();
+
+    let branches = match load_branches_cli().await {
+        Ok(b) => Some(b),
+        Err(e) => {
+            errors.push(format!("git branch -vv failed: {e}"));
+            None
+        }
+    };
+
+    let worktrees = match run_git(&["worktree", "list", "--porcelain"]).await {
+        Ok(output) => Some(parse_worktrees(&output)),
+        Err(e) => {
+            errors.push(format!("git worktree list failed: {e}"));
+            None
+        }
+    };
+
+    BranchesReloadData {
+        branches,
+        worktrees,
+        errors,
+    }
 }
 
 /// Display-friendly label for a worktree path: takes the last path segment.
@@ -761,6 +807,8 @@ async fn run(
     let (tx, mut rx) = mpsc::unbounded_channel::<AsyncResult>();
     let mut pr_inflight: HashSet<(crate::git::types::RepoId, u64)> = HashSet::new();
     let mut status_inflight: HashSet<String> = HashSet::new();
+    let mut branches_reload_inflight = false;
+    let mut commits_reload_inflight = false;
 
     let active_root = run_git(&["rev-parse", "--show-toplevel"])
         .await
@@ -943,18 +991,33 @@ async fn run(
             });
         }
 
-        // Reload branches/worktrees on `r` refresh from Main view
-        if app.branches_reload_requested {
+        // Reload branches/worktrees in background (non-blocking, deduplicated).
+        // Triggered by `r` in Main view, and also re-armed after worktree/branch
+        // mutations elsewhere in this loop that invalidate the cached entries.
+        if app.branches_reload_requested && !branches_reload_inflight {
             app.branches_reload_requested = false;
-            refresh_entries(&mut app).await;
+            branches_reload_inflight = true;
+            let tx = tx.clone();
+            tokio::spawn(async move {
+                let data = fetch_branches_and_worktrees().await;
+                let _ = tx.send(AsyncResult::BranchesReloaded(data));
+            });
         }
 
-        // Reload commits on `r` refresh from Log view
-        if app.commits_reload_requested {
+        // Reload commits on `r` refresh from Log view (non-blocking, deduplicated)
+        if app.commits_reload_requested && !commits_reload_inflight {
             app.commits_reload_requested = false;
-            if let Ok(output) = run_git(LOG_ARGS).await {
-                app.commits = parse_log(&output);
-            }
+            commits_reload_inflight = true;
+            let tx = tx.clone();
+            tokio::spawn(async move {
+                // Always send, even on failure, so `commits_reload_inflight`
+                // is reliably cleared instead of getting stuck forever.
+                let commits = run_git(LOG_ARGS)
+                    .await
+                    .ok()
+                    .map(|output| parse_log(&output));
+                let _ = tx.send(AsyncResult::CommitsReloaded(commits));
+            });
         }
 
         // Spawn git status load in background (non-blocking, deduplicated)
@@ -1189,7 +1252,7 @@ async fn run(
                             app.verbose_errors.extend(copy_errors);
                         }
                     }
-                    refresh_entries(&mut app).await;
+                    app.branches_reload_requested = true;
                     // Cross-repo: invalidate worktree-list cache for target so next selection re-fetches.
                     if let Some(repo_id) = target_repo {
                         app.wt_lists_per_repo.remove(&repo_id);
@@ -1269,7 +1332,7 @@ async fn run(
                     }
                     app.progress.clear();
                     app.quit_pressed_during_progress = false;
-                    refresh_entries(&mut app).await;
+                    app.branches_reload_requested = true;
                 }
                 AsyncResult::WtForceDecisionRequested { path, reason } => {
                     // Plain remove failed; ask the user whether to force.
@@ -1284,6 +1347,54 @@ async fn run(
                     app.wt_lists_per_repo.insert(repo_id, list);
                     app.rebuild_entries();
                     app.snap_scroll_to_entry();
+                }
+                AsyncResult::BranchesReloaded(data) => {
+                    branches_reload_inflight = false;
+                    if let Some(branches) = data.branches {
+                        app.branches = branches;
+                    }
+                    if let Some(worktrees) = data.worktrees {
+                        app.worktrees = worktrees;
+                    }
+                    if app.verbose {
+                        for e in data.errors {
+                            if !app.verbose_errors.contains(&e) {
+                                app.verbose_errors.push(e);
+                            }
+                        }
+                    }
+                    let active = app.active_repo.clone().unwrap_or_default();
+                    app.entries = merge_entries(
+                        &active,
+                        &app.branches,
+                        &app.worktrees,
+                        app.current_prs(),
+                        &app.wt_lists_per_repo,
+                    );
+                    let filtered_len = app.filtered_entries().len();
+                    if app.sidebar_scroll >= filtered_len && filtered_len > 0 {
+                        app.sidebar_scroll = filtered_len - 1;
+                    }
+                    app.snap_scroll_to_entry();
+                }
+                AsyncResult::CommitsReloaded(commits) => {
+                    commits_reload_inflight = false;
+                    if let Some(commits) = commits {
+                        app.commits = commits;
+                    }
+                }
+                AsyncResult::BranchCreated { name, source } => {
+                    app.notification = Some(Notification::success(format!(
+                        "Created branch '{name}' from '{source}'"
+                    )));
+                    app.branches_reload_requested = true;
+                }
+                AsyncResult::BranchCreateError(err_str) => {
+                    let short = err_str.lines().next().unwrap_or(&err_str).to_string();
+                    app.notification = Some(Notification::error(short));
+                    if app.verbose && !app.verbose_errors.contains(&err_str) {
+                        app.verbose_errors.push(err_str);
+                    }
                 }
             }
         }
@@ -1392,24 +1503,20 @@ async fn run(
             let active_repo = app.active_repo.clone();
             let is_active = active_repo.as_ref() == Some(&target_repo);
 
-            let target_root: std::path::PathBuf = if is_active {
-                run_git(&["rev-parse", "--show-toplevel"])
-                    .await
-                    .map(|s| std::path::PathBuf::from(s.trim()))
-                    .unwrap_or_else(|_| std::env::current_dir().unwrap_or_default())
-            } else {
-                // cross-repo: must have resolved local_path
-                match app
-                    .repos
-                    .get(&target_repo)
-                    .and_then(|m| m.local_path.clone())
-                {
-                    Some(p) => p,
-                    None => {
-                        app.notification =
-                            Some(Notification::error(format!("{target_repo} not cloned")));
-                        continue;
-                    }
+            // The active repo's root is already cached in `app.repos` (seeded
+            // at startup), so this never needs a blocking `rev-parse` call —
+            // cross-repo targets rely on the same cached `local_path` too.
+            let target_root: std::path::PathBuf = match app
+                .repos
+                .get(&target_repo)
+                .and_then(|m| m.local_path.clone())
+            {
+                Some(p) => p,
+                None if is_active => std::env::current_dir().unwrap_or_default(),
+                None => {
+                    app.notification =
+                        Some(Notification::error(format!("{target_repo} not cloned")));
+                    continue;
                 }
             };
 
@@ -1563,33 +1670,30 @@ async fn run(
             }
         }
 
-        // Create a new branch from the selected branch if requested
+        // Create a new branch from the selected branch if requested (non-blocking)
         if let Some((source, name)) = app.branch_create_requested.take() {
-            match run_git(&["branch", "--", &name, &source]).await {
-                Ok(_) => {
-                    app.notification = Some(Notification::success(format!(
-                        "Created branch '{name}' from '{source}'"
-                    )));
-                    refresh_entries(&mut app).await;
-                }
-                Err(e) => {
-                    let err_str = e.to_string();
-                    let short = err_str.lines().next().unwrap_or(&err_str).to_string();
-                    app.notification = Some(Notification::error(short));
-                    if app.verbose && !app.verbose_errors.contains(&err_str) {
-                        app.verbose_errors.push(err_str);
+            let tx = tx.clone();
+            tokio::spawn(async move {
+                match run_git(&["branch", "--", &name, &source]).await {
+                    Ok(_) => {
+                        let _ = tx.send(AsyncResult::BranchCreated { name, source });
+                    }
+                    Err(e) => {
+                        let _ = tx.send(AsyncResult::BranchCreateError(e.to_string()));
                     }
                 }
-            }
+            });
         }
 
-        // Open PR in browser if requested
+        // Open PR in browser if requested (non-blocking; result is ignored either way)
         if let Some((repo_id, pr_number)) = app.open_pr_requested.take() {
-            // `gh pr view --web` doesn't accept --hostname; embed host into --repo.
-            let repo_arg = repo_id.repo_arg();
-            let num = pr_number.to_string();
-            let args = vec!["pr", "view", &num, "--web", "--repo", repo_arg.as_str()];
-            let _ = run_gh(&args).await;
+            tokio::spawn(async move {
+                // `gh pr view --web` doesn't accept --hostname; embed host into --repo.
+                let repo_arg = repo_id.repo_arg();
+                let num = pr_number.to_string();
+                let args = vec!["pr", "view", &num, "--web", "--repo", repo_arg.as_str()];
+                let _ = run_gh(&args).await;
+            });
         }
 
         // Copy branch name to clipboard if requested
@@ -1604,34 +1708,6 @@ async fn run(
 
     let cd_path = app.cd_path.clone();
     (Ok(()), cd_path)
-}
-
-async fn refresh_entries(app: &mut App) {
-    load_branches(app).await;
-    match run_git(&["worktree", "list", "--porcelain"]).await {
-        Ok(output) => app.worktrees = parse_worktrees(&output),
-        Err(e) => {
-            if app.verbose {
-                let msg = format!("git worktree list failed: {e}");
-                if !app.verbose_errors.contains(&msg) {
-                    app.verbose_errors.push(msg);
-                }
-            }
-        }
-    }
-    let active = app.active_repo.clone().unwrap_or_default();
-    app.entries = merge_entries(
-        &active,
-        &app.branches,
-        &app.worktrees,
-        app.current_prs(),
-        &app.wt_lists_per_repo,
-    );
-    let filtered_len = app.filtered_entries().len();
-    if app.sidebar_scroll >= filtered_len && filtered_len > 0 {
-        app.sidebar_scroll = filtered_len - 1;
-    }
-    app.snap_scroll_to_entry();
 }
 
 async fn load_branches(app: &mut App) {
