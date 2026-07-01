@@ -14,6 +14,19 @@ use tokio::process::Command;
 /// none of which should ever freeze the app indefinitely.
 const CMD_TIMEOUT: Duration = Duration::from_secs(30);
 
+/// Injection seam: resolves the actual binary spawned for `git`/`gh` calls,
+/// letting tests substitute a stub executable (a fake `git`/`gh` script) via
+/// `GCT_GIT_BIN` / `GCT_GH_BIN` without touching production call sites, which
+/// always pass the logical name (`"git"` or `"gh"`).
+fn resolve_executable(executable: &'static str) -> String {
+    let env_var = match executable {
+        "git" => "GCT_GIT_BIN",
+        "gh" => "GCT_GH_BIN",
+        _ => return executable.to_string(),
+    };
+    std::env::var(env_var).unwrap_or_else(|_| executable.to_string())
+}
+
 /// Runs `cmd` to completion, enforcing [`CMD_TIMEOUT`] and closing stdin so a
 /// stray interactive prompt (credential/auth/pager/editor) can't block on
 /// input that will never arrive. Shared by every code path that spawns
@@ -220,7 +233,7 @@ async fn run_cmd_tagged(
     let started_at = Instant::now();
     let owned_args: Vec<String> = args.iter().map(|s| s.to_string()).collect();
 
-    let mut cmd = Command::new(executable);
+    let mut cmd = Command::new(resolve_executable(executable));
     cmd.args(args);
     let output = match run_with_timeout(&mut cmd).await {
         Ok(o) => o,
@@ -290,7 +303,7 @@ async fn run_cmd_in_dir_tagged(
     let started_at = Instant::now();
     let owned_args: Vec<String> = args.iter().map(|s| s.to_string()).collect();
 
-    let mut cmd = Command::new(executable);
+    let mut cmd = Command::new(resolve_executable(executable));
     cmd.args(args).current_dir(cwd);
     let output = match run_with_timeout(&mut cmd).await {
         Ok(o) => o,
@@ -370,9 +383,17 @@ mod plumbing_tests {
             &["--version"],
         )
         .await;
+        // `COMMAND_HISTORY` is a global buffer shared by every test in this
+        // binary running concurrently, so this test's record isn't
+        // guaranteed to be the most recent one by the time we read it back
+        // — find it by its distinguishing feature (repo set) instead of
+        // assuming order.
         let history = command_history_snapshot();
-        let last = history.first().expect("history should have an entry");
-        assert!(last.repo.is_some());
+        let recorded = history.iter().find(|r| r.repo.is_some());
+        assert!(
+            recorded.is_some(),
+            "expected a recorded command with repo set"
+        );
     }
 
     #[cfg(unix)]
