@@ -199,6 +199,59 @@ fn git_bin_override_nonexistent_path_causes_failure() {
     );
 }
 
+/// Proves git subprocesses run with a pinned `LC_ALL=C`, so output we parse
+/// (e.g. `git branch -vv` tracking brackets) can never come back translated.
+/// The stub only answers when it sees `LC_ALL=C`; the parent sets a
+/// conflicting locale to prove the pin overrides the inherited environment.
+#[test]
+#[cfg(unix)]
+fn git_subprocess_locale_is_pinned_to_c() {
+    let repo = init_repo();
+    let stub_dir = tempfile::tempdir().expect("failed to create stub dir");
+    let stub_path = stub_dir.path().join("fake-git");
+    std::fs::write(
+        &stub_path,
+        r#"#!/bin/sh
+if [ "$LC_ALL" != "C" ]; then
+  echo "fake-git: LC_ALL is '$LC_ALL', expected 'C'" >&2
+  exit 1
+fi
+if [ "$1" = "rev-parse" ] && [ "$2" = "--git-dir" ]; then
+  echo ".git"
+  exit 0
+fi
+if [ "$1" = "worktree" ] && [ "$2" = "list" ]; then
+  printf 'worktree /fake/stub/path\nHEAD 1111111111111111111111111111111111111111\nbranch refs/heads/stub-branch\n\n'
+  exit 0
+fi
+echo "fake-git: unsupported args: $*" >&2
+exit 1
+"#,
+    )
+    .expect("write stub script");
+    let mut perms = std::fs::metadata(&stub_path).unwrap().permissions();
+    std::os::unix::fs::PermissionsExt::set_mode(&mut perms, 0o755);
+    std::fs::set_permissions(&stub_path, perms).expect("chmod stub script");
+
+    let output = Command::new(gct_bin())
+        .args(["ls", "worktrees"])
+        .current_dir(repo.path())
+        .env("GCT_GIT_BIN", stub_path.to_str().unwrap())
+        .env_remove("GCT_GH_BIN")
+        // A conflicting inherited locale must not leak through to git.
+        .env("LC_ALL", "ja_JP.UTF-8")
+        .env("LANG", "ja_JP.UTF-8")
+        .output()
+        .expect("failed to run gct binary");
+    assert!(
+        output.status.success(),
+        "stub git rejected the locale — stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert_eq!(stdout.trim(), "stub-branch\t/fake/stub/path");
+}
+
 /// Proves `GCT_GIT_BIN` can substitute a *working* stub binary: a fake `git`
 /// script that always reports one canned worktree, regardless of the real
 /// repo state, mirroring the approach `scripts/demo/gh-stub` uses for `gh`.

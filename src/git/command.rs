@@ -45,7 +45,11 @@ async fn run_with_timeout_for(
         // Defense in depth: even with stdin closed, make sure git/gh don't
         // themselves attempt an interactive prompt.
         .env("GIT_TERMINAL_PROMPT", "0")
-        .env("GH_PROMPT_DISABLED", "1");
+        .env("GH_PROMPT_DISABLED", "1")
+        // Pin the locale so human-facing output we parse (e.g. the tracking
+        // brackets in `git branch -vv`) is never translated. LC_ALL overrides
+        // LANG and every LC_* category.
+        .env("LC_ALL", "C");
     match tokio::time::timeout(timeout_duration, cmd.output()).await {
         Ok(result) => result,
         Err(_) => Err(std::io::Error::new(
