@@ -403,7 +403,10 @@ async fn main() -> anyhow::Result<()> {
 
     // Startup checks and config loading before TUI init (eprintln is safe here)
     check_prerequisites().await;
-    let config = config::load_config();
+    let (config, config_warnings) = config::load_config_with_warnings();
+    for w in &config_warnings {
+        eprintln!("Warning: {w}");
+    }
 
     // Render TUI to /dev/tty so shell wrapper stdout capture doesn't interfere
     let mut tty = OpenOptions::new()
@@ -427,7 +430,7 @@ async fn main() -> anyhow::Result<()> {
     let backend = CrosstermBackend::new(tty);
     let mut terminal = Terminal::new(backend)?;
 
-    let (result, cd_path) = run(&mut terminal, config, verbose).await;
+    let (result, cd_path) = run(&mut terminal, config, config_warnings, verbose).await;
 
     // Restore terminal — always disable raw mode even if LeaveAlternateScreen fails
     let _ = execute!(terminal.backend_mut(), LeaveAlternateScreen);
@@ -796,10 +799,26 @@ fn first_line(s: &str) -> String {
 async fn run(
     terminal: &mut Terminal<CrosstermBackend<std::fs::File>>,
     config: config::Config,
+    config_warnings: Vec<String>,
     verbose: bool,
 ) -> (anyhow::Result<()>, Option<String>) {
     let mut app = App::new(config);
     app.verbose = verbose;
+    // Config problems were already printed to stderr, but that's invisible
+    // once the TUI takes over — surface them in-app too.
+    if let Some(first) = config_warnings.first() {
+        let more = config_warnings.len() - 1;
+        let suffix = if more > 0 {
+            format!(" (+{more} more)")
+        } else {
+            String::new()
+        };
+        app.notification = Some(Notification::error(format!(
+            "Config warning: {first}{suffix}"
+        )));
+        app.verbose_errors
+            .extend(config_warnings.iter().map(|w| format!("config: {w}")));
+    }
     // Global (home-dir) config layers, used to resolve a per-target-repo
     // effective config for cross-repo worktree operations.
     app.global_layers = config::load_global_layers();

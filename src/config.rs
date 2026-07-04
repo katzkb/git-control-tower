@@ -242,33 +242,57 @@ fn run_command(command: &str, work_dir: &Path) -> std::io::Result<()> {
 /// except `worktree.post_create`, which is additive like gitignore: entries
 /// from every layer run, lowest priority (global) first.
 ///
-/// Must be called before TUI initialization (eprintln warnings).
+/// Convenience wrapper for callers that only report via stderr (CLI
+/// subcommands run before/without the TUI, so eprintln is visible there).
 pub fn load_config() -> Config {
-    resolve_config(&load_global_layers(), git_repo_root().as_deref())
+    let (config, warnings) = load_config_with_warnings();
+    for w in &warnings {
+        eprintln!("Warning: {w}");
+    }
+    config
+}
+
+/// Like [`load_config`] but returns the warnings instead of printing them,
+/// so the TUI can surface them in a notification (stderr is invisible once
+/// the alternate screen is active).
+pub fn load_config_with_warnings() -> (Config, Vec<String>) {
+    let mut warnings = Vec::new();
+    let mut merged = toml::Table::new();
+    if let Some(home) = home_dir() {
+        // config_paths_for_home() is ordered high→low; reverse to apply low→high.
+        for path in config_paths_for_home(&home).into_iter().rev() {
+            read_and_merge(&path, &mut merged, &mut warnings);
+        }
+    }
+    let config = resolve_config_into(&merged, git_repo_root().as_deref(), &mut warnings);
+    (config, warnings)
 }
 
 /// Read a TOML file and deep-merge it into `merged`. A missing file is ignored;
-/// read/parse errors are warned about and skipped.
-fn read_and_merge(path: &Path, merged: &mut toml::Table) {
+/// read/parse errors are recorded in `warnings` and the layer is skipped.
+fn read_and_merge(path: &Path, merged: &mut toml::Table, warnings: &mut Vec<String>) {
     match fs::read_to_string(path) {
         Ok(content) => match toml::from_str::<toml::Table>(&content) {
             Ok(t) => merge_tables(merged, t),
-            Err(e) => eprintln!("Warning: failed to parse {}: {e}", path.display()),
+            Err(e) => warnings.push(format!("failed to parse {}: {e}", path.display())),
         },
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-        Err(e) => eprintln!("Warning: failed to read {}: {e}", path.display()),
+        Err(e) => warnings.push(format!("failed to read {}: {e}", path.display())),
     }
 }
 
 /// Deep-merge only the global (home-dir) config files into a raw table.
 /// Order: `~/.gct.toml` (low) then `~/.config/gct/config.toml` (high).
 /// The result is the base onto which any repo-local `.gct.toml` is overlaid.
+/// Layer read/parse warnings are dropped here — startup already reported
+/// them via [`load_config_with_warnings`], which reads the same files.
 pub fn load_global_layers() -> toml::Table {
     let mut merged = toml::Table::new();
+    let mut warnings = Vec::new();
     if let Some(home) = home_dir() {
         // config_paths_for_home() is ordered high→low; reverse to apply low→high.
         for path in config_paths_for_home(&home).into_iter().rev() {
-            read_and_merge(&path, &mut merged);
+            read_and_merge(&path, &mut merged, &mut warnings);
         }
     }
     merged
@@ -279,15 +303,85 @@ pub fn load_global_layers() -> toml::Table {
 /// yields the global-only config. This is what cross-repo worktree operations
 /// use so the target repo's own `.gct.toml` applies (the launching repo's
 /// project-local config does not leak into other repos).
+///
+/// Warnings go to the debug log only — this runs mid-TUI, where stderr would
+/// scribble over the interface. Startup uses [`load_config_with_warnings`].
 pub fn resolve_config(global: &toml::Table, repo_root: Option<&Path>) -> Config {
+    let mut warnings = Vec::new();
+    let config = resolve_config_into(global, repo_root, &mut warnings);
+    for w in &warnings {
+        crate::git::command::debug_log(&format!("config warning: {w}"));
+    }
+    config
+}
+
+fn resolve_config_into(
+    global: &toml::Table,
+    repo_root: Option<&Path>,
+    warnings: &mut Vec<String>,
+) -> Config {
     let mut merged = global.clone();
     if let Some(root) = repo_root {
-        read_and_merge(&root.join(".gct.toml"), &mut merged);
+        read_and_merge(&root.join(".gct.toml"), &mut merged, warnings);
     }
-    toml::Value::Table(merged).try_into().unwrap_or_else(|e| {
-        eprintln!("Warning: invalid merged config: {e}");
-        Config::default()
-    })
+    config_from_table(merged, warnings)
+}
+
+/// Keys accepted at each level, kept in sync with the serde structs above
+/// (plus merge-layer directives like `disable_post_create` that are consumed
+/// by [`merge_tables`] rather than deserialized). Anything else is a likely
+/// typo and gets a warning instead of being silently ignored.
+const KNOWN_TOP_KEYS: &[&str] = &["worktree", "protected_branches", "workspace"];
+const KNOWN_WORKTREE_KEYS: &[&str] = &["dir", "post_create", "disable_post_create"];
+const KNOWN_WORKSPACE_KEYS: &[&str] = &["clone_root"];
+
+fn warn_unknown_keys(
+    table: &toml::Table,
+    known: &[&str],
+    prefix: &str,
+    warnings: &mut Vec<String>,
+) {
+    for key in table.keys() {
+        if !known.contains(&key.as_str()) {
+            warnings.push(format!("unknown config key: {prefix}{key} (ignored)"));
+        }
+    }
+}
+
+/// Deserialize the merged table section-by-section so one bad value only
+/// drops that section to its default (with a warning naming the offending
+/// key) instead of silently discarding every valid setting, and so typo'd
+/// keys warn instead of being silently ignored.
+fn config_from_table(mut merged: toml::Table, warnings: &mut Vec<String>) -> Config {
+    warn_unknown_keys(&merged, KNOWN_TOP_KEYS, "", warnings);
+    let mut config = Config::default();
+
+    if let Some(value) = merged.remove("worktree") {
+        if let Some(table) = value.as_table() {
+            warn_unknown_keys(table, KNOWN_WORKTREE_KEYS, "worktree.", warnings);
+        }
+        match value.try_into::<WorktreeConfig>() {
+            Ok(wt) => config.worktree = wt,
+            Err(e) => warnings.push(format!("invalid [worktree] config (section ignored): {e}")),
+        }
+    }
+    if let Some(value) = merged.remove("protected_branches") {
+        match value.try_into::<Vec<String>>() {
+            Ok(v) => config.protected_branches = v,
+            Err(e) => warnings.push(format!("invalid protected_branches (using default): {e}")),
+        }
+    }
+    if let Some(value) = merged.remove("workspace") {
+        if let Some(table) = value.as_table() {
+            warn_unknown_keys(table, KNOWN_WORKSPACE_KEYS, "workspace.", warnings);
+        }
+        match value.try_into::<WorkspaceConfig>() {
+            Ok(ws) => config.workspace = ws,
+            Err(e) => warnings.push(format!("invalid [workspace] config (section ignored): {e}")),
+        }
+    }
+
+    config
 }
 
 /// Key whose array entries accumulate across config layers instead of being
@@ -1111,5 +1205,86 @@ to = ".env"
         assert_eq!(config.worktree.dir, "../custom");
         // clone_root is inherited from the global layers.
         assert_eq!(config.workspace.clone_root.as_deref(), Some("~/workspace"));
+    }
+
+    // --- config_from_table (typo warnings / per-section fallback) ---
+
+    fn from_table_str(s: &str) -> (Config, Vec<String>) {
+        let table: toml::Table = toml::from_str(s).unwrap();
+        let mut warnings = Vec::new();
+        let config = config_from_table(table, &mut warnings);
+        (config, warnings)
+    }
+
+    #[test]
+    fn unknown_top_level_key_warns_and_rest_still_applies() {
+        // "protected_branchs" is a typo of "protected_branches".
+        let (config, warnings) =
+            from_table_str("protected_branchs = [\"x\"]\n[worktree]\ndir = \"wt\"\n");
+        assert_eq!(
+            warnings,
+            vec!["unknown config key: protected_branchs (ignored)"]
+        );
+        assert_eq!(config.worktree.dir, "wt");
+        // The typo'd key never applied, so the default list stays.
+        assert_eq!(config.protected_branches, default_protected_branches());
+    }
+
+    #[test]
+    fn unknown_nested_key_warns_with_section_prefix() {
+        let (config, warnings) =
+            from_table_str("[worktree]\ndirr = \"wt\"\n\n[workspace]\nclone_rot = \"~/w\"\n");
+        assert!(
+            warnings.contains(&"unknown config key: worktree.dirr (ignored)".to_string()),
+            "warnings: {warnings:?}"
+        );
+        assert!(
+            warnings.contains(&"unknown config key: workspace.clone_rot (ignored)".to_string()),
+            "warnings: {warnings:?}"
+        );
+        assert_eq!(config.worktree.dir, DEFAULT_WORKTREE_DIR);
+    }
+
+    #[test]
+    fn disable_post_create_is_a_known_key() {
+        // The merge-layer directive must not be flagged as a typo.
+        let (_, warnings) = from_table_str("[worktree]\ndisable_post_create = [\"h\"]\n");
+        assert!(warnings.is_empty(), "warnings: {warnings:?}");
+    }
+
+    #[test]
+    fn bad_typed_section_falls_back_alone() {
+        // One bad value must not discard the other (valid) sections.
+        let (config, warnings) =
+            from_table_str("protected_branches = [\"x\"]\n[worktree]\ndir = 5\n");
+        assert_eq!(config.protected_branches, vec!["x".to_string()]);
+        assert_eq!(config.worktree.dir, DEFAULT_WORKTREE_DIR);
+        assert!(
+            warnings.iter().any(|w| w.contains("invalid [worktree]")),
+            "warnings: {warnings:?}"
+        );
+    }
+
+    #[test]
+    fn bad_protected_branches_falls_back_to_default_keeps_rest() {
+        let (config, warnings) =
+            from_table_str("protected_branches = \"main\"\n[worktree]\ndir = \"wt\"\n");
+        assert_eq!(config.protected_branches, default_protected_branches());
+        assert_eq!(config.worktree.dir, "wt");
+        assert!(
+            warnings
+                .iter()
+                .any(|w| w.contains("invalid protected_branches")),
+            "warnings: {warnings:?}"
+        );
+    }
+
+    #[test]
+    fn valid_config_produces_no_warnings() {
+        let (config, warnings) = from_table_str(
+            "protected_branches = [\"main\"]\n[worktree]\ndir = \"wt\"\n\n[[worktree.post_create]]\ntype = \"command\"\ncommand = \"echo hi\"\n\n[workspace]\nclone_root = \"~/w\"\n",
+        );
+        assert!(warnings.is_empty(), "warnings: {warnings:?}");
+        assert_eq!(config.worktree.post_create.len(), 1);
     }
 }
