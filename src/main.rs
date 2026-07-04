@@ -1129,9 +1129,7 @@ async fn run(
                     pr_inflight.remove(&(repo_id, number));
                     app.notification =
                         Some(Notification::error(format!("Failed to load PR #{number}")));
-                    if app.verbose && !app.verbose_errors.contains(&error) {
-                        app.verbose_errors.push(error);
-                    }
+                    app.record_error(error);
                 }
                 AsyncResult::GitStatus { wt_path, status } => {
                     status_inflight.remove(&wt_path);
@@ -1145,12 +1143,9 @@ async fn run(
                 }
                 AsyncResult::GitStatusError(wt_path) => {
                     status_inflight.remove(&wt_path);
-                    if app.verbose {
-                        let msg = format!("git status failed for {wt_path}");
-                        if !app.verbose_errors.contains(&msg) {
-                            app.verbose_errors.push(msg);
-                        }
-                    }
+                    let msg = format!("git status failed for {wt_path}");
+                    app.notification = Some(Notification::error(msg.clone()));
+                    app.record_error(msg);
                 }
                 AsyncResult::UserLogin(user) => {
                     app.gh_user = user;
@@ -1164,20 +1159,15 @@ async fn run(
                 }
                 AsyncResult::UserLoginError(error_msg) => {
                     app.gh_user_load_failed = true;
-                    if app.verbose && !app.verbose_errors.contains(&error_msg) {
-                        app.verbose_errors.push(error_msg);
-                    }
+                    app.notification = Some(Notification::error(
+                        "Failed to load GitHub user — is `gh` authenticated?".to_string(),
+                    ));
+                    app.record_error(error_msg);
                 }
                 AsyncResult::LocalPrList(prs, errors) => {
                     app.local_prs = prs;
                     app.local_prs_loaded = true;
-                    if app.verbose {
-                        for e in errors {
-                            if !app.verbose_errors.contains(&e) {
-                                app.verbose_errors.push(e);
-                            }
-                        }
-                    }
+                    report_fetch_errors(&mut app, "PR fetch failed", errors);
                     seed_repos_from_prs(&mut app.repos, &app.local_prs);
                     if app.main_filter == MainFilter::Local {
                         let active = app.active_repo.clone().unwrap_or_default();
@@ -1198,13 +1188,7 @@ async fn run(
                 AsyncResult::MyPrList(prs, errors) => {
                     app.my_prs = prs;
                     app.my_prs_loaded = true;
-                    if app.verbose {
-                        for e in errors {
-                            if !app.verbose_errors.contains(&e) {
-                                app.verbose_errors.push(e);
-                            }
-                        }
-                    }
+                    report_fetch_errors(&mut app, "PR fetch failed", errors);
                     seed_repos_from_prs(&mut app.repos, &app.my_prs);
                     if app.main_filter == MainFilter::MyPr {
                         let active = app.active_repo.clone().unwrap_or_default();
@@ -1228,13 +1212,7 @@ async fn run(
                     }
                     app.review_prs = prs;
                     app.review_prs_loaded = true;
-                    if app.verbose {
-                        for e in errors {
-                            if !app.verbose_errors.contains(&e) {
-                                app.verbose_errors.push(e);
-                            }
-                        }
-                    }
+                    report_fetch_errors(&mut app, "PR fetch failed", errors);
                     seed_repos_from_prs(&mut app.repos, &app.review_prs);
                     if app.main_filter == MainFilter::ReviewRequested {
                         let active = app.active_repo.clone().unwrap_or_default();
@@ -1267,8 +1245,8 @@ async fn run(
                             "Worktree created: {wt_path} (copy errors: {})",
                             copy_errors.len()
                         )));
-                        if app.verbose {
-                            app.verbose_errors.extend(copy_errors);
+                        for e in copy_errors {
+                            app.record_error(e);
                         }
                     }
                     app.branches_reload_requested = true;
@@ -1341,12 +1319,8 @@ async fn run(
                             )
                         };
                         app.notification = Some(Notification::error(summary));
-                        if app.verbose {
-                            for err in &failures {
-                                if !app.verbose_errors.contains(err) {
-                                    app.verbose_errors.push(err.clone());
-                                }
-                            }
+                        for err in failures {
+                            app.record_error(err);
                         }
                     }
                     app.progress.clear();
@@ -1375,13 +1349,7 @@ async fn run(
                     if let Some(worktrees) = data.worktrees {
                         app.worktrees = worktrees;
                     }
-                    if app.verbose {
-                        for e in data.errors {
-                            if !app.verbose_errors.contains(&e) {
-                                app.verbose_errors.push(e);
-                            }
-                        }
-                    }
+                    report_fetch_errors(&mut app, "Branch reload failed", data.errors);
                     let active = app.active_repo.clone().unwrap_or_default();
                     app.entries = merge_entries(
                         &active,
@@ -1411,9 +1379,7 @@ async fn run(
                 AsyncResult::BranchCreateError(err_str) => {
                     let short = err_str.lines().next().unwrap_or(&err_str).to_string();
                     app.notification = Some(Notification::error(short));
-                    if app.verbose && !app.verbose_errors.contains(&err_str) {
-                        app.verbose_errors.push(err_str);
-                    }
+                    app.record_error(err_str);
                 }
             }
         }
@@ -1729,16 +1695,38 @@ async fn run(
     (Ok(()), cd_path)
 }
 
+/// Surface background fetch failures: a short error toast (first line of the
+/// first failure, plus a count of the rest) and the full messages recorded
+/// for the `--verbose` error list.
+fn report_fetch_errors(app: &mut App, context: &str, errors: Vec<String>) {
+    if errors.is_empty() {
+        return;
+    }
+    let first = errors
+        .first()
+        .and_then(|e| e.lines().next())
+        .unwrap_or("unknown error");
+    let suffix = if errors.len() > 1 {
+        format!(" (+{} more)", errors.len() - 1)
+    } else {
+        String::new()
+    };
+    let toast = format!("{context}: {first}{suffix}");
+    app.notification = Some(Notification::error(toast));
+    for e in errors {
+        app.record_error(e);
+    }
+}
+
 async fn load_branches(app: &mut App) {
     let branch_output = match run_git(&["branch", "-vv"]).await {
         Ok(output) => output,
         Err(e) => {
-            if app.verbose {
-                let msg = format!("git branch -vv failed: {e}");
-                if !app.verbose_errors.contains(&msg) {
-                    app.verbose_errors.push(msg);
-                }
-            }
+            report_fetch_errors(
+                app,
+                "Branch list failed",
+                vec![format!("git branch -vv failed: {e}")],
+            );
             return;
         }
     };
@@ -1746,24 +1734,16 @@ async fn load_branches(app: &mut App) {
     let merged_output = match run_git(&["branch", "--merged", &default_branch]).await {
         Ok(output) => output,
         Err(e) => {
-            if app.verbose {
-                let msg = format!("git branch --merged failed: {e}");
-                if !app.verbose_errors.contains(&msg) {
-                    app.verbose_errors.push(msg);
-                }
-            }
+            // Non-fatal: only the merged-marker annotations are lost.
+            app.record_error(format!("git branch --merged failed: {e}"));
             String::new()
         }
     };
     let base_hash = match run_git(&["rev-parse", &default_branch]).await {
         Ok(output) => output,
         Err(e) => {
-            if app.verbose {
-                let msg = format!("git rev-parse {default_branch} failed: {e}");
-                if !app.verbose_errors.contains(&msg) {
-                    app.verbose_errors.push(msg);
-                }
-            }
+            // Non-fatal: only the merged-marker annotations are lost.
+            app.record_error(format!("git rev-parse {default_branch} failed: {e}"));
             String::new()
         }
     };
@@ -1804,7 +1784,7 @@ USAGE:
 OPTIONS:
     -h, --help        Print this help message and exit
     -v, --version     Print version and exit
-        --verbose     Surface silenced errors for troubleshooting
+        --verbose     Show collected error details in the detail pane
 
 SUBCOMMANDS:
     cd <BRANCH>

@@ -1314,6 +1314,16 @@ impl App {
         }
     }
 
+    /// Remember a background-operation error for the error list shown in
+    /// `--verbose` mode. Deduplicated, and recorded regardless of verbosity
+    /// so the details are already there when the user relaunches with
+    /// `--verbose` after seeing an error toast.
+    pub fn record_error(&mut self, error: String) {
+        if !self.verbose_errors.contains(&error) {
+            self.verbose_errors.push(error);
+        }
+    }
+
     /// Effective config for a specific repo root: the global layers overlaid
     /// with `<repo_root>/.gct.toml`. Used for cross-repo worktree operations so
     /// the target repo's own `.gct.toml` applies (not the launching repo's).
