@@ -192,7 +192,7 @@ pub async fn fetch_local_prs(
         let mut aliases = String::new();
         for (i, name) in chunk.iter().enumerate() {
             let alias = graphql_alias(i);
-            let escaped_name = name.replace('\\', "\\\\").replace('"', "\\\"");
+            let escaped_name = escape_graphql_string(name);
             aliases.push_str(&format!(
                 r#"{alias}: pullRequests(first: 2, headRefName: "{escaped_name}", states: [OPEN, MERGED], orderBy: {{field: UPDATED_AT, direction: DESC}}) {{
   nodes {{ number title state headRefName updatedAt isDraft author {{ login }}
@@ -360,104 +360,158 @@ fn dedup_hosts(hosts: &[Option<String>]) -> Vec<Option<String>> {
 
 /// Merge per-host search results: concatenate PRs in input order, prefix
 /// per-host failures with `[<label>] ` so the caller can attribute errors
-/// to the originating host.
+/// to the originating host. A host can contribute both PRs and an error
+/// (pages fetched before a mid-pagination failure are kept).
 fn merge_search_results(
-    results: Vec<(String, Result<Vec<PullRequest>, String>)>,
+    results: Vec<(String, Vec<PullRequest>, Option<String>)>,
 ) -> (Vec<PullRequest>, Vec<String>) {
     let mut prs: Vec<PullRequest> = Vec::new();
     let mut errors: Vec<String> = Vec::new();
-    for (label, result) in results {
-        match result {
-            Ok(host_prs) => prs.extend(host_prs),
-            Err(msg) => errors.push(format!("[{label}] {msg}")),
+    for (label, host_prs, error) in results {
+        prs.extend(host_prs);
+        if let Some(msg) = error {
+            errors.push(format!("[{label}] {msg}"));
         }
     }
     (prs, errors)
 }
 
+/// GitHub's GraphQL `search(first:)` page-size ceiling; larger values make
+/// the API reject the whole query.
+const SEARCH_PAGE_SIZE: u32 = 100;
+/// GitHub's search index returns at most 1000 results per query, so
+/// pagination past this point can never yield more data.
+const SEARCH_MAX_RESULTS: usize = 1000;
+
+/// Escape a string for embedding in a double-quoted GraphQL string literal.
+fn escape_graphql_string(s: &str) -> String {
+    s.replace('\\', "\\\\").replace('"', "\\\"")
+}
+
+/// Build one page of the cross-repo PR search query. `escaped_query` must
+/// already be escaped via `escape_graphql_string`; `cursor` is the previous
+/// page's `endCursor` (`None` for the first page).
+fn build_search_query(escaped_query: &str, cursor: Option<&str>) -> String {
+    let after = match cursor {
+        Some(c) => format!(r#", after: "{}""#, escape_graphql_string(c)),
+        None => String::new(),
+    };
+    format!(
+        r#"{{ search(query: "{escaped_query}", type: ISSUE, first: {SEARCH_PAGE_SIZE}{after}) {{ pageInfo {{ hasNextPage endCursor }} nodes {{ ... on PullRequest {{ number title state headRefName updatedAt isDraft author {{ login }} repository {{ name url owner {{ login }} }} reviewRequests(first: 10) {{ nodes {{ requestedReviewer {{ ... on User {{ login }} }} }} }} latestReviews(first: 20) {{ nodes {{ author {{ login }} state }} }} }} }} }} }}"#
+    )
+}
+
+/// Extract one search page from a GraphQL response: the parsed PRs plus
+/// pagination state. A missing or malformed `pageInfo` (e.g. from a stub
+/// that predates pagination) is treated as "no next page".
+fn extract_search_page(json: &serde_json::Value) -> (Vec<PullRequest>, bool, Option<String>) {
+    let mut prs = Vec::new();
+    if let Some(arr) = json["data"]["search"]["nodes"].as_array() {
+        for node in arr {
+            if let Some(pr) = parse_graphql_search_pr(node) {
+                prs.push(pr);
+            }
+        }
+    }
+    let page_info = &json["data"]["search"]["pageInfo"];
+    let has_next = page_info["hasNextPage"].as_bool().unwrap_or(false);
+    let end_cursor = page_info["endCursor"].as_str().map(str::to_string);
+    (prs, has_next, end_cursor)
+}
+
 // Hosts to search are supplied by the caller; an empty slice falls back to
 // the default host (github.com) via dedup_hosts.
-// TODO(future): GitHub's search index supports up to 1000 results; if very active
-// reviewers report missing PRs, paginate via search.pageInfo.endCursor.
 async fn fetch_search_prs(
     query_str: &str,
-    limit: u32,
     hosts: &[Option<String>],
 ) -> (Vec<PullRequest>, Vec<String>) {
-    let escaped_query = query_str.replace('\\', "\\\\").replace('"', "\\\"");
-    let query = format!(
-        r#"{{ search(query: "{escaped_query}", type: ISSUE, first: {limit}) {{ nodes {{ ... on PullRequest {{ number title state headRefName updatedAt isDraft author {{ login }} repository {{ name url owner {{ login }} }} reviewRequests(first: 10) {{ nodes {{ requestedReviewer {{ ... on User {{ login }} }} }} }} latestReviews(first: 20) {{ nodes {{ author {{ login }} state }} }} }} }} }} }}"#
-    );
-    let query_arg = format!("query={query}");
+    let escaped_query = escape_graphql_string(query_str);
 
     // Run one search per host in parallel. Hosts are deduplicated and an
     // empty list falls back to a single default-host (github.com) query so
     // the previous single-host behaviour is preserved when no repo metadata
     // has been collected yet.
     let unique_hosts = dedup_hosts(hosts);
-    // Keep `(label, JoinHandle<Result<...>>)` pairs so that the host label is
+    // Keep `(label, JoinHandle<...>)` pairs so that the host label is
     // attached to errors regardless of whether they originate inside the task
-    // (Err returned from the closure) or from the join itself (panic / cancel).
+    // (error returned from the closure) or from the join itself (panic / cancel).
     type SearchHandle = (
         String,
-        tokio::task::JoinHandle<Result<Vec<PullRequest>, String>>,
+        tokio::task::JoinHandle<(Vec<PullRequest>, Option<String>)>,
     );
     let mut handles: Vec<SearchHandle> = Vec::with_capacity(unique_hosts.len());
     for host in unique_hosts {
-        let query_arg = query_arg.clone();
+        let escaped_query = escaped_query.clone();
         let label = host.as_deref().unwrap_or("github.com").to_string();
         let handle = tokio::spawn(async move {
-            let mut args: Vec<String> = vec![
-                "api".to_string(),
-                "graphql".to_string(),
-                "-f".to_string(),
-                query_arg,
-            ];
-            if let Some(h) = host.as_deref() {
-                args.push("--hostname".to_string());
-                args.push(h.to_string());
-            }
-            let arg_refs: Vec<&str> = args.iter().map(String::as_str).collect();
-            match run_gh(&arg_refs).await {
-                Ok(output) => match serde_json::from_str::<serde_json::Value>(&output) {
-                    Ok(json) => {
-                        let mut host_prs = Vec::new();
-                        if let Some(arr) = json["data"]["search"]["nodes"].as_array() {
-                            for node in arr {
-                                if let Some(pr) = parse_graphql_search_pr(node) {
-                                    host_prs.push(pr);
-                                }
-                            }
-                        }
-                        Ok(host_prs)
+            let mut host_prs: Vec<PullRequest> = Vec::new();
+            let mut cursor: Option<String> = None;
+            // Paginate up to GitHub's search cap. Most queries finish on the
+            // first page (hasNextPage=false); an error mid-pagination returns
+            // the pages collected so far alongside the error message.
+            loop {
+                let query_arg = format!(
+                    "query={}",
+                    build_search_query(&escaped_query, cursor.as_deref())
+                );
+                let mut args: Vec<String> = vec![
+                    "api".to_string(),
+                    "graphql".to_string(),
+                    "-f".to_string(),
+                    query_arg,
+                ];
+                if let Some(h) = host.as_deref() {
+                    args.push("--hostname".to_string());
+                    args.push(h.to_string());
+                }
+                let arg_refs: Vec<&str> = args.iter().map(String::as_str).collect();
+                let output = match run_gh(&arg_refs).await {
+                    Ok(output) => output,
+                    Err(e) => {
+                        debug_log(&format!("  → GraphQL search fetch error: {e}"));
+                        return (host_prs, Some(format!("search fetch failed: {e}")));
                     }
+                };
+                let json = match serde_json::from_str::<serde_json::Value>(&output) {
+                    Ok(json) => json,
                     Err(e) => {
                         debug_log(&format!("  → GraphQL search parse error: {e}"));
-                        Err(format!("search parse error: {e}"))
+                        return (host_prs, Some(format!("search parse error: {e}")));
                     }
-                },
-                Err(e) => {
-                    debug_log(&format!("  → GraphQL search fetch error: {e}"));
-                    Err(format!("search fetch failed: {e}"))
+                };
+                let (page_prs, has_next, end_cursor) = extract_search_page(&json);
+                host_prs.extend(page_prs);
+                if !has_next || host_prs.len() >= SEARCH_MAX_RESULTS {
+                    return (host_prs, None);
+                }
+                match end_cursor {
+                    Some(next) => cursor = Some(next),
+                    // hasNextPage without a cursor should not happen; stop
+                    // rather than refetch the first page forever.
+                    None => return (host_prs, None),
                 }
             }
         });
         handles.push((label, handle));
     }
 
-    let mut collected: Vec<(String, Result<Vec<PullRequest>, String>)> =
+    let mut collected: Vec<(String, Vec<PullRequest>, Option<String>)> =
         Vec::with_capacity(handles.len());
     for (label, handle) in handles {
-        let result = match handle.await {
-            Ok(r) => r,
+        let entry = match handle.await {
+            Ok((prs, error)) => (label, prs, error),
             Err(e) => {
                 debug_log(&format!(
                     "  → GraphQL search task join error ({label}): {e}"
                 ));
-                Err(format!("search task join failed: {e}"))
+                (
+                    label,
+                    Vec::new(),
+                    Some(format!("search task join failed: {e}")),
+                )
             }
         };
-        collected.push((label, result));
+        collected.push(entry);
     }
 
     // PRs from multiple hosts naturally cannot collide because parse_graphql_search_pr
@@ -477,12 +531,7 @@ pub async fn fetch_my_prs(
     if !show_merged {
         q.push_str(" is:open");
     }
-    // When show_merged is on we lose the OPEN-only narrowing, so widen the limit
-    // to compensate (the previous fetch_pr_list returned 100 open + 50 merged).
-    // TODO(future): GitHub's search index supports up to 1000 results; if very active
-    // reviewers report missing PRs, paginate via search.pageInfo.endCursor.
-    let limit = if show_merged { 150 } else { 100 };
-    let (mut prs, errors) = fetch_search_prs(&q, limit, hosts).await;
+    let (mut prs, errors) = fetch_search_prs(&q, hosts).await;
     prs.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
     (prs, errors)
 }
@@ -522,7 +571,7 @@ pub async fn fetch_review_prs(
     const REVIEWED_BY_INDEX: usize = 1;
     for (idx, query) in queries.iter().enumerate() {
         let is_reviewed = idx == REVIEWED_BY_INDEX;
-        let (prs, errors) = fetch_search_prs(query, 100, hosts).await;
+        let (prs, errors) = fetch_search_prs(query, hosts).await;
         all_errors.extend(errors);
         for pr in prs {
             let key = (pr.repo_id.clone(), pr.number);
@@ -1088,14 +1137,16 @@ mod tests {
         let results = vec![
             (
                 "github.com".to_string(),
-                Ok(vec![pr_with_id(1, None, "katzkb", "gct")]),
+                vec![pr_with_id(1, None, "katzkb", "gct")],
+                None,
             ),
             (
                 "ghe.example.com".to_string(),
-                Ok(vec![
+                vec![
                     pr_with_id(2, Some("ghe.example.com"), "team", "svc"),
                     pr_with_id(3, Some("ghe.example.com"), "team", "svc"),
-                ]),
+                ],
+                None,
             ),
         ];
         let (prs, errors) = merge_search_results(results);
@@ -1108,14 +1159,16 @@ mod tests {
 
     #[test]
     fn merge_search_results_labels_errors_with_host() {
-        let results: Vec<(String, Result<Vec<PullRequest>, String>)> = vec![
+        let results = vec![
             (
                 "github.com".to_string(),
-                Ok(vec![pr_with_id(1, None, "katzkb", "gct")]),
+                vec![pr_with_id(1, None, "katzkb", "gct")],
+                None,
             ),
             (
                 "ghe.example.com".to_string(),
-                Err("auth expired".to_string()),
+                Vec::new(),
+                Some("auth expired".to_string()),
             ),
         ];
         let (prs, errors) = merge_search_results(results);
@@ -1126,9 +1179,17 @@ mod tests {
 
     #[test]
     fn merge_search_results_all_failures() {
-        let results: Vec<(String, Result<Vec<PullRequest>, String>)> = vec![
-            ("github.com".to_string(), Err("network".to_string())),
-            ("ghe.example.com".to_string(), Err("auth".to_string())),
+        let results = vec![
+            (
+                "github.com".to_string(),
+                Vec::new(),
+                Some("network".to_string()),
+            ),
+            (
+                "ghe.example.com".to_string(),
+                Vec::new(),
+                Some("auth".to_string()),
+            ),
         ];
         let (prs, errors) = merge_search_results(results);
         assert!(prs.is_empty());
@@ -1142,10 +1203,105 @@ mod tests {
     }
 
     #[test]
+    fn merge_search_results_keeps_partial_pages_alongside_error() {
+        // A mid-pagination failure keeps the pages already fetched.
+        let results = vec![(
+            "github.com".to_string(),
+            vec![pr_with_id(1, None, "katzkb", "gct")],
+            Some("search fetch failed: timeout".to_string()),
+        )];
+        let (prs, errors) = merge_search_results(results);
+        assert_eq!(prs.len(), 1);
+        assert_eq!(
+            errors,
+            vec!["[github.com] search fetch failed: timeout".to_string()]
+        );
+    }
+
+    #[test]
     fn merge_search_results_empty_input() {
-        let results: Vec<(String, Result<Vec<PullRequest>, String>)> = vec![];
+        let results: Vec<(String, Vec<PullRequest>, Option<String>)> = vec![];
         let (prs, errors) = merge_search_results(results);
         assert!(prs.is_empty());
         assert!(errors.is_empty());
+    }
+
+    // ----- build_search_query / extract_search_page -----
+
+    #[test]
+    fn build_search_query_first_page_has_no_after_and_caps_at_100() {
+        let q = build_search_query("is:pr author:@me", None);
+        assert!(q.contains("first: 100"), "query: {q}");
+        assert!(!q.contains("after:"), "query: {q}");
+        assert!(
+            q.contains("pageInfo { hasNextPage endCursor }"),
+            "query: {q}"
+        );
+    }
+
+    #[test]
+    fn build_search_query_next_page_includes_cursor() {
+        let q = build_search_query("is:pr author:@me", Some("Y3Vyc29yOjEwMA=="));
+        assert!(q.contains(r#"after: "Y3Vyc29yOjEwMA==""#), "query: {q}");
+    }
+
+    #[test]
+    fn build_search_query_escapes_cursor_quotes() {
+        let q = build_search_query("is:pr", Some(r#"cu"rsor"#));
+        assert!(q.contains(r#"after: "cu\"rsor""#), "query: {q}");
+    }
+
+    fn search_node(number: u64) -> serde_json::Value {
+        serde_json::json!({
+            "number": number,
+            "title": format!("PR {number}"),
+            "state": "OPEN",
+            "headRefName": format!("feature-{number}"),
+            "updatedAt": "2024-01-15T00:00:00Z",
+            "isDraft": false,
+            "author": {"login": "alice"},
+            "repository": {"name": "gct", "url": "https://github.com/katzkb/gct", "owner": {"login": "katzkb"}},
+        })
+    }
+
+    #[test]
+    fn extract_search_page_reads_nodes_and_page_info() {
+        let json = serde_json::json!({
+            "data": {"search": {
+                "pageInfo": {"hasNextPage": true, "endCursor": "CURSOR1"},
+                "nodes": [search_node(1), search_node(2)],
+            }}
+        });
+        let (prs, has_next, cursor) = extract_search_page(&json);
+        assert_eq!(prs.len(), 2);
+        assert_eq!(prs[0].number, 1);
+        assert!(has_next);
+        assert_eq!(cursor.as_deref(), Some("CURSOR1"));
+    }
+
+    #[test]
+    fn extract_search_page_last_page() {
+        let json = serde_json::json!({
+            "data": {"search": {
+                "pageInfo": {"hasNextPage": false, "endCursor": null},
+                "nodes": [search_node(1)],
+            }}
+        });
+        let (prs, has_next, cursor) = extract_search_page(&json);
+        assert_eq!(prs.len(), 1);
+        assert!(!has_next);
+        assert_eq!(cursor, None);
+    }
+
+    #[test]
+    fn extract_search_page_missing_page_info_means_no_next_page() {
+        // Stubs and fixtures that predate pagination omit pageInfo entirely.
+        let json = serde_json::json!({
+            "data": {"search": {"nodes": [search_node(1)]}}
+        });
+        let (prs, has_next, cursor) = extract_search_page(&json);
+        assert_eq!(prs.len(), 1);
+        assert!(!has_next);
+        assert_eq!(cursor, None);
     }
 }
