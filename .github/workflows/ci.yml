@@ -14,9 +14,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: clippy, rustfmt
+      # `rustup show` installs the toolchain pinned in rust-toolchain.toml
+      # (including its rustfmt/clippy components), keeping CI on the same
+      # compiler as local builds and the release pipeline.
+      - name: Install Rust toolchain
+        run: rustup show
       - uses: Swatinem/rust-cache@v2
       - name: Format
         run: cargo fmt -- --check

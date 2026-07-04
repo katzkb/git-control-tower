@@ -46,7 +46,10 @@ jobs:
           echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
           echo "Releasing: ${VERSION}"
 
-      - uses: dtolnay/rust-toolchain@stable
+      # `rustup show` installs the toolchain pinned in rust-toolchain.toml,
+      # matching CI and the release build.
+      - name: Install Rust toolchain
+        run: rustup show
 
       - name: Update Cargo.toml version
         run: |
