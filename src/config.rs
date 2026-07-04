@@ -238,7 +238,9 @@ fn run_command(command: &str, work_dir: &Path) -> std::io::Result<()> {
 ///
 /// Nested tables (`[worktree]`, `[workspace]`) are merged key-by-key, so a
 /// project-local file can override individual settings while inheriting the
-/// rest from the global config. Scalars and arrays are replaced wholesale.
+/// rest from the global config. Scalars and arrays are replaced wholesale,
+/// except `worktree.post_create`, which is additive like gitignore: entries
+/// from every layer run, lowest priority (global) first.
 ///
 /// Must be called before TUI initialization (eprintln warnings).
 pub fn load_config() -> Config {
@@ -288,12 +290,41 @@ pub fn resolve_config(global: &toml::Table, repo_root: Option<&Path>) -> Config 
     })
 }
 
+/// Key whose array entries accumulate across config layers instead of being
+/// replaced (gitignore-style: every layer's hooks apply, global first).
+const APPEND_MERGE_KEY: &str = "post_create";
+
+/// Key listing hook names a layer opts out of. Like a gitignore `!` pattern,
+/// it removes matching entries accumulated from lower-priority layers.
+const DISABLE_KEY: &str = "disable_post_create";
+
 /// Deep-merge `overlay` into `base`. Nested tables are merged key-by-key;
-/// scalars and arrays from `overlay` replace those in `base`.
+/// scalars and arrays from `overlay` replace those in `base`, except
+/// `post_create` arrays, which are concatenated (base layer's entries first)
+/// so hooks from every config layer run.
+///
+/// A layer can opt out of individual lower-layer hooks by naming them:
+/// `disable_post_create = ["hook-name"]` removes already-accumulated entries
+/// whose `name` matches, before the layer's own hooks are appended. Unnamed
+/// hooks cannot be disabled, and a layer cannot disable its own hooks.
 fn merge_tables(base: &mut toml::Table, overlay: toml::Table) {
+    if let Some(toml::Value::Array(names)) = overlay.get(DISABLE_KEY) {
+        let disabled: Vec<&str> = names.iter().filter_map(|n| n.as_str()).collect();
+        if let Some(toml::Value::Array(hooks)) = base.get_mut(APPEND_MERGE_KEY) {
+            hooks.retain(|hook| {
+                hook.as_table()
+                    .and_then(|t| t.get("name"))
+                    .and_then(|n| n.as_str())
+                    .is_none_or(|name| !disabled.contains(&name))
+            });
+        }
+    }
     for (k, v) in overlay {
         match (base.get_mut(&k), v) {
             (Some(toml::Value::Table(bt)), toml::Value::Table(ot)) => merge_tables(bt, ot),
+            (Some(toml::Value::Array(ba)), toml::Value::Array(oa)) if k == APPEND_MERGE_KEY => {
+                ba.extend(oa);
+            }
             (_, v) => {
                 base.insert(k, v);
             }
@@ -842,6 +873,139 @@ clone_root = "~/workspace"
     }
 
     #[test]
+    fn merge_post_create_concatenates_global_first() {
+        let config = merge_strs(&[
+            "[[worktree.post_create]]\ntype = \"command\"\ncommand = \"global-hook\"\n",
+            "[[worktree.post_create]]\ntype = \"command\"\ncommand = \"project-hook\"\n",
+        ]);
+        // Both layers' hooks survive, lowest-priority (global) layer first.
+        assert_eq!(config.worktree.post_create.len(), 2);
+        assert!(matches!(
+            &config.worktree.post_create[0],
+            PostCreateAction::Command { command } if command == "global-hook"
+        ));
+        assert!(matches!(
+            &config.worktree.post_create[1],
+            PostCreateAction::Command { command } if command == "project-hook"
+        ));
+    }
+
+    #[test]
+    fn merge_post_create_concatenates_across_three_layers() {
+        let config = merge_strs(&[
+            "[[worktree.post_create]]\ntype = \"command\"\ncommand = \"a\"\n",
+            "[[worktree.post_create]]\ntype = \"command\"\ncommand = \"b\"\n",
+            "[[worktree.post_create]]\ntype = \"command\"\ncommand = \"c\"\n",
+        ]);
+        let commands: Vec<&str> = config
+            .worktree
+            .post_create
+            .iter()
+            .map(|a| match a {
+                PostCreateAction::Command { command } => command.as_str(),
+                _ => panic!("expected command action"),
+            })
+            .collect();
+        assert_eq!(commands, vec!["a", "b", "c"]);
+    }
+
+    #[test]
+    fn parse_post_create_with_name() {
+        // `name` is a merge-level identifier; deserialization ignores it.
+        let toml_str = r#"
+[[worktree.post_create]]
+name = "copy-env"
+type = "copy"
+from = ".env"
+to = ".env"
+"#;
+        let config: Config = toml::from_str(toml_str).unwrap();
+        assert_eq!(config.worktree.post_create.len(), 1);
+        assert!(matches!(
+            &config.worktree.post_create[0],
+            PostCreateAction::Copy { from, .. } if from == ".env"
+        ));
+    }
+
+    #[test]
+    fn parse_config_ignores_disable_key() {
+        let toml_str = "[worktree]\ndisable_post_create = [\"copy-env\"]\n";
+        let config: Config = toml::from_str(toml_str).unwrap();
+        assert!(config.worktree.post_create.is_empty());
+    }
+
+    #[test]
+    fn merge_disable_removes_named_lower_layer_hook() {
+        let config = merge_strs(&[
+            concat!(
+                "[[worktree.post_create]]\nname = \"copy-env\"\ntype = \"copy\"\nfrom = \".env\"\nto = \".env\"\n",
+                "[[worktree.post_create]]\nname = \"install\"\ntype = \"command\"\ncommand = \"npm ci\"\n",
+            ),
+            concat!(
+                "[worktree]\ndisable_post_create = [\"copy-env\"]\n",
+                "[[worktree.post_create]]\ntype = \"command\"\ncommand = \"project-hook\"\n",
+            ),
+        ]);
+        // copy-env is negated; the other global hook and the project hook remain.
+        assert_eq!(config.worktree.post_create.len(), 2);
+        assert!(matches!(
+            &config.worktree.post_create[0],
+            PostCreateAction::Command { command } if command == "npm ci"
+        ));
+        assert!(matches!(
+            &config.worktree.post_create[1],
+            PostCreateAction::Command { command } if command == "project-hook"
+        ));
+    }
+
+    #[test]
+    fn merge_disable_ignores_unnamed_and_unknown() {
+        let config = merge_strs(&[
+            "[[worktree.post_create]]\ntype = \"command\"\ncommand = \"unnamed\"\n",
+            "[worktree]\ndisable_post_create = [\"unnamed\", \"no-such-hook\"]\n",
+        ]);
+        // Unnamed hooks are never matched by the disable list.
+        assert_eq!(config.worktree.post_create.len(), 1);
+    }
+
+    #[test]
+    fn merge_disable_does_not_affect_own_layer() {
+        let config = merge_strs(&[
+            "[worktree]\ndir = \"..\"\n",
+            concat!(
+                "[worktree]\ndisable_post_create = [\"mine\"]\n",
+                "[[worktree.post_create]]\nname = \"mine\"\ntype = \"command\"\ncommand = \"x\"\n",
+            ),
+        ]);
+        // The disable list only filters lower layers, not the layer's own hooks.
+        assert_eq!(config.worktree.post_create.len(), 1);
+    }
+
+    #[test]
+    fn merge_later_layer_can_readd_disabled_name() {
+        let config = merge_strs(&[
+            "[[worktree.post_create]]\nname = \"x\"\ntype = \"command\"\ncommand = \"old\"\n",
+            "[worktree]\ndisable_post_create = [\"x\"]\n",
+            "[[worktree.post_create]]\nname = \"x\"\ntype = \"command\"\ncommand = \"new\"\n",
+        ]);
+        // Like gitignore, later layers win: the re-added hook survives.
+        assert_eq!(config.worktree.post_create.len(), 1);
+        assert!(matches!(
+            &config.worktree.post_create[0],
+            PostCreateAction::Command { command } if command == "new"
+        ));
+    }
+
+    #[test]
+    fn merge_post_create_single_layer_unchanged() {
+        let config = merge_strs(&[
+            "[worktree]\ndir = \"..\"\n",
+            "[[worktree.post_create]]\ntype = \"copy\"\nfrom = \".env\"\nto = \".env\"\n",
+        ]);
+        assert_eq!(config.worktree.post_create.len(), 1);
+    }
+
+    #[test]
     fn merge_empty_layers_is_default() {
         let config = merge_strs(&[]);
         let default = Config::default();
@@ -908,6 +1072,26 @@ clone_root = "~/workspace"
         let global: toml::Table = toml::from_str("[worktree]\ndir = \"..\"\n").unwrap();
         let config = resolve_config(&global, Some(tmp.path()));
         assert_eq!(config.worktree.dir, "../custom");
+    }
+
+    #[test]
+    fn resolve_config_concatenates_post_create() {
+        let tmp = tempfile::tempdir().unwrap();
+        fs::write(
+            tmp.path().join(".gct.toml"),
+            "[[worktree.post_create]]\ntype = \"command\"\ncommand = \"project-hook\"\n",
+        )
+        .unwrap();
+        let global: toml::Table = toml::from_str(
+            "[[worktree.post_create]]\ntype = \"command\"\ncommand = \"global-hook\"\n",
+        )
+        .unwrap();
+        let config = resolve_config(&global, Some(tmp.path()));
+        assert_eq!(config.worktree.post_create.len(), 2);
+        assert!(matches!(
+            &config.worktree.post_create[0],
+            PostCreateAction::Command { command } if command == "global-hook"
+        ));
     }
 
     #[test]
