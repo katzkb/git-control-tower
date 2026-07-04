@@ -181,6 +181,28 @@ Hooks from every config file run, global layers first, then the
 project-local ones, so a global "copy `.env`" hook and a project-local
 "run `npm ci`" hook both fire.
 
+To opt out of an inherited hook (the equivalent of a `.gitignore` `!`
+pattern), give the hook a `name` in the lower-priority file and list it in
+`disable_post_create` in the higher-priority one:
+
+```toml
+# ~/.gct.toml — global hook, named so projects can opt out
+[[worktree.post_create]]
+name = "copy-env"
+type = "copy"
+from = ".env"
+to = ".env"
+```
+
+```toml
+# .gct.toml in a repo that doesn't want the global copy-env hook
+[worktree]
+disable_post_create = ["copy-env"]
+```
+
+Unnamed hooks always run; `disable_post_create` only filters hooks inherited
+from lower-priority files, never the file's own hooks.
+
 For example, with a global `~/.config/gct/config.toml`:
 
 ```toml
