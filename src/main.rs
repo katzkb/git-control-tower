@@ -3,6 +3,8 @@ mod config;
 mod data;
 mod event;
 mod git;
+mod mcp;
+mod ops;
 mod ui;
 
 use anyhow::Context;
@@ -116,13 +118,13 @@ struct BranchesReloadData {
 }
 
 /// Fetches branches + worktrees without touching `App`, so it can run inside
-/// `tokio::spawn` without blocking the event loop. Reuses `load_branches_cli`,
+/// `tokio::spawn` without blocking the event loop. Reuses `ops::list_branches`,
 /// which already performs the same branch/default-branch/merged/rev-parse
 /// sequence for the `gct ls` command.
 async fn fetch_branches_and_worktrees() -> BranchesReloadData {
     let mut errors = Vec::new();
 
-    let branches = match load_branches_cli().await {
+    let branches = match ops::list_branches().await {
         Ok(b) => Some(b),
         Err(e) => {
             errors.push(format!("git branch -vv failed: {e}"));
@@ -394,6 +396,13 @@ async fn main() -> anyhow::Result<()> {
             print_completions(args.get(2).map(|s| s.as_str()).unwrap_or("zsh"));
             return Ok(());
         }
+        Some("mcp") => {
+            // stdout is the JSON-RPC channel here; debug logging (GCT_DEBUG=1)
+            // goes to a file, and notices/errors go to stderr only.
+            crate::git::command::init_debug_log(false);
+            let code = mcp::run_mcp_server().await;
+            process::exit(code);
+        }
         _ => {}
     }
 
@@ -464,18 +473,6 @@ async fn check_prerequisites() {
     }
 }
 
-/// Find the worktree checked out for `branch` and return its path.
-/// Pure helper over an already-parsed worktree list so it can be unit-tested.
-fn worktree_path_for_branch(
-    worktrees: &[crate::git::types::Worktree],
-    branch: &str,
-) -> Option<String> {
-    worktrees
-        .iter()
-        .find(|wt| wt.branch.as_deref() == Some(branch))
-        .map(|wt| wt.path.clone())
-}
-
 /// Implements `gct cd <branch>`: print the branch's worktree path to stdout (the
 /// shell wrapper cd's into it) and return an exit code. On any failure nothing is
 /// written to stdout and a non-zero code is returned so the wrapper does not cd.
@@ -501,7 +498,7 @@ async fn run_cd(branch: Option<&str>) -> i32 {
         }
     };
 
-    match worktree_path_for_branch(&parse_worktrees(&output), branch) {
+    match ops::worktree_path_for_branch(&parse_worktrees(&output), branch) {
         Some(path) => {
             println!("{path}");
             0
@@ -515,25 +512,11 @@ async fn run_cd(branch: Option<&str>) -> i32 {
     }
 }
 
-/// Resolve the active repo's name for the `{repo}` token in `worktree_path_for`.
-/// Prefers the origin remote's repo name, falling back to the toplevel dir name.
-async fn active_repo_name(repo_root: &std::path::Path) -> String {
-    if let Ok(url) = run_git(&["remote", "get-url", "origin"]).await
-        && let Some(info) = extract_repo_info(url.trim())
-    {
-        return info.name;
-    }
-    repo_root
-        .file_name()
-        .and_then(|s| s.to_str())
-        .unwrap_or("repo")
-        .to_string()
-}
-
 /// Implements `gct wt <branch>`: reuse the branch's existing worktree or create one,
 /// then print its path (the shell wrapper cd's into it). The create-side complement
 /// to `cd`. On any failure nothing is written to stdout and a non-zero code is
-/// returned so the wrapper does not cd.
+/// returned so the wrapper does not cd. Thin printer over `ops::ensure_worktree`,
+/// which is shared with the MCP server.
 async fn run_wt(branch: Option<&str>) -> i32 {
     let branch = match branch {
         Some(b) if !b.is_empty() => b,
@@ -543,66 +526,20 @@ async fn run_wt(branch: Option<&str>) -> i32 {
         }
     };
 
-    if run_git(&["rev-parse", "--git-dir"]).await.is_err() {
-        eprintln!("Error: not a git repository.");
-        return 1;
-    }
-
-    // Idempotent: if a worktree already exists for the branch, just print it.
-    if let Ok(output) = run_git(&["worktree", "list", "--porcelain"]).await
-        && let Some(path) = worktree_path_for_branch(&parse_worktrees(&output), branch)
-    {
-        println!("{path}");
-        return 0;
-    }
-
-    let repo_root = match run_git(&["rev-parse", "--show-toplevel"]).await {
-        Ok(s) => std::path::PathBuf::from(s.trim()),
-        Err(e) => {
-            eprintln!("Error: failed to resolve repository root: {e}");
-            return 1;
+    match ops::ensure_worktree(branch).await {
+        Ok(outcome) => {
+            // Post-create hook failures are non-fatal, matching TUI semantics.
+            for err in &outcome.hook_errors {
+                eprintln!("Warning: post-create hook failed: {err}");
+            }
+            println!("{}", outcome.path);
+            0
         }
-    };
-
-    let cfg = config::load_config();
-    let repo_name = active_repo_name(&repo_root).await;
-    let wt_path = cfg.worktree_path_for(&repo_root, &repo_name, branch);
-    if let Some(parent) = std::path::Path::new(&wt_path).parent() {
-        let _ = std::fs::create_dir_all(parent);
+        Err(e) => {
+            eprintln!("Error: {e}");
+            1
+        }
     }
-
-    // Mirror the TUI creation logic: check out a local branch directly, otherwise
-    // fetch from origin first and let `git worktree add` create a tracking branch.
-    let has_local = run_git(&[
-        "rev-parse",
-        "--verify",
-        "--quiet",
-        &format!("refs/heads/{branch}"),
-    ])
-    .await
-    .is_ok();
-    if !has_local && let Err(e) = run_git(&["fetch", "origin", branch]).await {
-        eprintln!("Error: failed to fetch '{branch}' from origin: {e}");
-        return 1;
-    }
-
-    if let Err(e) = run_git(&["worktree", "add", &wt_path, branch]).await {
-        eprintln!("Error: failed to create worktree: {e}");
-        return 1;
-    }
-
-    // Post-create hooks are non-fatal, matching TUI semantics.
-    let errors = config::run_post_create(
-        &cfg.worktree.post_create,
-        &repo_root,
-        std::path::Path::new(&wt_path),
-    );
-    for err in errors {
-        eprintln!("Warning: post-create hook failed: {err}");
-    }
-
-    println!("{wt_path}");
-    0
 }
 
 /// Implements `gct ls [worktrees|branches]`: print a plain-text, pipe-friendly
@@ -629,7 +566,7 @@ async fn run_ls(subject: Option<&str>) -> i32 {
             0
         }
         "branches" | "branch" => {
-            let branches = match load_branches_cli().await {
+            let branches = match ops::list_branches().await {
                 Ok(b) => b,
                 Err(e) => {
                     eprintln!("Error: failed to list branches: {e}");
@@ -660,24 +597,6 @@ fn format_worktree_list(worktrees: &[crate::git::types::Worktree]) -> Vec<String
         .collect()
 }
 
-/// Load the active repo's branches for CLI commands (no App state). Mirrors the
-/// git calls in `load_branches` but returns a plain `Vec<Branch>` or an error.
-async fn load_branches_cli() -> anyhow::Result<Vec<crate::git::types::Branch>> {
-    let branch_output = run_git(&["branch", "-vv"]).await?;
-    let default_branch = detect_default_branch().await;
-    let merged_output = run_git(&["branch", "--merged", &default_branch])
-        .await
-        .unwrap_or_default();
-    let base_hash = run_git(&["rev-parse", &default_branch])
-        .await
-        .unwrap_or_default();
-    Ok(parse_branches(
-        &branch_output,
-        &merged_output,
-        base_hash.trim(),
-    ))
-}
-
 /// A branch eligible for pruning, paired with its worktree path (if any).
 struct PruneCandidate {
     branch: String,
@@ -695,7 +614,7 @@ fn prune_candidates(
         .filter(|b| b.is_merged && !b.is_current && !protected.iter().any(|p| p == &b.name))
         .map(|b| PruneCandidate {
             branch: b.name.clone(),
-            wt_path: worktree_path_for_branch(worktrees, &b.name),
+            wt_path: ops::worktree_path_for_branch(worktrees, &b.name),
         })
         .collect()
 }
@@ -720,7 +639,7 @@ async fn run_prune(flags: &[String]) -> i32 {
         return 1;
     }
 
-    let branches = match load_branches_cli().await {
+    let branches = match ops::list_branches().await {
         Ok(b) => b,
         Err(e) => {
             eprintln!("Error: failed to list branches: {e}");
@@ -1778,6 +1697,7 @@ USAGE:
     gct wt <BRANCH>
     gct ls [worktrees|branches]
     gct prune [--dry-run] [--yes] [--force]
+    gct mcp
     gct completions <SHELL>
     gct shell-init <SHELL>
 
@@ -1807,6 +1727,12 @@ SUBCOMMANDS:
         Delete merged branches and their worktrees (protected/current branches
         are skipped). Lists candidates only unless --yes is given. --force uses
         `worktree remove --force` and `branch -D`.
+
+    mcp
+        Run a Model Context Protocol server over stdio, exposing worktree
+        tools (create_worktree, list_worktrees, list_branches) to MCP
+        clients such as Claude Code. For client configuration, not
+        interactive use. Does not require gh.
 
     completions <SHELL>
         Print a shell completion script. SHELL is one of: zsh, bash, fish.
@@ -1876,7 +1802,7 @@ fn print_completions(shell: &str) {
     cur="${{COMP_WORDS[COMP_CWORD]}}"
     prev="${{COMP_WORDS[COMP_CWORD-1]}}"
     if [ "$COMP_CWORD" -eq 1 ]; then
-        COMPREPLY=($(compgen -W "cd wt ls prune completions shell-init --help --version" -- "$cur"))
+        COMPREPLY=($(compgen -W "cd wt ls prune mcp completions shell-init --help --version" -- "$cur"))
         return
     fi
     case "$prev" in
@@ -1893,7 +1819,7 @@ complete -F _gct gct
             print!(
                 r#"_gct() {{
     if (( CURRENT == 2 )); then
-        compadd -- cd wt ls prune completions shell-init --help --version
+        compadd -- cd wt ls prune mcp completions shell-init --help --version
         return
     fi
     case "${{words[2]}}" in
@@ -1909,7 +1835,7 @@ compdef _gct gct
         "fish" => {
             print!(
                 r#"complete -c gct -f
-complete -c gct -n '__fish_use_subcommand' -a 'cd wt ls prune completions shell-init'
+complete -c gct -n '__fish_use_subcommand' -a 'cd wt ls prune mcp completions shell-init'
 complete -c gct -n '__fish_seen_subcommand_from cd wt' -a '(command gct ls branches 2>/dev/null)'
 complete -c gct -n '__fish_seen_subcommand_from ls' -a 'worktrees branches'
 complete -c gct -n '__fish_seen_subcommand_from completions shell-init' -a 'zsh bash fish'
@@ -2138,34 +2064,6 @@ mod tests {
             branch: branch.map(|s| s.to_string()),
             is_bare,
         }
-    }
-
-    #[test]
-    fn worktree_path_for_branch_found() {
-        let wts = vec![
-            wt("/repo", Some("main"), false),
-            wt("/repo-feature", Some("feature/x"), false),
-        ];
-        assert_eq!(
-            worktree_path_for_branch(&wts, "feature/x").as_deref(),
-            Some("/repo-feature")
-        );
-    }
-
-    #[test]
-    fn worktree_path_for_branch_not_found() {
-        let wts = vec![wt("/repo", Some("main"), false)];
-        assert!(worktree_path_for_branch(&wts, "feature/x").is_none());
-    }
-
-    #[test]
-    fn worktree_path_for_branch_ignores_detached_and_bare() {
-        // A detached/bare worktree has no branch and must never match.
-        let wts = vec![
-            wt("/repo-bare", None, true),
-            wt("/repo-detached", None, false),
-        ];
-        assert!(worktree_path_for_branch(&wts, "feature/x").is_none());
     }
 
     fn branch(name: &str, is_current: bool, is_merged: bool) -> crate::git::types::Branch {
