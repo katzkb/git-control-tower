@@ -875,7 +875,7 @@ async fn run(
                     "--repo",
                     repo_arg.as_str(),
                     "--json",
-                    "number,title,author,state,body,additions,deletions,headRefName",
+                    "number,body,additions,deletions",
                 ];
                 let result = run_gh(&args).await;
                 match result {

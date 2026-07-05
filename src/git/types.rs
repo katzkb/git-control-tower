@@ -64,7 +64,6 @@ pub struct Commit {
 pub struct Branch {
     pub name: String,
     pub is_current: bool,
-    #[allow(dead_code)]
     pub upstream: Option<String>,
     pub is_merged: bool,
 }
@@ -77,13 +76,10 @@ pub struct PullRequest {
     pub author: String,
     pub state: String,
     #[serde(rename = "headRefName")]
-    #[allow(dead_code)]
     pub head_ref: String,
     #[serde(rename = "updatedAt")]
-    #[allow(dead_code)]
     pub updated_at: String,
     #[serde(rename = "reviewRequests", default)]
-    #[allow(dead_code)]
     pub review_requests: Vec<ReviewRequest>,
     #[serde(rename = "isDraft", default)]
     pub is_draft: bool,
@@ -97,7 +93,6 @@ pub struct PullRequest {
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct ReviewRequest {
-    #[allow(dead_code)]
     #[serde(default)]
     pub login: Option<String>,
 }
@@ -124,31 +119,19 @@ where
 #[derive(Debug, Clone, Deserialize)]
 pub struct PrDetail {
     pub number: u64,
-    #[allow(dead_code)]
-    pub title: String,
-    #[serde(deserialize_with = "deserialize_author")]
-    #[allow(dead_code)]
-    pub author: String,
-    #[allow(dead_code)]
-    pub state: String,
     #[serde(default)]
     pub body: String,
     #[serde(default)]
     pub additions: u64,
     #[serde(default)]
     pub deletions: u64,
-    #[serde(rename = "headRefName")]
-    #[allow(dead_code)]
-    pub head_ref: String,
 }
 
 #[derive(Debug, Clone)]
 pub struct Worktree {
     pub path: String,
-    #[allow(dead_code)]
     pub head: String,
     pub branch: Option<String>,
-    #[allow(dead_code)]
     pub is_bare: bool,
 }
 
