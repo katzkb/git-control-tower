@@ -109,6 +109,9 @@ gct prune --yes     # actually delete
 
 # Shell completion
 eval "$(gct completions zsh)"
+
+# Run as an MCP server for AI agents (see the MCP server section)
+gct mcp
 ```
 
 These subcommands run without launching the TUI:
@@ -128,6 +131,39 @@ These subcommands run without launching the TUI:
 
 > `cd` and `wt` emit a bare worktree path that the shell wrapper cd's into; `ls`
 > and `prune` print informational output and never change your directory.
+
+## MCP server
+
+`gct mcp` runs a [Model Context Protocol](https://modelcontextprotocol.io) server
+over stdio, exposing gct's convention-aware worktree operations as tools for AI
+agents. When an agent creates a worktree through gct instead of running
+`git worktree add` itself, it gets the configured path layout (`worktree.dir`,
+`{repo}` placeholder) and the `post_create` hooks (copying `.env` files, setup
+commands) for free — so the branch↔directory mapping stays consistent and new
+worktrees are immediately usable.
+
+Tools: `create_worktree` (config-driven path + post-create hooks, idempotent),
+`list_worktrees`, and `list_branches`. All are local-only; `gh` is not required.
+
+With Claude Code:
+
+```bash
+claude mcp add gct -- gct mcp
+```
+
+Or in `.mcp.json`:
+
+```json
+{
+  "mcpServers": {
+    "gct": { "command": "gct", "args": ["mcp"] }
+  }
+}
+```
+
+The server operates on the repository at its working directory (MCP clients
+spawn it in the project root). Clients invoke the installed `gct` binary
+directly, so the shell-init wrapper from [Setup](#setup) is not involved.
 
 ## Keybindings
 
