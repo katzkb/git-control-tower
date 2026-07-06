@@ -143,8 +143,6 @@ pub struct CommandRecord {
     /// stdout bytes on success, stderr bytes on failure.
     pub output_bytes: usize,
     pub error: Option<String>,
-    #[allow(dead_code)]
-    pub repo: Option<crate::git::types::RepoId>,
 }
 
 fn history() -> &'static Mutex<VecDeque<CommandRecord>> {
@@ -177,60 +175,27 @@ pub fn command_history_len() -> usize {
 // ---- Command execution ----
 
 pub async fn run_git(args: &[&str]) -> Result<String> {
-    run_cmd_tagged("git", args, None).await
+    run_cmd_tagged("git", args).await
 }
 
 pub async fn run_gh(args: &[&str]) -> Result<String> {
-    run_cmd_tagged("gh", args, None).await
+    run_cmd_tagged("gh", args).await
 }
 
 /// Run `git -C <cwd> <args>` for repo-specific operations.
 pub async fn run_git_in(cwd: &Path, args: &[&str]) -> Result<String> {
-    run_git_in_with_id(cwd, None, args).await
-}
-
-// TODO(future): run_gh_in / run_gh_in_with_id are scaffolding for cross-repo gh actions
-// (e.g. gh CLI invocations against a specific clone). Used selectively today; v1 doesn't
-// need all of them.
-
-/// Run `gh <args>` with `current_dir(cwd)` for repo-specific operations.
-#[allow(dead_code)]
-pub async fn run_gh_in(cwd: &Path, args: &[&str]) -> Result<String> {
-    run_gh_in_with_id(cwd, None, args).await
-}
-
-/// `run_git_in` variant that tags the command-history record with a `RepoId`.
-pub async fn run_git_in_with_id(
-    cwd: &Path,
-    repo: Option<crate::git::types::RepoId>,
-    args: &[&str],
-) -> Result<String> {
     let cwd_str = cwd.to_string_lossy().to_string();
     let mut full = Vec::with_capacity(args.len() + 2);
     full.push("-C");
     full.push(cwd_str.as_str());
     full.extend_from_slice(args);
-    run_cmd_tagged("git", &full, repo).await
-}
-
-/// `run_gh_in` variant that tags the command-history record with a `RepoId`.
-#[allow(dead_code)]
-pub async fn run_gh_in_with_id(
-    cwd: &Path,
-    repo: Option<crate::git::types::RepoId>,
-    args: &[&str],
-) -> Result<String> {
-    run_cmd_in_dir_tagged("gh", cwd, args, repo).await
+    run_cmd_tagged("git", &full).await
 }
 
 /// Shared execution path for `run_git`/`run_gh`:
 /// - logs to the debug file if enabled
 /// - records a `CommandRecord` in the in-memory history buffer
-async fn run_cmd_tagged(
-    executable: &'static str,
-    args: &[&str],
-    repo: Option<crate::git::types::RepoId>,
-) -> Result<String> {
+async fn run_cmd_tagged(executable: &'static str, args: &[&str]) -> Result<String> {
     // Initialize session start lazily; cheap and idempotent.
     let _ = session_start();
     debug_log(&format!("$ {executable} {}", args.join(" ")));
@@ -250,7 +215,6 @@ async fn run_cmd_tagged(
                 duration: started_at.elapsed(),
                 output_bytes: 0,
                 error: Some(e.to_string()),
-                repo,
             });
             return Err(anyhow::Error::new(e))
                 .with_context(|| format!("failed to execute {executable}"));
@@ -270,7 +234,6 @@ async fn run_cmd_tagged(
             duration,
             output_bytes: output.stderr.len(),
             error: Some(stderr.clone()),
-            repo,
         });
         bail!("{executable} {} failed: {stderr}", owned_args.join(" "));
     }
@@ -285,77 +248,6 @@ async fn run_cmd_tagged(
         duration,
         output_bytes: stdout.len(),
         error: None,
-        repo,
-    });
-    Ok(stdout)
-}
-
-/// Like `run_cmd_tagged` but sets `current_dir` on the spawned process.
-#[allow(dead_code)]
-async fn run_cmd_in_dir_tagged(
-    executable: &'static str,
-    cwd: &Path,
-    args: &[&str],
-    repo: Option<crate::git::types::RepoId>,
-) -> Result<String> {
-    let _ = session_start();
-    debug_log(&format!(
-        "$ {executable} {} [cwd={}]",
-        args.join(" "),
-        cwd.display()
-    ));
-    let started_at = Instant::now();
-    let owned_args: Vec<String> = args.iter().map(|s| s.to_string()).collect();
-
-    let mut cmd = Command::new(resolve_executable(executable));
-    cmd.args(args).current_dir(cwd);
-    let output = match run_with_timeout(&mut cmd).await {
-        Ok(o) => o,
-        Err(e) => {
-            push_record(CommandRecord {
-                started_at,
-                executable,
-                args: owned_args,
-                success: false,
-                duration: started_at.elapsed(),
-                output_bytes: 0,
-                error: Some(e.to_string()),
-                repo,
-            });
-            return Err(anyhow::Error::new(e))
-                .with_context(|| format!("failed to execute {executable}"));
-        }
-    };
-
-    let duration = started_at.elapsed();
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-        debug_log(&format!("  → FAIL: {stderr}"));
-        push_record(CommandRecord {
-            started_at,
-            executable,
-            args: owned_args.clone(),
-            success: false,
-            duration,
-            output_bytes: output.stderr.len(),
-            error: Some(stderr.clone()),
-            repo,
-        });
-        bail!("{executable} {} failed: {stderr}", owned_args.join(" "));
-    }
-
-    let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
-    debug_log(&format!("  → OK ({} bytes)", stdout.len()));
-    push_record(CommandRecord {
-        started_at,
-        executable,
-        args: owned_args,
-        success: true,
-        duration,
-        output_bytes: stdout.len(),
-        error: None,
-        repo,
     });
     Ok(stdout)
 }
@@ -372,32 +264,6 @@ mod plumbing_tests {
         let expected = std::fs::canonicalize(&cwd).unwrap();
         let actual = std::fs::canonicalize(toplevel.trim()).unwrap();
         assert_eq!(actual, expected);
-    }
-
-    #[tokio::test]
-    async fn run_git_in_records_repo_when_provided() {
-        let cwd = std::env::current_dir().unwrap();
-        let _ = run_git_in_with_id(
-            &cwd,
-            Some(crate::git::types::RepoId {
-                host: None,
-                owner: "katzkb".into(),
-                name: "git-control-tower".into(),
-            }),
-            &["--version"],
-        )
-        .await;
-        // `COMMAND_HISTORY` is a global buffer shared by every test in this
-        // binary running concurrently, so this test's record isn't
-        // guaranteed to be the most recent one by the time we read it back
-        // — find it by its distinguishing feature (repo set) instead of
-        // assuming order.
-        let history = command_history_snapshot();
-        let recorded = history.iter().find(|r| r.repo.is_some());
-        assert!(
-            recorded.is_some(),
-            "expected a recorded command with repo set"
-        );
     }
 
     #[cfg(unix)]

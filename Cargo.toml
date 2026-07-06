@@ -15,7 +15,7 @@ path = "src/main.rs"
 [dependencies]
 ratatui = "0.30"
 crossterm = "0.29"
-tokio = { version = "1", features = ["full"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "process", "sync", "time"] }
 anyhow = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

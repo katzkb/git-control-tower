@@ -1619,31 +1619,23 @@ mod pr_detail_cache_tests {
         };
         let detail_a = PrDetail {
             number: 1,
-            title: "A".into(),
-            author: "u".into(),
-            state: "OPEN".into(),
-            body: String::new(),
+            body: "A".into(),
             additions: 0,
             deletions: 0,
-            head_ref: "f".into(),
         };
         let detail_b = PrDetail {
             number: 1,
-            title: "B".into(),
-            author: "u".into(),
-            state: "OPEN".into(),
-            body: String::new(),
+            body: "B".into(),
             additions: 0,
             deletions: 0,
-            head_ref: "f".into(),
         };
         app.pr_detail_cache
             .insert((id_a.clone(), 1), detail_a.clone());
         app.pr_detail_cache
             .insert((id_b.clone(), 1), detail_b.clone());
         assert_eq!(app.pr_detail_cache.len(), 2);
-        assert_eq!(app.pr_detail_cache.get(&(id_a, 1)).unwrap().title, "A");
-        assert_eq!(app.pr_detail_cache.get(&(id_b, 1)).unwrap().title, "B");
+        assert_eq!(app.pr_detail_cache.get(&(id_a, 1)).unwrap().body, "A");
+        assert_eq!(app.pr_detail_cache.get(&(id_b, 1)).unwrap().body, "B");
     }
 }
 
