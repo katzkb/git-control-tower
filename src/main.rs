@@ -999,13 +999,15 @@ async fn run(
                         app.wt_lists_per_repo.remove(&repo_id);
                     }
                     if app.confirm_dialog.is_none() {
-                        app.confirm_dialog = Some(crate::ui::confirm_dialog::ConfirmDialog::new(
-                            "Move to Worktree",
-                            format!(
-                                "Move into the new worktree?\n(Requires shell integration — see README.)\n{wt_path}"
+                        app.confirm_dialog = Some(crate::app::PendingConfirm {
+                            dialog: crate::ui::confirm_dialog::ConfirmDialog::new(
+                                "Move to Worktree",
+                                format!(
+                                    "Move into the new worktree?\n(Requires shell integration — see README.)\n{wt_path}"
+                                ),
                             ),
-                        ));
-                        app.wt_cd_pending_path = Some(wt_path);
+                            on_confirm: Command::CdAndQuit(wt_path),
+                        });
                     }
                 }
                 AsyncResult::WtCreateError { wt_path, message } => {
@@ -1073,11 +1075,13 @@ async fn run(
                 }
                 AsyncResult::WtForceDecisionRequested { path, reason } => {
                     // Plain remove failed; ask the user whether to force.
-                    app.confirm_dialog = Some(crate::ui::confirm_dialog::ConfirmDialog::new(
-                        "Force Delete Worktree",
-                        format!("{reason}\nForce remove {path}?"),
-                    ));
-                    app.wt_force_delete_pending_path = Some(path);
+                    app.confirm_dialog = Some(crate::app::PendingConfirm {
+                        dialog: crate::ui::confirm_dialog::ConfirmDialog::new(
+                            "Force Delete Worktree",
+                            format!("{reason}\nForce remove {path}?"),
+                        ),
+                        on_confirm: Command::ForceDeleteWorktree(path),
+                    });
                 }
                 AsyncResult::WtListLoaded { repo_id, list } => {
                     app.wt_list_inflight.remove(&repo_id);
@@ -1331,6 +1335,9 @@ async fn run(
 
                 // Delete selected entries (branches + optional worktrees) in parallel.
                 Command::DeleteBranches(selected) => {
+                    // The op is starting — clear the sidebar checkboxes now
+                    // (a declined dialog keeps the selection intact).
+                    app.branch_selected.clear();
                     struct Work {
                         name: String,
                         wt_path: Option<String>,
@@ -1437,6 +1444,12 @@ async fn run(
                 // Copy branch name to clipboard (synchronous)
                 Command::CopyBranchName(name) => {
                     copy_to_clipboard(&name);
+                }
+
+                // Quit and hand the path to the shell-integration `cd`
+                Command::CdAndQuit(path) => {
+                    app.cd_path = Some(path);
+                    app.should_quit = true;
                 }
 
                 // Spawn PR detail load in background (deduplicated)

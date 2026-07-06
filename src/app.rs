@@ -103,6 +103,16 @@ pub enum Command {
     },
     OpenPrInBrowser(crate::git::types::RepoId, u64),
     CopyBranchName(String),
+    /// Quit the TUI and emit this path for the shell-integration `cd`.
+    CdAndQuit(String),
+}
+
+/// A confirm dialog plus the command to run when the user accepts it.
+/// Carrying the consequence with the dialog means `handle_confirm_key`
+/// needs no out-of-band staging state to know what `y` applies to.
+pub struct PendingConfirm {
+    pub dialog: ConfirmDialog,
+    pub on_confirm: Command,
 }
 
 pub struct ActionMenu {
@@ -272,7 +282,7 @@ pub struct App {
     pub verbose_errors: Vec<String>,
 
     // Overlays
-    pub confirm_dialog: Option<ConfirmDialog>,
+    pub confirm_dialog: Option<PendingConfirm>,
     pub action_menu: Option<ActionMenu>,
     pub branch_create_input: Option<BranchCreateInput>,
     pub notification: Option<Notification>,
@@ -285,10 +295,6 @@ pub struct App {
     // handling in `run()`), drained once per loop iteration in `run()`.
     pub commands: VecDeque<Command>,
 
-    // Dialog staging: paths stored while a confirm dialog is open
-    pub wt_delete_pending_path: Option<String>,
-    pub wt_force_delete_pending_path: Option<String>,
-    pub wt_cd_pending_path: Option<String>,
     /// Worktree paths with an in-flight create/delete, gated per-path so unrelated
     /// worktrees stay actionable in the UI while one is still running.
     pub wt_inflight: HashSet<String>,
@@ -360,9 +366,6 @@ impl App {
             show_help: false,
             cd_path: None,
             commands: VecDeque::new(),
-            wt_delete_pending_path: None,
-            wt_force_delete_pending_path: None,
-            wt_cd_pending_path: None,
             wt_inflight: HashSet::new(),
             progress: ProgressTracker::default(),
             quit_pressed_during_progress: false,
@@ -872,7 +875,13 @@ impl App {
                     } else {
                         "Delete Branches + Worktrees"
                     };
-                    self.confirm_dialog = Some(ConfirmDialog::new(title, msg));
+                    // Snapshot the whole selection — the dispatcher re-filters
+                    // (current/protected/inflight) at execution time.
+                    let names: Vec<String> = self.branch_selected.iter().cloned().collect();
+                    self.confirm_dialog = Some(PendingConfirm {
+                        dialog: ConfirmDialog::new(title, msg),
+                        on_confirm: Command::DeleteBranches(names),
+                    });
                 } else if !self.branch_selected.is_empty() {
                     // Non-empty selection but nothing deletable (e.g. PR-only entries
                     // with no local branch and no worktree). Tell the user rather
@@ -886,11 +895,13 @@ impl App {
                     && !self.wt_inflight.contains(wt_path)
                 {
                     let path = wt_path.to_string();
-                    self.confirm_dialog = Some(ConfirmDialog::new(
-                        "Delete Worktree",
-                        format!("Remove worktree at {path}?"),
-                    ));
-                    self.wt_delete_pending_path = Some(path);
+                    self.confirm_dialog = Some(PendingConfirm {
+                        dialog: ConfirmDialog::new(
+                            "Delete Worktree",
+                            format!("Remove worktree at {path}?"),
+                        ),
+                        on_confirm: Command::DeleteWorktree(path),
+                    });
                 }
             }
             KeyCode::Char('w') => {
@@ -1206,13 +1217,16 @@ impl App {
             ActionItem::DeleteWorktree => {
                 if let Some(wt_path) = entry.worktree_path() {
                     let path = wt_path.to_string();
-                    // Clear branch_selected to avoid confirm_key misrouting
+                    // Deleting via the action menu targets one worktree only —
+                    // drop any checkbox selection so the sidebar reflects that.
                     self.branch_selected.clear();
-                    self.confirm_dialog = Some(ConfirmDialog::new(
-                        "Delete Worktree",
-                        format!("Remove worktree at {path}?"),
-                    ));
-                    self.wt_delete_pending_path = Some(path);
+                    self.confirm_dialog = Some(PendingConfirm {
+                        dialog: ConfirmDialog::new(
+                            "Delete Worktree",
+                            format!("Remove worktree at {path}?"),
+                        ),
+                        on_confirm: Command::DeleteWorktree(path),
+                    });
                 }
             }
             ActionItem::CreateBranch => {
@@ -1225,14 +1239,15 @@ impl App {
             ActionItem::DeleteBranch => {
                 let name = entry.name.clone();
                 let is_unmerged = !entry.is_merged() && !entry.pr_is_merged();
-                self.branch_selected.clear();
-                self.branch_selected.insert(name.clone());
                 let msg = if is_unmerged {
                     format!("Delete branch {name}? (unmerged — will force delete)")
                 } else {
                     format!("Delete branch {name}?")
                 };
-                self.confirm_dialog = Some(ConfirmDialog::new("Delete Branch", msg));
+                self.confirm_dialog = Some(PendingConfirm {
+                    dialog: ConfirmDialog::new("Delete Branch", msg),
+                    on_confirm: Command::DeleteBranches(vec![name]),
+                });
             }
             ActionItem::OpenPrInBrowser => {
                 if let Some(pr) = &entry.pull_request {
@@ -1293,30 +1308,18 @@ impl App {
     fn handle_confirm_key(&mut self, code: KeyCode) {
         match code {
             KeyCode::Char('y') => {
-                // Move-to-worktree takes precedence — it can race with a
-                // stale `branch_selected` from before the create finished.
-                if let Some(path) = self.wt_cd_pending_path.take() {
-                    self.cd_path = Some(path);
-                    self.should_quit = true;
-                } else if !self.branch_selected.is_empty() {
-                    let names: Vec<String> = self.branch_selected.drain().collect();
-                    self.push_command(Command::DeleteBranches(names));
-                } else if let Some(path) = self.wt_force_delete_pending_path.take() {
-                    self.push_command(Command::ForceDeleteWorktree(path));
-                } else if let Some(path) = self.wt_delete_pending_path.take() {
-                    self.push_command(Command::DeleteWorktree(path));
+                if let Some(pending) = self.confirm_dialog.take() {
+                    self.push_command(pending.on_confirm);
                 }
-                self.confirm_dialog = None;
             }
             KeyCode::Char('n') | KeyCode::Esc => {
-                self.wt_delete_pending_path = None;
-                self.wt_cd_pending_path = None;
-                // Declining force-delete ends the op — release the path so its
-                // action items reappear.
-                if let Some(path) = self.wt_force_delete_pending_path.take() {
+                if let Some(pending) = self.confirm_dialog.take()
+                    && let Command::ForceDeleteWorktree(path) = pending.on_confirm
+                {
+                    // Declining force-delete ends the op — release the path so
+                    // its action items reappear.
                     self.wt_inflight.remove(&path);
                 }
-                self.confirm_dialog = None;
             }
             _ => {}
         }
@@ -2456,5 +2459,44 @@ mod command_queue_tests {
                 .commands
                 .contains(&Command::FetchPrs(MainFilter::MyPr))
         );
+    }
+
+    fn pending(on_confirm: Command) -> PendingConfirm {
+        PendingConfirm {
+            dialog: ConfirmDialog::new("title", "message"),
+            on_confirm,
+        }
+    }
+
+    #[test]
+    fn confirm_y_pushes_on_confirm_and_closes_dialog() {
+        let mut app = App::new(Config::default());
+        app.confirm_dialog = Some(pending(Command::DeleteWorktree("/wt/p".into())));
+        app.handle_key(key(KeyCode::Char('y')));
+        assert!(app.confirm_dialog.is_none());
+        assert!(
+            app.commands
+                .contains(&Command::DeleteWorktree("/wt/p".into()))
+        );
+    }
+
+    #[test]
+    fn confirm_decline_pushes_nothing() {
+        let mut app = App::new(Config::default());
+        app.confirm_dialog = Some(pending(Command::DeleteWorktree("/wt/p".into())));
+        app.handle_key(key(KeyCode::Esc));
+        assert!(app.confirm_dialog.is_none());
+        assert!(app.commands.is_empty());
+    }
+
+    #[test]
+    fn confirm_decline_force_delete_releases_inflight_path() {
+        let mut app = App::new(Config::default());
+        app.wt_inflight.insert("/wt/p".to_string());
+        app.confirm_dialog = Some(pending(Command::ForceDeleteWorktree("/wt/p".into())));
+        app.handle_key(key(KeyCode::Char('n')));
+        assert!(app.confirm_dialog.is_none());
+        assert!(app.commands.is_empty());
+        assert!(!app.wt_inflight.contains("/wt/p"));
     }
 }
