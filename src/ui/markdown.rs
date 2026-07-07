@@ -1,7 +1,9 @@
 use ratatui::{
-    style::{Color, Modifier, Style},
+    style::{Modifier, Style},
     text::{Line, Span},
 };
+
+use crate::ui::theme;
 
 /// Convert markdown text to styled ratatui Lines.
 /// Supports: headings (#), bold (**), inline code (`), unordered lists (- ), code blocks (```).
@@ -18,7 +20,7 @@ pub fn render_markdown(text: &str) -> Vec<Line<'static>> {
         if in_code_block {
             lines.push(Line::from(Span::styled(
                 format!("  {raw_line}"),
-                Style::default().fg(Color::Green),
+                Style::default().fg(theme::SUCCESS),
             )));
             continue;
         }
@@ -27,31 +29,31 @@ pub fn render_markdown(text: &str) -> Vec<Line<'static>> {
             lines.push(Line::from(Span::styled(
                 format!("   {heading}"),
                 Style::default()
-                    .fg(Color::Cyan)
+                    .fg(theme::ACCENT)
                     .add_modifier(Modifier::BOLD),
             )));
         } else if let Some(heading) = raw_line.strip_prefix("## ") {
             lines.push(Line::from(Span::styled(
                 format!("  {heading}"),
                 Style::default()
-                    .fg(Color::Cyan)
+                    .fg(theme::ACCENT)
                     .add_modifier(Modifier::BOLD),
             )));
         } else if let Some(heading) = raw_line.strip_prefix("# ") {
             lines.push(Line::from(Span::styled(
                 heading.to_string(),
                 Style::default()
-                    .fg(Color::Cyan)
+                    .fg(theme::ACCENT)
                     .add_modifier(Modifier::BOLD),
             )));
         } else if let Some(item) = raw_line.strip_prefix("- ") {
             lines.push(Line::from(vec![
-                Span::styled("  • ", Style::default().fg(Color::Yellow)),
+                Span::styled("  • ", Style::default().fg(theme::WARNING)),
                 Span::raw(render_inline(item)),
             ]));
         } else if let Some(item) = raw_line.strip_prefix("* ") {
             lines.push(Line::from(vec![
-                Span::styled("  • ", Style::default().fg(Color::Yellow)),
+                Span::styled("  • ", Style::default().fg(theme::WARNING)),
                 Span::raw(render_inline(item)),
             ]));
         } else if raw_line.is_empty() {

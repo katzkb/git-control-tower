@@ -1,13 +1,15 @@
 use ratatui::{
     Frame,
     layout::{Constraint, Layout, Rect},
-    style::{Color, Modifier, Style},
+    style::{Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, List, ListItem, ListState},
 };
 
 use crate::app::{App, MainFilter};
-use crate::git::types::{BranchEntry, ReviewStatus};
+use crate::git::types::BranchEntry;
+
+use crate::ui::theme;
 
 pub fn draw(frame: &mut Frame, area: Rect, app: &mut App) {
     let chunks = Layout::vertical([Constraint::Length(1), Constraint::Min(1)]).split(area);
@@ -22,20 +24,20 @@ fn draw_filter_bar(frame: &mut Frame, area: Rect, app: &App) {
             Span::styled(
                 " /",
                 Style::default()
-                    .fg(Color::Cyan)
+                    .fg(theme::ACCENT)
                     .add_modifier(Modifier::BOLD),
             ),
-            Span::styled(app.search_query.clone(), Style::default().fg(Color::White)),
-            Span::styled("_", Style::default().fg(Color::Cyan)),
+            Span::styled(app.search_query.clone(), Style::default().fg(theme::TEXT)),
+            Span::styled("_", Style::default().fg(theme::ACCENT)),
         ])
     } else {
         let label = app.main_filter.label();
         let mut spans = vec![
-            Span::styled(" Filter: ", Style::default().fg(Color::DarkGray)),
+            Span::styled(" Filter: ", Style::default().fg(theme::TEXT_DIM)),
             Span::styled(
                 label,
                 Style::default()
-                    .fg(Color::Cyan)
+                    .fg(theme::ACCENT)
                     .add_modifier(Modifier::BOLD),
             ),
         ];
@@ -47,14 +49,14 @@ fn draw_filter_bar(frame: &mut Frame, area: Rect, app: &App) {
         {
             spans.push(Span::styled(
                 " [+merged]",
-                Style::default().fg(Color::Yellow),
+                Style::default().fg(theme::WARNING),
             ));
         }
         // Show active search filter
         if !app.search_query.is_empty() {
             spans.push(Span::styled(
                 format!(" /{}", app.search_query),
-                Style::default().fg(Color::Cyan),
+                Style::default().fg(theme::ACCENT),
             ));
         }
         // Show team toggle indicator for Review view
@@ -64,7 +66,7 @@ fn draw_filter_bar(frame: &mut Frame, area: Rect, app: &App) {
             } else {
                 " [me]"
             };
-            spans.push(Span::styled(team_label, Style::default().fg(Color::Cyan)));
+            spans.push(Span::styled(team_label, Style::default().fg(theme::ACCENT)));
         }
         // Show repo/PR counter when multiple repos are present
         if matches!(
@@ -81,14 +83,14 @@ fn draw_filter_bar(frame: &mut Frame, area: Rect, app: &App) {
                 let pr_count = filtered.iter().filter(|e| e.pull_request.is_some()).count();
                 spans.push(Span::styled(
                     format!("  {repo_count} repos · {pr_count} PRs"),
-                    Style::default().fg(Color::DarkGray),
+                    Style::default().fg(theme::TEXT_DIM),
                 ));
             }
         }
         Line::from(spans)
     };
     frame.render_widget(
-        ratatui::widgets::Paragraph::new(bar).style(Style::default().bg(Color::Black)),
+        ratatui::widgets::Paragraph::new(bar).style(Style::default().bg(theme::BAR_BG)),
         area,
     );
 }
@@ -105,7 +107,7 @@ fn draw_entry_list(frame: &mut Frame, area: Rect, app: &mut App) {
             let spinner = app.spinner_frame();
             vec![ListItem::new(Line::from(Span::styled(
                 format!("  {spinner} Loading"),
-                Style::default().fg(Color::DarkGray),
+                Style::default().fg(theme::TEXT_DIM),
             )))]
         } else if rows.is_empty() {
             let msg = if !app.search_query.is_empty() {
@@ -119,7 +121,7 @@ fn draw_entry_list(frame: &mut Frame, area: Rect, app: &mut App) {
             };
             vec![ListItem::new(Line::from(Span::styled(
                 msg,
-                Style::default().fg(Color::DarkGray),
+                Style::default().fg(theme::TEXT_DIM),
             )))]
         } else {
             let search_query = &app.search_query;
@@ -129,7 +131,7 @@ fn draw_entry_list(frame: &mut Frame, area: Rect, app: &mut App) {
                         ListItem::new(Line::from(vec![Span::styled(
                             format!(" ▾ {repo_id} "),
                             Style::default()
-                                .fg(Color::Cyan)
+                                .fg(theme::ACCENT)
                                 .add_modifier(Modifier::DIM | Modifier::BOLD),
                         )]))
                     }
@@ -157,7 +159,7 @@ fn draw_entry_list(frame: &mut Frame, area: Rect, app: &mut App) {
     let block = Block::default()
         .borders(Borders::ALL)
         .title(" Branches ")
-        .border_style(Style::default().fg(Color::DarkGray));
+        .border_style(Style::default().fg(theme::TEXT_DIM));
 
     let list = List::new(items)
         .block(block)
@@ -183,21 +185,21 @@ fn format_entry_line(
     // Checkbox (only shown when multi-select is active)
     if show_checkboxes {
         if is_selected {
-            spans.push(Span::styled("[x] ", Style::default().fg(Color::Cyan)));
+            spans.push(Span::styled("[x] ", Style::default().fg(theme::ACCENT)));
         } else {
-            spans.push(Span::styled("[ ] ", Style::default().fg(Color::DarkGray)));
+            spans.push(Span::styled("[ ] ", Style::default().fg(theme::TEXT_DIM)));
         }
     }
 
     // Branch name (with search highlight)
     let name_style = if entry.is_current() {
         Style::default()
-            .fg(Color::Green)
+            .fg(theme::SUCCESS)
             .add_modifier(Modifier::BOLD)
     } else if (entry.is_merged() || entry.pr_is_merged()) && !is_protected {
-        Style::default().fg(Color::Yellow)
+        Style::default().fg(theme::WARNING)
     } else {
-        Style::default().fg(Color::White)
+        Style::default().fg(theme::TEXT)
     };
     spans.extend(format_branch_name(&entry.name, search_query, name_style));
 
@@ -206,7 +208,7 @@ fn format_entry_line(
         spans.push(Span::styled(
             " *",
             Style::default()
-                .fg(Color::Green)
+                .fg(theme::SUCCESS)
                 .add_modifier(Modifier::BOLD),
         ));
     }
@@ -215,7 +217,7 @@ fn format_entry_line(
     if let Some(pr) = &entry.pull_request {
         spans.push(Span::styled(
             format!(" #{}", pr.number),
-            Style::default().fg(Color::Yellow),
+            Style::default().fg(theme::WARNING),
         ));
     }
 
@@ -225,7 +227,7 @@ fn format_entry_line(
     {
         spans.push(Span::styled(
             " [draft]",
-            Style::default().fg(Color::DarkGray),
+            Style::default().fg(theme::TEXT_DIM),
         ));
     }
 
@@ -233,28 +235,23 @@ fn format_entry_line(
     if let Some(pr) = &entry.pull_request
         && let Some(status) = &pr.review_status
     {
-        let (label, color) = match status {
-            ReviewStatus::NeedsReview => ("needs review", Color::Red),
-            ReviewStatus::Approved => ("approved", Color::Green),
-            ReviewStatus::ChangesRequested => ("changes requested", Color::Yellow),
-            ReviewStatus::Commented => ("commented", Color::Cyan),
-        };
+        let (label, color) = theme::review_status(status);
         spans.push(Span::styled(
-            format!(" [{label}]"),
+            format!(" [{}]", label.to_ascii_lowercase()),
             Style::default().fg(color),
         ));
     }
 
     // Worktree indicator
     if entry.worktree.is_some() && !entry.is_current() {
-        spans.push(Span::styled(" wt", Style::default().fg(Color::Cyan)));
+        spans.push(Span::styled(" wt", Style::default().fg(theme::ACCENT)));
     }
 
     // Merged tag
     if (entry.is_merged() || entry.pr_is_merged()) && !entry.is_current() && !is_protected {
         spans.push(Span::styled(
             " [merged]",
-            Style::default().fg(Color::Yellow),
+            Style::default().fg(theme::WARNING),
         ));
     }
 
@@ -280,7 +277,7 @@ fn format_branch_name(name: &str, search_query: &str, base_style: Style) -> Vec<
         let end = start + lower_query_chars.len();
         let highlight_style = base_style
             .add_modifier(Modifier::UNDERLINED)
-            .fg(Color::Cyan);
+            .fg(theme::ACCENT);
         vec![
             Span::styled(
                 format!(" {}", name_chars[..start].iter().collect::<String>()),

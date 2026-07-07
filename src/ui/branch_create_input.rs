@@ -1,12 +1,14 @@
 use ratatui::{
     Frame,
-    layout::{Constraint, Flex, Layout, Rect},
-    style::{Color, Modifier, Style},
+    style::{Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Clear, Paragraph},
 };
 
 use crate::app::BranchCreateInput;
+
+use crate::ui::layout::centered_rect;
+use crate::ui::theme;
 
 pub fn draw(frame: &mut Frame, input: &BranchCreateInput) {
     let area = centered_rect(60, 8, frame.area());
@@ -24,9 +26,9 @@ pub fn draw(frame: &mut Frame, input: &BranchCreateInput) {
     let source_display = truncate_head(&input.source, from_max);
     let window = window_around_cursor(&input.name, input.cursor, name_max);
 
-    let white = Style::default().fg(Color::White);
-    let gray = Style::default().fg(Color::DarkGray);
-    let cyan = Style::default().fg(Color::Cyan);
+    let white = Style::default().fg(theme::TEXT);
+    let gray = Style::default().fg(theme::TEXT_DIM);
+    let cyan = Style::default().fg(theme::ACCENT);
 
     let mut name_spans: Vec<Span> = Vec::with_capacity(6);
     name_spans.push(Span::styled("  Name: ", gray));
@@ -52,16 +54,16 @@ pub fn draw(frame: &mut Frame, input: &BranchCreateInput) {
             Span::styled(
                 " Enter ",
                 Style::default()
-                    .fg(Color::White)
-                    .bg(Color::DarkGray)
+                    .fg(theme::TEXT)
+                    .bg(theme::TEXT_DIM)
                     .add_modifier(Modifier::BOLD),
             ),
             Span::raw(" Create  "),
             Span::styled(
                 " Esc ",
                 Style::default()
-                    .fg(Color::White)
-                    .bg(Color::DarkGray)
+                    .fg(theme::TEXT)
+                    .bg(theme::TEXT_DIM)
                     .add_modifier(Modifier::BOLD),
             ),
             Span::raw(" Cancel"),
@@ -71,7 +73,7 @@ pub fn draw(frame: &mut Frame, input: &BranchCreateInput) {
     let block = Block::default()
         .borders(Borders::ALL)
         .title(" Create Branch ")
-        .border_style(Style::default().fg(Color::Cyan));
+        .border_style(Style::default().fg(theme::ACCENT));
 
     let paragraph = Paragraph::new(lines).block(block);
     frame.render_widget(paragraph, area);
@@ -177,16 +179,6 @@ fn window_around_cursor(s: &str, cursor: usize, max: usize) -> CursorWindow {
         left_ellipsis: true,
         right_ellipsis: true,
     }
-}
-
-fn centered_rect(percent_x: u16, height: u16, area: Rect) -> Rect {
-    let vertical = Layout::vertical([Constraint::Length(height)])
-        .flex(Flex::Center)
-        .split(area);
-    let horizontal = Layout::horizontal([Constraint::Percentage(percent_x)])
-        .flex(Flex::Center)
-        .split(vertical[0]);
-    horizontal[0]
 }
 
 #[cfg(test)]

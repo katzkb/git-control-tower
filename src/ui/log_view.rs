@@ -1,12 +1,14 @@
 use ratatui::{
     Frame,
     layout::Rect,
-    style::{Color, Modifier, Style},
+    style::{Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, List, ListItem, ListState},
 };
 
 use crate::app::App;
+
+use crate::ui::theme;
 
 pub fn draw(frame: &mut Frame, area: Rect, app: &App) {
     let block = Block::default().borders(Borders::ALL).title(" Log ");
@@ -24,12 +26,12 @@ pub fn draw(frame: &mut Frame, area: Rect, app: &App) {
             let line = Line::from(vec![
                 Span::styled(
                     format!("{} ", commit.hash),
-                    Style::default().fg(Color::Yellow),
+                    Style::default().fg(theme::WARNING),
                 ),
                 Span::raw(&commit.message),
                 Span::styled(
                     format!("  ({}, {})", commit.author, commit.date),
-                    Style::default().fg(Color::DarkGray),
+                    Style::default().fg(theme::TEXT_DIM),
                 ),
             ]);
             ListItem::new(line)

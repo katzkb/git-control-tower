@@ -1,13 +1,16 @@
 use ratatui::{
     Frame,
-    layout::{Constraint, Flex, Layout, Rect},
-    style::{Color, Modifier, Style},
+    layout::{Constraint, Layout, Rect},
+    style::{Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph, Wrap},
 };
 
 use crate::app::App;
 use crate::ui::{confirm_dialog, detail_pane, sidebar};
+
+use crate::ui::layout::centered_rect;
+use crate::ui::theme;
 
 pub fn draw(frame: &mut Frame, area: Rect, app: &mut App) {
     let chunks =
@@ -92,14 +95,14 @@ fn draw_action_menu(frame: &mut Frame, menu: &crate::app::ActionMenu) {
         .map(|row| match row {
             MenuRow::Item(item) => ListItem::new(Line::from(Span::styled(
                 format!("  {}", item.label()),
-                Style::default().fg(Color::White),
+                Style::default().fg(theme::TEXT),
             ))),
             MenuRow::Separator(label) => {
                 let head = format!("── {label} ");
                 let fill = "─".repeat(inner_width.saturating_sub(head.chars().count()));
                 ListItem::new(Line::from(Span::styled(
                     format!("{head}{fill}"),
-                    Style::default().fg(Color::DarkGray),
+                    Style::default().fg(theme::TEXT_DIM),
                 )))
             }
         })
@@ -108,13 +111,13 @@ fn draw_action_menu(frame: &mut Frame, menu: &crate::app::ActionMenu) {
     let block = Block::default()
         .borders(Borders::ALL)
         .title(" Actions (j/k:navigate  Enter:select  Esc:cancel) ")
-        .border_style(Style::default().fg(Color::Cyan));
+        .border_style(Style::default().fg(theme::ACCENT));
 
     let list = List::new(items)
         .block(block)
         .highlight_style(
             Style::default()
-                .fg(Color::Cyan)
+                .fg(theme::ACCENT)
                 .add_modifier(Modifier::BOLD),
         )
         .highlight_symbol("▸ ");
@@ -126,21 +129,11 @@ fn draw_action_menu(frame: &mut Frame, menu: &crate::app::ActionMenu) {
     if let Some(ref footer) = menu.footer {
         let footer_line = Line::from(Span::styled(
             format!("─ {footer}"),
-            Style::default().fg(Color::DarkGray),
+            Style::default().fg(theme::TEXT_DIM),
         ));
         let paragraph = Paragraph::new(footer_line).wrap(Wrap { trim: true });
         frame.render_widget(paragraph, footer_area);
     }
-}
-
-fn centered_rect(percent_x: u16, height: u16, area: Rect) -> Rect {
-    let vertical = Layout::vertical([Constraint::Length(height)])
-        .flex(Flex::Center)
-        .split(area);
-    let horizontal = Layout::horizontal([Constraint::Percentage(percent_x)])
-        .flex(Flex::Center)
-        .split(vertical[0]);
-    horizontal[0]
 }
 
 #[cfg(test)]

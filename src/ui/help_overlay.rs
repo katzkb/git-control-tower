@@ -1,20 +1,19 @@
 use ratatui::{
     Frame,
-    layout::{Constraint, Flex, Layout, Rect},
-    style::{Color, Modifier, Style},
+    style::{Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Clear, Paragraph},
 };
 
-pub fn draw(frame: &mut Frame) {
-    let area = centered_rect(60, 31, frame.area());
-    frame.render_widget(Clear, area);
+use crate::ui::layout::centered_rect;
+use crate::ui::theme;
 
+pub fn draw(frame: &mut Frame) {
     let lines = vec![
         Line::from(Span::styled(
             "Git Control Tower — Keyboard Shortcuts",
             Style::default()
-                .fg(Color::Cyan)
+                .fg(theme::ACCENT)
                 .add_modifier(Modifier::BOLD),
         )),
         Line::from(""),
@@ -50,14 +49,20 @@ pub fn draw(frame: &mut Frame) {
         Line::from(""),
         Line::from(Span::styled(
             "Press ? or Esc to close",
-            Style::default().fg(Color::DarkGray),
+            Style::default().fg(theme::TEXT_DIM),
         )),
     ];
+
+    // Content height + 2 border rows — computed so the overlay never drifts
+    // out of sync when shortcuts are added or removed above.
+    let height = lines.len() as u16 + 2;
+    let area = centered_rect(60, height, frame.area());
+    frame.render_widget(Clear, area);
 
     let block = Block::default()
         .borders(Borders::ALL)
         .title(" Help ")
-        .border_style(Style::default().fg(Color::Cyan));
+        .border_style(Style::default().fg(theme::ACCENT));
 
     let paragraph = Paragraph::new(lines).block(block);
     frame.render_widget(paragraph, area);
@@ -67,24 +72,17 @@ fn section(name: &str) -> Line<'static> {
     Line::from(Span::styled(
         format!("  {name}"),
         Style::default()
-            .fg(Color::Yellow)
+            .fg(theme::WARNING)
             .add_modifier(Modifier::BOLD),
     ))
 }
 
 fn key_line(key: &str, desc: &str) -> Line<'static> {
     Line::from(vec![
-        Span::styled(format!("    {key:<14}"), Style::default().fg(Color::Green)),
+        Span::styled(
+            format!("    {key:<14}"),
+            Style::default().fg(theme::SUCCESS),
+        ),
         Span::raw(desc.to_string()),
     ])
-}
-
-fn centered_rect(percent_x: u16, height: u16, area: Rect) -> Rect {
-    let vertical = Layout::vertical([Constraint::Length(height)])
-        .flex(Flex::Center)
-        .split(area);
-    let horizontal = Layout::horizontal([Constraint::Percentage(percent_x)])
-        .flex(Flex::Center)
-        .split(vertical[0]);
-    horizontal[0]
 }

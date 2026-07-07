@@ -1,9 +1,11 @@
 use ratatui::{
     Frame,
-    layout::{Constraint, Flex, Layout, Rect},
-    style::{Color, Style},
+    style::Style,
     widgets::{Block, Borders, Clear, Paragraph, Wrap},
 };
+
+use crate::ui::layout::bottom_rect;
+use crate::ui::theme;
 
 const SUCCESS_TICKS: u32 = 38; // ~3 seconds at 80ms tick
 const ERROR_TICKS: u32 = 63; // ~5 seconds at 80ms tick
@@ -39,9 +41,9 @@ pub fn draw(frame: &mut Frame, notification: &Notification) {
     frame.render_widget(Clear, area);
 
     let color = if notification.is_error {
-        Color::Red
+        theme::ERROR
     } else {
-        Color::Green
+        theme::SUCCESS
     };
 
     let block = Block::default()
@@ -54,12 +56,4 @@ pub fn draw(frame: &mut Frame, notification: &Notification) {
         .wrap(Wrap { trim: false });
 
     frame.render_widget(paragraph, area);
-}
-
-fn bottom_rect(percent_x: u16, height: u16, area: Rect) -> Rect {
-    let vertical = Layout::vertical([Constraint::Min(0), Constraint::Length(height)]).split(area);
-    let horizontal = Layout::horizontal([Constraint::Percentage(percent_x)])
-        .flex(Flex::Center)
-        .split(vertical[1]);
-    horizontal[0]
 }
