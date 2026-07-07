@@ -29,6 +29,8 @@ pub fn draw(frame: &mut Frame) {
         Line::from(""),
         section("Main View"),
         key_line("j/k ↑/↓", "Navigate sidebar"),
+        key_line("→/←", "Focus PR detail / back"),
+        key_line("J/K", "Scroll PR detail (j/k when focused)"),
         key_line("Space", "Toggle selection"),
         key_line("a", "Select all merged"),
         key_line("d", "Delete branch/worktree"),

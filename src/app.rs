@@ -260,6 +260,14 @@ pub struct Inflight {
     pub wt_lists: HashSet<crate::git::types::RepoId>,
 }
 
+/// Which Main-view pane receives `j`/`k` input (issue #269).
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub enum PaneFocus {
+    #[default]
+    Sidebar,
+    Detail,
+}
+
 /// What the user is looking at: the main-view entry list and its
 /// cursor/filter/search/multi-select state, plus the scroll positions of the
 /// other views (issue #220).
@@ -277,6 +285,7 @@ pub struct ViewState {
     pub log_scroll: usize,
     pub history_scroll: usize,
     pub pr_detail_scroll: usize,
+    pub pane_focus: PaneFocus,
 }
 
 impl ViewState {
@@ -300,6 +309,18 @@ impl ViewState {
         // Clamp offset so list doesn't show blank space
         let max_offset = item_count.saturating_sub(visible_height);
         self.sidebar_offset = self.sidebar_offset.min(max_offset);
+    }
+
+    /// Clamp the PR-detail scroll so the last page stays visible. Called
+    /// during render (like `adjust_sidebar_offset`), where the viewport
+    /// height and the wrapped line count are known.
+    pub fn clamp_pr_detail_scroll(&mut self, visible_height: usize, total_lines: usize) {
+        if visible_height == 0 {
+            return;
+        }
+        self.pr_detail_scroll = self
+            .pr_detail_scroll
+            .min(total_lines.saturating_sub(visible_height));
     }
 
     pub fn filtered_entries(&self) -> Vec<&BranchEntry> {
@@ -442,6 +463,12 @@ pub struct PrCaches {
 }
 
 impl PrCaches {
+    /// Cached PR detail for `entry`, if the entry has a PR and it is cached.
+    pub fn detail_for(&self, entry: &BranchEntry) -> Option<&PrDetail> {
+        let pr_num = entry.pr_number()?;
+        self.detail.get(&(entry.repo_id.clone(), pr_num))
+    }
+
     pub fn current(&self, filter: MainFilter) -> &[PullRequest] {
         match filter {
             MainFilter::Local => &self.local,
@@ -736,13 +763,6 @@ impl App {
         self.view.snap_scroll_to_entry()
     }
 
-    /// Return the cached PR detail for the currently selected entry, if available.
-    pub fn selected_pr_detail(&self) -> Option<&PrDetail> {
-        let entry = self.selected_entry()?;
-        let pr_num = entry.pr_number()?;
-        self.prs.detail.get(&(entry.repo_id.clone(), pr_num))
-    }
-
     /// Signal that the selection changed. The actual detail fetches are
     /// deferred to the next `tick()`: ticks are starved while key events are
     /// pending (see `EventHandler`), so holding `j`/`k` coalesces to a single
@@ -847,7 +867,11 @@ impl App {
                 }
             }
             KeyCode::Esc => {
-                if !self.view.search_query.is_empty() {
+                if self.active_view == ActiveView::Main && self.view.pane_focus == PaneFocus::Detail
+                {
+                    // Peel the innermost layer first: focus back to the sidebar.
+                    self.view.pane_focus = PaneFocus::Sidebar;
+                } else if !self.view.search_query.is_empty() {
                     // Clear search filter and restore scroll
                     self.view.search_query.clear();
                     self.view.sidebar_scroll = self.view.search_pre_scroll;
@@ -862,9 +886,15 @@ impl App {
                     self.progress.quit_pressed = true;
                 }
             }
-            KeyCode::Char('l') => self.active_view = ActiveView::Log,
+            KeyCode::Char('l') => {
+                // Leaving the Main view drops detail-pane focus so j/k drive
+                // the sidebar again when the user comes back.
+                self.view.pane_focus = PaneFocus::Sidebar;
+                self.active_view = ActiveView::Log;
+            }
             KeyCode::Char('h') => {
                 if self.active_view != ActiveView::History {
+                    self.view.pane_focus = PaneFocus::Sidebar;
                     self.active_view = ActiveView::History;
                     self.view.history_scroll = 0;
                 }
@@ -875,6 +905,7 @@ impl App {
                 self.view.search_query.clear();
                 self.view.sidebar_scroll = 0;
                 self.view.sidebar_offset = 0;
+                self.view.pane_focus = PaneFocus::Sidebar;
                 self.rebuild_entries();
                 self.snap_scroll_to_entry();
                 if !self.prs.local_loaded {
@@ -888,6 +919,7 @@ impl App {
                 self.view.search_query.clear();
                 self.view.sidebar_scroll = 0;
                 self.view.sidebar_offset = 0;
+                self.view.pane_focus = PaneFocus::Sidebar;
                 self.rebuild_entries();
                 self.snap_scroll_to_entry();
                 if !self.prs.my_loaded {
@@ -901,6 +933,7 @@ impl App {
                 self.view.search_query.clear();
                 self.view.sidebar_scroll = 0;
                 self.view.sidebar_offset = 0;
+                self.view.pane_focus = PaneFocus::Sidebar;
                 self.rebuild_entries();
                 self.snap_scroll_to_entry();
                 if !self.prs.review_loaded {
@@ -942,6 +975,28 @@ impl App {
 
     fn handle_main_key(&mut self, code: KeyCode) {
         match code {
+            // Detail-pane focus and scrolling (issue #269). The focused-pane
+            // arms must precede the sidebar j/k arms below so focus decides
+            // which pane the keys drive.
+            KeyCode::Right => {
+                self.view.pane_focus = PaneFocus::Detail;
+            }
+            KeyCode::Left if self.view.pane_focus == PaneFocus::Detail => {
+                self.view.pane_focus = PaneFocus::Sidebar;
+            }
+            KeyCode::Char('j') | KeyCode::Down if self.view.pane_focus == PaneFocus::Detail => {
+                self.view.pr_detail_scroll = self.view.pr_detail_scroll.saturating_add(1);
+            }
+            KeyCode::Char('k') | KeyCode::Up if self.view.pane_focus == PaneFocus::Detail => {
+                self.view.pr_detail_scroll = self.view.pr_detail_scroll.saturating_sub(1);
+            }
+            // Shift+J/K scroll the detail pane regardless of focus.
+            KeyCode::Char('J') => {
+                self.view.pr_detail_scroll = self.view.pr_detail_scroll.saturating_add(1);
+            }
+            KeyCode::Char('K') => {
+                self.view.pr_detail_scroll = self.view.pr_detail_scroll.saturating_sub(1);
+            }
             KeyCode::Char('j') | KeyCode::Down => {
                 if let Some(next) = self.view.next_entry_index(self.view.sidebar_scroll) {
                     self.view.sidebar_scroll = next;
@@ -2760,5 +2815,157 @@ mod notify_tests {
         let n = app.overlays.notification.as_ref().unwrap();
         assert!(n.is_error);
         assert_eq!(n.message, "second");
+    }
+}
+
+#[cfg(test)]
+mod detail_scroll_tests {
+    use super::*;
+    use crate::config::Config;
+    use crate::git::types::{BranchEntry, PrState, PullRequest, RepoId};
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+    fn key(code: KeyCode) -> KeyEvent {
+        KeyEvent::new(code, KeyModifiers::NONE)
+    }
+
+    /// Two local entries so sidebar j/k would move the selection if it
+    /// (wrongly) received the key while the detail pane is focused.
+    fn app_with_entries() -> App {
+        let mut app = App::new(Config::default());
+        let repo = RepoId {
+            host: None,
+            owner: "o".into(),
+            name: "r".into(),
+        };
+        app.cross_repo.active_repo = Some(repo.clone());
+        let make_entry = |name: &str, num: u64| BranchEntry {
+            name: name.into(),
+            repo_id: repo.clone(),
+            local_branch: None,
+            worktree: None,
+            pull_request: Some(PullRequest {
+                number: num,
+                title: "t".into(),
+                author: "u".into(),
+                state: PrState::Open,
+                head_ref: name.into(),
+                updated_at: "2024".into(),
+                is_draft: false,
+                review_requests: vec![],
+                latest_reviews: vec![],
+                review_status: None,
+                repo_id: repo.clone(),
+            }),
+            git_status: None,
+        };
+        app.view.main_filter = MainFilter::MyPr;
+        app.view.entries = vec![make_entry("e1", 1), make_entry("e2", 2)];
+        app
+    }
+
+    #[test]
+    fn right_focuses_detail_left_and_esc_unfocus() {
+        let mut app = App::new(Config::default());
+        assert_eq!(app.view.pane_focus, PaneFocus::Sidebar);
+        app.handle_key(key(KeyCode::Right));
+        assert_eq!(app.view.pane_focus, PaneFocus::Detail);
+        app.handle_key(key(KeyCode::Left));
+        assert_eq!(app.view.pane_focus, PaneFocus::Sidebar);
+
+        app.handle_key(key(KeyCode::Right));
+        app.handle_key(key(KeyCode::Esc));
+        assert_eq!(app.view.pane_focus, PaneFocus::Sidebar);
+        // Unfocusing with Esc must not fall through to the quit logic.
+        assert!(!app.should_quit);
+    }
+
+    #[test]
+    fn focused_jk_scrolls_detail_not_sidebar() {
+        let mut app = app_with_entries();
+        app.handle_key(key(KeyCode::Right));
+        app.handle_key(key(KeyCode::Char('j')));
+        app.handle_key(key(KeyCode::Char('j')));
+        assert_eq!(app.view.pr_detail_scroll, 2);
+        assert_eq!(app.view.sidebar_scroll, 0);
+        app.handle_key(key(KeyCode::Char('k')));
+        assert_eq!(app.view.pr_detail_scroll, 1);
+    }
+
+    #[test]
+    fn shift_jk_scrolls_detail_from_sidebar_focus() {
+        let mut app = app_with_entries();
+        assert_eq!(app.view.pane_focus, PaneFocus::Sidebar);
+        app.handle_key(key(KeyCode::Char('J')));
+        assert_eq!(app.view.pr_detail_scroll, 1);
+        assert_eq!(app.view.sidebar_scroll, 0);
+        app.handle_key(key(KeyCode::Char('K')));
+        assert_eq!(app.view.pr_detail_scroll, 0);
+    }
+
+    #[test]
+    fn detail_scroll_saturates_at_zero() {
+        let mut app = App::new(Config::default());
+        app.handle_key(key(KeyCode::Char('K')));
+        assert_eq!(app.view.pr_detail_scroll, 0);
+    }
+
+    #[test]
+    fn sidebar_jk_resets_detail_scroll_via_selection_change() {
+        let mut app = app_with_entries();
+        app.handle_key(key(KeyCode::Char('J')));
+        assert_eq!(app.view.pr_detail_scroll, 1);
+        // Sidebar navigation changes the selection, which resets the scroll.
+        app.handle_key(key(KeyCode::Char('j')));
+        assert_eq!(app.view.pr_detail_scroll, 0);
+        assert_eq!(app.view.sidebar_scroll, 1);
+    }
+
+    #[test]
+    fn filter_switch_resets_focus() {
+        let mut app = App::new(Config::default());
+        app.handle_key(key(KeyCode::Right));
+        assert_eq!(app.view.pane_focus, PaneFocus::Detail);
+        app.handle_key(key(KeyCode::Char('1')));
+        assert_eq!(app.view.pane_focus, PaneFocus::Sidebar);
+    }
+
+    #[test]
+    fn leaving_main_view_resets_focus() {
+        let mut app = App::new(Config::default());
+        app.handle_key(key(KeyCode::Right));
+        assert_eq!(app.view.pane_focus, PaneFocus::Detail);
+        // Switch to the Log view and come back: focus must be gone so j/k
+        // drive the sidebar again.
+        app.handle_key(key(KeyCode::Char('l')));
+        app.handle_key(key(KeyCode::Esc));
+        assert_eq!(app.active_view, ActiveView::Main);
+        assert_eq!(app.view.pane_focus, PaneFocus::Sidebar);
+
+        app.handle_key(key(KeyCode::Right));
+        app.handle_key(key(KeyCode::Char('h')));
+        assert_eq!(app.view.pane_focus, PaneFocus::Sidebar);
+    }
+
+    #[test]
+    fn clamp_pr_detail_scroll_bounds() {
+        let mut view = ViewState::default();
+        view.pr_detail_scroll = 100;
+        view.clamp_pr_detail_scroll(10, 50);
+        assert_eq!(view.pr_detail_scroll, 40);
+
+        view.pr_detail_scroll = 5;
+        view.clamp_pr_detail_scroll(10, 50);
+        assert_eq!(view.pr_detail_scroll, 5);
+
+        // Content shorter than the viewport pins to the top.
+        view.pr_detail_scroll = 5;
+        view.clamp_pr_detail_scroll(10, 3);
+        assert_eq!(view.pr_detail_scroll, 0);
+
+        // Zero-height viewport is a no-op guard.
+        view.pr_detail_scroll = 7;
+        view.clamp_pr_detail_scroll(0, 50);
+        assert_eq!(view.pr_detail_scroll, 7);
     }
 }
