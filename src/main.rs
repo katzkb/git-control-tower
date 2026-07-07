@@ -722,6 +722,10 @@ async fn run(
     let mut app = App::new(config);
     app.verbose = verbose;
     let mut events = EventHandler::new(Duration::from_millis(80));
+    // Unbounded by design: the receiver drains fully every loop iteration,
+    // and senders are spawned tasks that must never block on the UI. The
+    // producer count — not the channel — is the real resource bound, and it
+    // is capped by `App::inflight` dedup plus the selection-fetch debounce.
     let (tx, mut rx) = mpsc::unbounded_channel::<AsyncResult>();
     let repo_info = startup(&mut app, config_warnings, &tx).await;
     let mut tasks = RunState { tx, repo_info };

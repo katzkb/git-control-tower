@@ -315,6 +315,10 @@ pub struct App {
     // handling in `run()`), drained once per loop iteration in `run()`.
     pub commands: VecDeque<Command>,
 
+    // Selection changed; detail fetches are flushed on the next tick
+    // (debounce — see request_details_for_selection).
+    selection_details_pending: bool,
+
     // Async-work dedup bookkeeping (fetches, reloads, worktree ops).
     pub inflight: Inflight,
     pub progress: ProgressTracker,
@@ -382,6 +386,7 @@ impl App {
             show_help: false,
             cd_path: None,
             commands: VecDeque::new(),
+            selection_details_pending: false,
             inflight: Inflight::default(),
             progress: ProgressTracker::default(),
             quit_pressed_during_progress: false,
@@ -425,6 +430,9 @@ impl App {
 
     pub fn tick(&mut self) {
         self.spinner_tick = self.spinner_tick.wrapping_add(1);
+        if std::mem::take(&mut self.selection_details_pending) {
+            self.flush_selection_details();
+        }
         // Don't auto-dismiss while a worktree operation is in progress
         if self.inflight.worktrees.is_empty()
             && let Some(ref mut n) = self.notification
@@ -615,9 +623,21 @@ impl App {
         self.pr_detail_cache.get(&(entry.repo_id.clone(), pr_num))
     }
 
-    /// Signal that the selection changed; request PR detail and git status as needed.
+    /// Signal that the selection changed. The actual detail fetches are
+    /// deferred to the next `tick()`: ticks are starved while key events are
+    /// pending (see `EventHandler`), so holding `j`/`k` coalesces to a single
+    /// fetch for the final selection ~80ms after scrolling settles, instead
+    /// of spawning a `gh`/`git` subprocess per row passed through.
     pub fn request_details_for_selection(&mut self) {
         self.pr_detail_scroll = 0;
+        self.selection_details_pending = true;
+    }
+
+    /// Queue the fetches the current selection needs (PR detail, git status,
+    /// cross-repo worktree list). Called from `tick()` once input settles;
+    /// recomputing from the *current* selection here is what discards the
+    /// intermediate targets of a rapid scroll.
+    fn flush_selection_details(&mut self) {
         let selected = self.selected_entry().cloned();
 
         if let Some(entry) = &selected {
@@ -2390,6 +2410,7 @@ mod wt_list_lazy_load_tests {
         }];
         app.snap_scroll_to_entry();
         app.request_details_for_selection();
+        app.tick(); // fetches are debounced to the next tick
         assert!(
             app.commands
                 .contains(&Command::LoadWorktreeList(other.clone()))
@@ -2423,6 +2444,7 @@ mod wt_list_lazy_load_tests {
         }];
         app.snap_scroll_to_entry();
         app.request_details_for_selection();
+        app.tick();
         assert!(
             !app.commands
                 .iter()
@@ -2484,6 +2506,103 @@ mod command_queue_tests {
                 .commands
                 .contains(&Command::FetchPrs(MainFilter::MyPr))
         );
+    }
+
+    fn pr_entry(name: &str, number: u64) -> BranchEntry {
+        use crate::git::types::{PrState, RepoId};
+        let repo = RepoId {
+            host: None,
+            owner: "o".into(),
+            name: "r".into(),
+        };
+        BranchEntry {
+            name: name.into(),
+            repo_id: repo.clone(),
+            local_branch: Some(crate::git::types::Branch {
+                name: name.into(),
+                is_current: false,
+                upstream: None,
+                is_merged: false,
+            }),
+            worktree: None,
+            pull_request: Some(PullRequest {
+                number,
+                title: "t".into(),
+                author: "u".into(),
+                state: PrState::Open,
+                head_ref: name.into(),
+                updated_at: "2024".into(),
+                is_draft: false,
+                review_requests: vec![],
+                latest_reviews: vec![],
+                review_status: None,
+                repo_id: repo,
+            }),
+            git_status: None,
+        }
+    }
+
+    fn app_with_pr_entries() -> App {
+        use crate::git::types::RepoId;
+        let mut app = App::new(Config::default());
+        app.active_repo = Some(RepoId {
+            host: None,
+            owner: "o".into(),
+            name: "r".into(),
+        });
+        app.entries = vec![pr_entry("a", 1), pr_entry("b", 2)];
+        app
+    }
+
+    #[test]
+    fn selection_detail_fetch_is_debounced_to_next_tick() {
+        let mut app = app_with_pr_entries();
+        app.request_details_for_selection();
+        assert!(app.commands.is_empty(), "no fetch before the debounce tick");
+        app.tick();
+        assert!(
+            app.commands
+                .iter()
+                .any(|c| matches!(c, Command::FetchPrDetail(_, 1)))
+        );
+    }
+
+    #[test]
+    fn rapid_selection_moves_coalesce_to_latest_target() {
+        let mut app = app_with_pr_entries();
+        // Two selection changes before any tick — like holding `j`.
+        app.request_details_for_selection();
+        app.sidebar_scroll = 1;
+        app.request_details_for_selection();
+        app.tick();
+        let fetches: Vec<u64> = app
+            .commands
+            .iter()
+            .filter_map(|c| match c {
+                Command::FetchPrDetail(_, n) => Some(*n),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(fetches, vec![2], "only the final selection is fetched");
+    }
+
+    #[test]
+    fn cached_detail_queues_no_fetch_after_tick() {
+        use crate::git::types::PrDetail;
+        let mut app = app_with_pr_entries();
+        let repo = app.entries[0].repo_id.clone();
+        app.pr_detail_cache.insert(
+            (repo, 1),
+            PrDetail {
+                number: 1,
+                body: String::new(),
+                additions: 0,
+                deletions: 0,
+            },
+        );
+        app.request_details_for_selection();
+        app.tick();
+        assert!(app.commands.is_empty());
     }
 
     fn pending(on_confirm: Command) -> PendingConfirm {
