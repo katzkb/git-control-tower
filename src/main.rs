@@ -29,7 +29,6 @@ use crate::event::{Event, EventHandler};
 use crate::git::command::{run_gh, run_git, run_git_in};
 use crate::git::parser::{parse_branches, parse_log, parse_worktrees};
 use crate::git::types::{GitStatus, PrDetail, PullRequest, RepoId, ReviewState, ReviewStatus};
-use crate::ui::notification::Notification;
 
 /// Args used for fetching commits in the Log view (startup + `r` refresh).
 const LOG_ARGS: &[&str] = &[
@@ -795,9 +794,7 @@ async fn startup(
         } else {
             String::new()
         };
-        app.overlays.notification = Some(Notification::error(format!(
-            "Config warning: {first}{suffix}"
-        )));
+        app.notify_error(format!("Config warning: {first}{suffix}"));
         app.verbose_errors
             .extend(config_warnings.iter().map(|w| format!("config: {w}")));
     }
@@ -929,8 +926,7 @@ fn handle_result(app: &mut App, result: AsyncResult) {
             error,
         } => {
             app.inflight.pr_detail.remove(&(repo_id, number));
-            app.overlays.notification =
-                Some(Notification::error(format!("Failed to load PR #{number}")));
+            app.notify_error(format!("Failed to load PR #{number}"));
             app.record_error(error);
         }
         AsyncResult::GitStatus { wt_path, status } => {
@@ -947,7 +943,7 @@ fn handle_result(app: &mut App, result: AsyncResult) {
         AsyncResult::GitStatusError(wt_path) => {
             app.inflight.git_status.remove(&wt_path);
             let msg = format!("git status failed for {wt_path}");
-            app.overlays.notification = Some(Notification::error(msg.clone()));
+            app.notify_error(msg.clone());
             app.record_error(msg);
         }
         AsyncResult::UserLogin(user) => {
@@ -962,9 +958,7 @@ fn handle_result(app: &mut App, result: AsyncResult) {
         }
         AsyncResult::UserLoginError(error_msg) => {
             app.raw.gh_user_load_failed = true;
-            app.overlays.notification = Some(Notification::error(
-                "Failed to load GitHub user — is `gh` authenticated?".to_string(),
-            ));
+            app.notify_error("Failed to load GitHub user — is `gh` authenticated?");
             app.record_error(error_msg);
         }
         AsyncResult::LocalPrList(prs, errors) => {
@@ -983,14 +977,12 @@ fn handle_result(app: &mut App, result: AsyncResult) {
         } => {
             app.inflight.worktrees.remove(&wt_path);
             if copy_errors.is_empty() {
-                app.overlays.notification = Some(Notification::success(format!(
-                    "Worktree created: {wt_path}"
-                )));
+                app.notify_success(format!("Worktree created: {wt_path}"));
             } else {
-                app.overlays.notification = Some(Notification::success(format!(
+                app.notify_success(format!(
                     "Worktree created: {wt_path} (copy errors: {})",
                     copy_errors.len()
-                )));
+                ));
                 for e in copy_errors {
                     app.record_error(e);
                 }
@@ -1014,7 +1006,7 @@ fn handle_result(app: &mut App, result: AsyncResult) {
         }
         AsyncResult::WtCreateError { wt_path, message } => {
             app.inflight.worktrees.remove(&wt_path);
-            app.overlays.notification = Some(Notification::error(message));
+            app.notify_error(message);
         }
         AsyncResult::OpStarted { op_id, label } => {
             app.progress.insert(op_id, OpProgress::new(label));
@@ -1050,7 +1042,7 @@ fn handle_result(app: &mut App, result: AsyncResult) {
                 } else {
                     format!("Deleted {}", success_parts.join(", "))
                 };
-                app.overlays.notification = Some(Notification::success(msg));
+                app.notify_success(msg);
             } else {
                 let short: Vec<String> = failures
                     .iter()
@@ -1065,7 +1057,7 @@ fn handle_result(app: &mut App, result: AsyncResult) {
                         short.join("; ")
                     )
                 };
-                app.overlays.notification = Some(Notification::error(summary));
+                app.notify_error(summary);
                 for err in failures {
                     app.record_error(err);
                 }
@@ -1109,14 +1101,12 @@ fn handle_result(app: &mut App, result: AsyncResult) {
             }
         }
         AsyncResult::BranchCreated { name, source } => {
-            app.overlays.notification = Some(Notification::success(format!(
-                "Created branch '{name}' from '{source}'"
-            )));
+            app.notify_success(format!("Created branch '{name}' from '{source}'"));
             app.push_command(Command::ReloadBranches);
         }
         AsyncResult::BranchCreateError(err_str) => {
             let short = err_str.lines().next().unwrap_or(&err_str).to_string();
-            app.overlays.notification = Some(Notification::error(short));
+            app.notify_error(short);
             app.record_error(err_str);
         }
     }
@@ -1243,8 +1233,7 @@ fn dispatch_command(app: &mut App, cmd: Command, tasks: &mut RunState) {
                 Some(p) => p,
                 None if is_active => std::env::current_dir().unwrap_or_default(),
                 None => {
-                    app.overlays.notification =
-                        Some(Notification::error(format!("{target_repo} not cloned")));
+                    app.notify_error(format!("{target_repo} not cloned"));
                     return;
                 }
             };
@@ -1361,8 +1350,7 @@ fn dispatch_command(app: &mut App, cmd: Command, tasks: &mut RunState) {
             }
 
             if work.is_empty() {
-                app.overlays.notification =
-                    Some(Notification::error("Nothing to delete".to_string()));
+                app.notify_error("Nothing to delete");
             } else {
                 let ids: Vec<u64> = app.progress.allocate_ids(work.len()).collect();
                 let mut set: JoinSet<DeleteOpResult> = JoinSet::new();
@@ -1650,7 +1638,7 @@ fn report_fetch_errors(app: &mut App, context: &str, errors: Vec<String>) {
         String::new()
     };
     let toast = format!("{context}: {first}{suffix}");
-    app.overlays.notification = Some(Notification::error(toast));
+    app.notify_error(toast);
     for e in errors {
         app.record_error(e);
     }
