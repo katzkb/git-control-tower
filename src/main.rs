@@ -803,7 +803,7 @@ async fn startup(
     }
     // Global (home-dir) config layers, used to resolve a per-target-repo
     // effective config for cross-repo worktree operations.
-    app.global_layers = config::load_global_layers();
+    app.cross_repo.global_layers = config::load_global_layers();
 
     let active_root = run_git(&["rev-parse", "--show-toplevel"])
         .await
@@ -813,16 +813,17 @@ async fn startup(
         .await
         .ok()
         .and_then(|url| extract_repo_info(url.trim()));
-    app.active_repo = active_id.clone();
-    app.clone_root = match (&active_root, &active_id) {
+    app.cross_repo.active_repo = active_id.clone();
+    app.cross_repo.clone_root = match (&active_root, &active_id) {
         (Some(p), Some(id)) => infer_clone_root(p, id),
         _ => None,
     }
     .or_else(|| app.config.workspace.clone_root_expanded());
 
     // Seed repos with the active repo immediately (local_path and resolved flag known now).
-    if let Some(id) = app.active_repo.clone() {
-        app.repos
+    if let Some(id) = app.cross_repo.active_repo.clone() {
+        app.cross_repo
+            .repos
             .entry(id.clone())
             .or_insert_with(|| crate::git::types::RepoMeta {
                 local_path: active_root.clone(),
@@ -906,7 +907,7 @@ fn apply_pr_list(
         }
     }
     report_fetch_errors(app, "PR fetch failed", errors);
-    seed_repos_from_prs(&mut app.repos, &prs);
+    seed_repos_from_prs(&mut app.cross_repo.repos, &prs);
     match filter {
         MainFilter::Local => {
             app.local_prs = prs;
@@ -1008,7 +1009,7 @@ fn handle_result(app: &mut App, result: AsyncResult) {
             app.push_command(Command::ReloadBranches);
             // Cross-repo: invalidate worktree-list cache for target so next selection re-fetches.
             if let Some(repo_id) = target_repo {
-                app.wt_lists_per_repo.remove(&repo_id);
+                app.cross_repo.wt_lists_per_repo.remove(&repo_id);
             }
             if app.confirm_dialog.is_none() {
                 app.confirm_dialog = Some(crate::app::PendingConfirm {
@@ -1096,7 +1097,7 @@ fn handle_result(app: &mut App, result: AsyncResult) {
         }
         AsyncResult::WtListLoaded { repo_id, list } => {
             app.inflight.wt_lists.remove(&repo_id);
-            app.wt_lists_per_repo.insert(repo_id, list);
+            app.cross_repo.wt_lists_per_repo.insert(repo_id, list);
             app.rebuild_entries();
             app.snap_scroll_to_entry();
         }
@@ -1237,13 +1238,14 @@ fn dispatch_command(app: &mut App, cmd: Command, tasks: &mut RunState) {
                 return;
             };
             let target_repo = entry.repo_id.clone();
-            let active_repo = app.active_repo.clone();
+            let active_repo = app.cross_repo.active_repo.clone();
             let is_active = active_repo.as_ref() == Some(&target_repo);
 
-            // The active repo's root is already cached in `app.repos` (seeded
+            // The active repo's root is already cached in `app.cross_repo.repos` (seeded
             // at startup), so this never needs a blocking `rev-parse` call —
             // cross-repo targets rely on the same cached `local_path` too.
             let target_root: std::path::PathBuf = match app
+                .cross_repo
                 .repos
                 .get(&target_repo)
                 .and_then(|m| m.local_path.clone())
@@ -1262,7 +1264,7 @@ fn dispatch_command(app: &mut App, cmd: Command, tasks: &mut RunState) {
             let cfg = if is_active {
                 app.config.clone()
             } else {
-                config::resolve_config(&app.global_layers, Some(&target_root))
+                config::resolve_config(&app.cross_repo.global_layers, Some(&target_root))
             };
 
             let wt_path = cfg.worktree_path_for(&target_root, &entry.repo_id.name, &branch_name);
@@ -1338,7 +1340,7 @@ fn dispatch_command(app: &mut App, cmd: Command, tasks: &mut RunState) {
             }
             let mut work: Vec<Work> = Vec::with_capacity(selected.len());
             let mut wt_paths_claimed: Vec<String> = Vec::new();
-            let active_repo = app.active_repo.clone();
+            let active_repo = app.cross_repo.active_repo.clone();
             for name in selected {
                 let Some(entry) = app
                     .entries
@@ -1495,7 +1497,12 @@ fn dispatch_command(app: &mut App, cmd: Command, tasks: &mut RunState) {
             if app.inflight.wt_lists.contains(&repo_id) {
                 return;
             }
-            let Some(path) = app.repos.get(&repo_id).and_then(|m| m.local_path.clone()) else {
+            let Some(path) = app
+                .cross_repo
+                .repos
+                .get(&repo_id)
+                .and_then(|m| m.local_path.clone())
+            else {
                 return;
             };
             app.inflight.wt_lists.insert(repo_id.clone());

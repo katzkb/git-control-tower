@@ -256,6 +256,72 @@ pub struct Inflight {
     pub wt_lists: HashSet<crate::git::types::RepoId>,
 }
 
+/// Cross-repo context: active repo, clone root, lazily-populated per-repo
+/// metadata and worktree lists, and the merged global config layers used to
+/// resolve per-repo effective configs (issue #220).
+#[derive(Default)]
+pub struct CrossRepoState {
+    /// Set at startup; `None` when startup couldn't infer a repo.
+    pub active_repo: Option<crate::git::types::RepoId>,
+    pub clone_root: Option<std::path::PathBuf>,
+    /// Per-repo metadata (populated lazily as repos are selected).
+    pub repos: std::collections::HashMap<crate::git::types::RepoId, crate::git::types::RepoMeta>,
+    /// Worktree lists per repo (populated lazily as cross-repo PRs are selected).
+    pub wt_lists_per_repo:
+        std::collections::HashMap<crate::git::types::RepoId, Vec<crate::git::types::Worktree>>,
+    /// Merged global config layers (home-dir files only), used to resolve a
+    /// per-repo effective config for cross-repo worktree operations.
+    pub global_layers: toml::Table,
+}
+
+impl CrossRepoState {
+    /// Hosts the user can reasonably be expected to have PRs on, derived from
+    /// the origin remotes of every repo we have metadata for. Empty repo map
+    /// falls back to `[None]` (default host = github.com) so cross-repo
+    /// aggregation behaves identically to the single-host case before any
+    /// repo metadata is collected. The output is unique-by-host and sorted
+    /// (None first) for deterministic ordering.
+    pub fn known_hosts(&self) -> Vec<Option<String>> {
+        use std::collections::BTreeSet;
+        let set: BTreeSet<Option<String>> = self.repos.keys().map(|id| id.host.clone()).collect();
+        if set.is_empty() {
+            vec![None]
+        } else {
+            set.into_iter().collect()
+        }
+    }
+
+    /// Effective config for a specific repo root: the global layers overlaid
+    /// with `<repo_root>/.gct.toml`. Used for cross-repo worktree operations so
+    /// the target repo's own `.gct.toml` applies (not the launching repo's).
+    pub fn resolve_repo_config(&self, repo_root: &std::path::Path) -> crate::config::Config {
+        crate::config::resolve_config(&self.global_layers, Some(repo_root))
+    }
+
+    /// Resolve a repo's local clone path under `clone_root`. Idempotent: only
+    /// hits the filesystem once per repo. Sets `local_path_resolved = true`
+    /// regardless of outcome to prevent re-tries.
+    pub fn resolve_local_path(&mut self, id: &crate::git::types::RepoId) {
+        // Snapshot clone_root first (no borrow on self.repos held).
+        let root = self.clone_root.clone();
+        let Some(meta) = self.repos.get_mut(id) else {
+            return;
+        };
+        if meta.local_path_resolved {
+            return;
+        }
+        meta.local_path_resolved = true;
+        let Some(root) = root else {
+            return;
+        };
+        let host = id.host.as_deref().unwrap_or("github.com");
+        let candidate = root.join(host).join(&id.owner).join(&id.name);
+        if candidate.is_dir() {
+            meta.local_path = Some(candidate);
+        }
+    }
+}
+
 pub struct App {
     pub active_view: ActiveView,
     pub should_quit: bool,
@@ -330,20 +396,8 @@ pub struct App {
     // Loaded TOML config (protected_branches, worktree, …) for the active repo.
     pub config: crate::config::Config,
 
-    // Merged global config layers (home-dir files only), used to resolve a
-    // per-repo effective config for cross-repo worktree operations.
-    pub global_layers: toml::Table,
-
-    // Cross-repo context (set at startup)
-    pub active_repo: Option<crate::git::types::RepoId>,
-    pub clone_root: Option<std::path::PathBuf>,
-
-    // Per-repo metadata (populated lazily as repos are selected)
-    pub repos: std::collections::HashMap<crate::git::types::RepoId, crate::git::types::RepoMeta>,
-
-    // Worktree lists per repo (populated lazily as cross-repo PRs are selected)
-    pub wt_lists_per_repo:
-        std::collections::HashMap<crate::git::types::RepoId, Vec<crate::git::types::Worktree>>,
+    // Cross-repo context and per-repo metadata (issue #220).
+    pub cross_repo: CrossRepoState,
 }
 
 impl App {
@@ -391,11 +445,7 @@ impl App {
             branch_selected: HashSet::new(),
             spinner_tick: 0,
             config,
-            global_layers: toml::Table::new(),
-            active_repo: None,
-            clone_root: None,
-            repos: HashMap::new(),
-            wt_lists_per_repo: HashMap::new(),
+            cross_repo: CrossRepoState::default(),
         }
     }
 
@@ -482,13 +532,13 @@ impl App {
         // produces a sentinel empty RepoId. It can't collide with any real PR's repo_id,
         // so cross-repo entries are still keyed correctly and worktree injection no-ops
         // safely.
-        let active = self.active_repo.clone().unwrap_or_default();
+        let active = self.cross_repo.active_repo.clone().unwrap_or_default();
         self.entries = crate::data::merge_entries(
             &active,
             &self.branches,
             &self.worktrees,
             self.current_prs(),
-            &self.wt_lists_per_repo,
+            &self.cross_repo.wt_lists_per_repo,
         );
     }
 
@@ -658,12 +708,16 @@ impl App {
 
         // Signal lazy load of cross-repo worktree list if not yet fetched (use the same `selected` binding)
         if let Some(entry) = &selected
-            && self.active_repo.as_ref() != Some(&entry.repo_id)
-            && !self.wt_lists_per_repo.contains_key(&entry.repo_id)
+            && self.cross_repo.active_repo.as_ref() != Some(&entry.repo_id)
+            && !self
+                .cross_repo
+                .wt_lists_per_repo
+                .contains_key(&entry.repo_id)
             && !self.inflight.wt_lists.contains(&entry.repo_id)
         {
             self.resolve_local_path(&entry.repo_id);
             if self
+                .cross_repo
                 .repos
                 .get(&entry.repo_id)
                 .and_then(|m| m.local_path.as_ref())
@@ -803,7 +857,7 @@ impl App {
                     // detail pane will refetch on the next selection.
                     self.pr_detail_cache.clear();
                     // Invalidate cross-repo worktree list caches so they re-fetch.
-                    self.wt_lists_per_repo.clear();
+                    self.cross_repo.wt_lists_per_repo.clear();
                     self.inflight.wt_lists.clear();
                     // Signal branches/worktrees reload + PR fetch
                     self.push_command(Command::ReloadBranches);
@@ -844,7 +898,7 @@ impl App {
                 if let Some(entry) = self.selected_entry().cloned()
                     && !entry.is_current()
                     && !self.is_protected_branch(&entry.name)
-                    && self.active_repo.as_ref() == Some(&entry.repo_id)
+                    && self.cross_repo.active_repo.as_ref() == Some(&entry.repo_id)
                 {
                     if self.branch_selected.contains(&entry.name) {
                         self.branch_selected.remove(&entry.name);
@@ -861,7 +915,7 @@ impl App {
                         (e.is_merged() || e.pr_is_merged())
                             && !e.is_current()
                             && !self.is_protected_branch(&e.name)
-                            && self.active_repo.as_ref() == Some(&e.repo_id)
+                            && self.cross_repo.active_repo.as_ref() == Some(&e.repo_id)
                     })
                     .map(|e| e.name.clone())
                     .collect();
@@ -957,12 +1011,13 @@ impl App {
                 {
                     return;
                 }
-                let is_active = self.active_repo.as_ref() == Some(&entry.repo_id);
+                let is_active = self.cross_repo.active_repo.as_ref() == Some(&entry.repo_id);
                 let clone_path: Option<std::path::PathBuf> = if is_active {
                     None
                 } else {
                     self.resolve_local_path(&entry.repo_id);
-                    self.repos
+                    self.cross_repo
+                        .repos
                         .get(&entry.repo_id)
                         .and_then(|m| m.local_path.clone())
                 };
@@ -1110,13 +1165,14 @@ impl App {
             Some(e) => e,
             None => return,
         };
-        let is_active_repo = self.active_repo.as_ref() == Some(&entry.repo_id);
+        let is_active_repo = self.cross_repo.active_repo.as_ref() == Some(&entry.repo_id);
         let clone_path: Option<std::path::PathBuf> = if is_active_repo {
             None // active repo runs in CWD, no clone path needed
         } else {
             // cross-repo: resolve once, then read
             self.resolve_local_path(&entry.repo_id);
-            self.repos
+            self.cross_repo
+                .repos
                 .get(&entry.repo_id)
                 .and_then(|m| m.local_path.clone())
         };
@@ -1183,6 +1239,7 @@ impl App {
 
         if cross_repo_no_clone {
             let hint_root = self
+                .cross_repo
                 .clone_root
                 .as_ref()
                 .map(|p| p.display().to_string())
@@ -1372,20 +1429,8 @@ impl App {
         self.config.protected_branches.iter().any(|b| b == name)
     }
 
-    /// Hosts the user can reasonably be expected to have PRs on, derived from
-    /// the origin remotes of every repo we have metadata for. Empty repo map
-    /// falls back to `[None]` (default host = github.com) so cross-repo
-    /// aggregation behaves identically to the single-host case before any
-    /// repo metadata is collected. The output is unique-by-host and sorted
-    /// (None first) for deterministic ordering.
     pub fn known_hosts(&self) -> Vec<Option<String>> {
-        use std::collections::BTreeSet;
-        let set: BTreeSet<Option<String>> = self.repos.keys().map(|id| id.host.clone()).collect();
-        if set.is_empty() {
-            vec![None]
-        } else {
-            set.into_iter().collect()
-        }
+        self.cross_repo.known_hosts()
     }
 
     /// Remember a background-operation error for the error list shown in
@@ -1398,34 +1443,12 @@ impl App {
         }
     }
 
-    /// Effective config for a specific repo root: the global layers overlaid
-    /// with `<repo_root>/.gct.toml`. Used for cross-repo worktree operations so
-    /// the target repo's own `.gct.toml` applies (not the launching repo's).
     pub fn resolve_repo_config(&self, repo_root: &std::path::Path) -> crate::config::Config {
-        crate::config::resolve_config(&self.global_layers, Some(repo_root))
+        self.cross_repo.resolve_repo_config(repo_root)
     }
 
-    /// Resolve a repo's local clone path under `clone_root`. Idempotent: only
-    /// hits the filesystem once per repo. Sets `local_path_resolved = true`
-    /// regardless of outcome to prevent re-tries.
     pub fn resolve_local_path(&mut self, id: &crate::git::types::RepoId) {
-        // Snapshot clone_root first (no borrow on self.repos held).
-        let root = self.clone_root.clone();
-        let Some(meta) = self.repos.get_mut(id) else {
-            return;
-        };
-        if meta.local_path_resolved {
-            return;
-        }
-        meta.local_path_resolved = true;
-        let Some(root) = root else {
-            return;
-        };
-        let host = id.host.as_deref().unwrap_or("github.com");
-        let candidate = root.join(host).join(&id.owner).join(&id.name);
-        if candidate.is_dir() {
-            meta.local_path = Some(candidate);
-        }
+        self.cross_repo.resolve_local_path(id)
     }
 }
 
@@ -1738,7 +1761,7 @@ mod known_hosts_tests {
     fn known_hosts_dedups_multiple_repos_per_host() {
         let mut app = App::new(Config::default());
         for (owner, name) in [("a", "x"), ("b", "y"), ("c", "z")] {
-            app.repos.insert(
+            app.cross_repo.repos.insert(
                 RepoId {
                     host: None,
                     owner: owner.into(),
@@ -1761,7 +1784,7 @@ mod known_hosts_tests {
             (Some("ghe.example.com"), "team", "infra"),
             (Some("ghe.other.com"), "alice", "tools"),
         ] {
-            app.repos.insert(
+            app.cross_repo.repos.insert(
                 RepoId {
                     host: host.map(|s| s.to_string()),
                     owner: owner.into(),
@@ -1797,13 +1820,13 @@ mod resolve_local_path_tests {
         std::fs::create_dir_all(&host_dir).unwrap();
 
         let mut app = App::new(Config::default());
-        app.clone_root = Some(tmp.path().to_path_buf());
+        app.cross_repo.clone_root = Some(tmp.path().to_path_buf());
         let id = RepoId {
             host: None,
             owner: "owner".into(),
             name: "name".into(),
         };
-        app.repos.insert(
+        app.cross_repo.repos.insert(
             id.clone(),
             crate::git::types::RepoMeta {
                 local_path: None,
@@ -1811,7 +1834,7 @@ mod resolve_local_path_tests {
             },
         );
         app.resolve_local_path(&id);
-        let meta = app.repos.get(&id).unwrap();
+        let meta = app.cross_repo.repos.get(&id).unwrap();
         assert!(meta.local_path_resolved);
         assert_eq!(meta.local_path.as_ref().unwrap(), &host_dir);
     }
@@ -1822,13 +1845,13 @@ mod resolve_local_path_tests {
         use crate::git::types::RepoId;
         let tmp = tempfile::tempdir().unwrap();
         let mut app = App::new(Config::default());
-        app.clone_root = Some(tmp.path().to_path_buf());
+        app.cross_repo.clone_root = Some(tmp.path().to_path_buf());
         let id = RepoId {
             host: None,
             owner: "x".into(),
             name: "y".into(),
         };
-        app.repos.insert(
+        app.cross_repo.repos.insert(
             id.clone(),
             crate::git::types::RepoMeta {
                 local_path: None,
@@ -1836,7 +1859,7 @@ mod resolve_local_path_tests {
             },
         );
         app.resolve_local_path(&id);
-        let meta = app.repos.get(&id).unwrap();
+        let meta = app.cross_repo.repos.get(&id).unwrap();
         assert!(meta.local_path_resolved);
         assert!(meta.local_path.is_none());
     }
@@ -1863,7 +1886,7 @@ mod cursor_skip_tests {
             owner: "b".into(),
             name: "y".into(),
         };
-        app.active_repo = Some(active.clone());
+        app.cross_repo.active_repo = Some(active.clone());
         app.main_filter = MainFilter::ReviewRequested;
         let make_pr = |num: u64, head: &str, repo: &RepoId| PullRequest {
             number: num,
@@ -1935,7 +1958,7 @@ mod sidebar_rows_tests {
             owner: "b".into(),
             name: "r2".into(),
         };
-        app.active_repo = Some(active.clone());
+        app.cross_repo.active_repo = Some(active.clone());
         app.main_filter = MainFilter::ReviewRequested;
         let make_pr = |num: u64, head: &str, repo: &RepoId| PullRequest {
             number: num,
@@ -1992,7 +2015,7 @@ mod sidebar_rows_tests {
             owner: "a".into(),
             name: "r1".into(),
         };
-        app.active_repo = Some(active.clone());
+        app.cross_repo.active_repo = Some(active.clone());
         app.main_filter = MainFilter::ReviewRequested;
         let make_pr = |num: u64, head: &str| PullRequest {
             number: num,
@@ -2046,7 +2069,7 @@ mod sidebar_rows_tests {
             owner: "a".into(),
             name: "r1".into(),
         };
-        app.active_repo = Some(active.clone());
+        app.cross_repo.active_repo = Some(active.clone());
         app.main_filter = MainFilter::Local;
         // Local mode: filtered_entries requires has_local. Give entries a local branch.
         let make_branch = |name: &str| crate::git::types::Branch {
@@ -2154,8 +2177,8 @@ mod action_menu_cross_repo_tests {
             owner: "b".into(),
             name: "y".into(),
         };
-        app.active_repo = Some(active.clone());
-        app.repos.insert(
+        app.cross_repo.active_repo = Some(active.clone());
+        app.cross_repo.repos.insert(
             other.clone(),
             RepoMeta {
                 local_path: None,
@@ -2213,8 +2236,8 @@ mod action_menu_cross_repo_tests {
         let tmp = tempfile::tempdir().unwrap();
         let clone_path = tmp.path().join("github.com").join("b").join("y");
         std::fs::create_dir_all(&clone_path).unwrap();
-        app.active_repo = Some(active.clone());
-        app.repos.insert(
+        app.cross_repo.active_repo = Some(active.clone());
+        app.cross_repo.repos.insert(
             other.clone(),
             RepoMeta {
                 local_path: Some(clone_path),
@@ -2265,7 +2288,7 @@ mod action_menu_cross_repo_tests {
             owner: "b".into(),
             name: "y".into(),
         };
-        app.active_repo = Some(active);
+        app.cross_repo.active_repo = Some(active);
         app.entries = vec![BranchEntry {
             name: "feat".into(),
             repo_id: other.clone(),
@@ -2301,7 +2324,7 @@ mod action_menu_cross_repo_tests {
             owner: "other".into(),
             name: "y".into(),
         };
-        app.active_repo = Some(active.clone());
+        app.cross_repo.active_repo = Some(active.clone());
 
         // Active repo has a local branch called feature/auth
         let active_entry = BranchEntry {
@@ -2376,9 +2399,9 @@ mod wt_list_lazy_load_tests {
             owner: "b".into(),
             name: "y".into(),
         };
-        app.active_repo = Some(active);
-        app.clone_root = Some(tmp.path().to_path_buf());
-        app.repos.insert(
+        app.cross_repo.active_repo = Some(active);
+        app.cross_repo.clone_root = Some(tmp.path().to_path_buf());
+        app.cross_repo.repos.insert(
             other.clone(),
             RepoMeta {
                 local_path: None,
@@ -2425,7 +2448,7 @@ mod wt_list_lazy_load_tests {
             owner: "a".into(),
             name: "x".into(),
         };
-        app.active_repo = Some(active.clone());
+        app.cross_repo.active_repo = Some(active.clone());
         let make_branch = |name: &str| crate::git::types::Branch {
             name: name.into(),
             is_current: false,
@@ -2543,7 +2566,7 @@ mod command_queue_tests {
     fn app_with_pr_entries() -> App {
         use crate::git::types::RepoId;
         let mut app = App::new(Config::default());
-        app.active_repo = Some(RepoId {
+        app.cross_repo.active_repo = Some(RepoId {
             host: None,
             owner: "o".into(),
             name: "r".into(),
