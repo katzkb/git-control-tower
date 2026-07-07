@@ -236,6 +236,26 @@ impl ProgressTracker {
     }
 }
 
+/// All async-work dedup state, in one place (issue #236).
+///
+/// At dispatch time the `HashSet`-tracked fetches are *dropped* when already
+/// inflight (a duplicate fetch is pointless), while the two reload bools use
+/// *requeue-if-busy* (a reload requested mid-reload must still produce a
+/// fresh fetch afterwards).
+#[derive(Default)]
+pub struct Inflight {
+    pub pr_detail: HashSet<(crate::git::types::RepoId, u64)>,
+    /// Worktree paths with a running `git status` load.
+    pub git_status: HashSet<String>,
+    pub branches_reload: bool,
+    pub commits_reload: bool,
+    /// Worktree paths with an in-flight create/delete, gated per-path so
+    /// unrelated worktrees stay actionable in the UI while one is running.
+    pub worktrees: HashSet<String>,
+    /// Repos with a running cross-repo worktree-list load.
+    pub wt_lists: HashSet<crate::git::types::RepoId>,
+}
+
 pub struct App {
     pub active_view: ActiveView,
     pub should_quit: bool,
@@ -295,9 +315,12 @@ pub struct App {
     // handling in `run()`), drained once per loop iteration in `run()`.
     pub commands: VecDeque<Command>,
 
-    /// Worktree paths with an in-flight create/delete, gated per-path so unrelated
-    /// worktrees stay actionable in the UI while one is still running.
-    pub wt_inflight: HashSet<String>,
+    // Selection changed; detail fetches are flushed on the next tick
+    // (debounce — see request_details_for_selection).
+    selection_details_pending: bool,
+
+    // Async-work dedup bookkeeping (fetches, reloads, worktree ops).
+    pub inflight: Inflight,
     pub progress: ProgressTracker,
     pub quit_pressed_during_progress: bool,
     pub branch_selected: HashSet<String>,
@@ -322,9 +345,6 @@ pub struct App {
     // Worktree lists per repo (populated lazily as cross-repo PRs are selected)
     pub wt_lists_per_repo:
         std::collections::HashMap<crate::git::types::RepoId, Vec<crate::git::types::Worktree>>,
-
-    // Cross-repo worktree list lazy-load state
-    pub wt_list_inflight: HashSet<crate::git::types::RepoId>,
 }
 
 impl App {
@@ -366,7 +386,8 @@ impl App {
             show_help: false,
             cd_path: None,
             commands: VecDeque::new(),
-            wt_inflight: HashSet::new(),
+            selection_details_pending: false,
+            inflight: Inflight::default(),
             progress: ProgressTracker::default(),
             quit_pressed_during_progress: false,
             branch_selected: HashSet::new(),
@@ -377,7 +398,6 @@ impl App {
             clone_root: None,
             repos: HashMap::new(),
             wt_lists_per_repo: HashMap::new(),
-            wt_list_inflight: HashSet::new(),
         }
     }
 
@@ -410,8 +430,11 @@ impl App {
 
     pub fn tick(&mut self) {
         self.spinner_tick = self.spinner_tick.wrapping_add(1);
+        if std::mem::take(&mut self.selection_details_pending) {
+            self.flush_selection_details();
+        }
         // Don't auto-dismiss while a worktree operation is in progress
-        if self.wt_inflight.is_empty()
+        if self.inflight.worktrees.is_empty()
             && let Some(ref mut n) = self.notification
         {
             if n.ticks_remaining > 0 {
@@ -600,9 +623,21 @@ impl App {
         self.pr_detail_cache.get(&(entry.repo_id.clone(), pr_num))
     }
 
-    /// Signal that the selection changed; request PR detail and git status as needed.
+    /// Signal that the selection changed. The actual detail fetches are
+    /// deferred to the next `tick()`: ticks are starved while key events are
+    /// pending (see `EventHandler`), so holding `j`/`k` coalesces to a single
+    /// fetch for the final selection ~80ms after scrolling settles, instead
+    /// of spawning a `gh`/`git` subprocess per row passed through.
     pub fn request_details_for_selection(&mut self) {
         self.pr_detail_scroll = 0;
+        self.selection_details_pending = true;
+    }
+
+    /// Queue the fetches the current selection needs (PR detail, git status,
+    /// cross-repo worktree list). Called from `tick()` once input settles;
+    /// recomputing from the *current* selection here is what discards the
+    /// intermediate targets of a rapid scroll.
+    fn flush_selection_details(&mut self) {
         let selected = self.selected_entry().cloned();
 
         if let Some(entry) = &selected {
@@ -627,7 +662,7 @@ impl App {
         if let Some(entry) = &selected
             && self.active_repo.as_ref() != Some(&entry.repo_id)
             && !self.wt_lists_per_repo.contains_key(&entry.repo_id)
-            && !self.wt_list_inflight.contains(&entry.repo_id)
+            && !self.inflight.wt_lists.contains(&entry.repo_id)
         {
             self.resolve_local_path(&entry.repo_id);
             if self
@@ -771,7 +806,7 @@ impl App {
                     self.pr_detail_cache.clear();
                     // Invalidate cross-repo worktree list caches so they re-fetch.
                     self.wt_lists_per_repo.clear();
-                    self.wt_list_inflight.clear();
+                    self.inflight.wt_lists.clear();
                     // Signal branches/worktrees reload + PR fetch
                     self.push_command(Command::ReloadBranches);
                     self.push_command(Command::FetchPrs(self.main_filter));
@@ -902,7 +937,7 @@ impl App {
                 } else if let Some(entry) = self.selected_entry().cloned()
                     && let Some(wt_path) = entry.worktree_path()
                     && !entry.is_current()
-                    && !self.wt_inflight.contains(wt_path)
+                    && !self.inflight.worktrees.contains(wt_path)
                 {
                     let path = wt_path.to_string();
                     self.confirm_dialog = Some(PendingConfirm {
@@ -954,7 +989,7 @@ impl App {
                         &entry.name,
                     )
                 };
-                if self.wt_inflight.contains(&wt_path) {
+                if self.inflight.worktrees.contains(&wt_path) {
                     return;
                 }
                 self.push_command(Command::CreateWorktree(
@@ -1123,7 +1158,7 @@ impl App {
             && !cross_repo_no_clone
             && wt_path_for_inflight
                 .as_deref()
-                .map(|p| !self.wt_inflight.contains(p))
+                .map(|p| !self.inflight.worktrees.contains(p))
                 .unwrap_or(false);
         if can_create_wt {
             items.push(ActionItem::CreateWorktree);
@@ -1133,7 +1168,7 @@ impl App {
         if is_active_repo
             && let Some(wt_path) = entry.worktree_path()
             && !entry.is_current()
-            && !self.wt_inflight.contains(wt_path)
+            && !self.inflight.worktrees.contains(wt_path)
         {
             items.push(ActionItem::DeleteWorktree);
         }
@@ -1328,7 +1363,7 @@ impl App {
                 {
                     // Declining force-delete ends the op — release the path so
                     // its action items reappear.
-                    self.wt_inflight.remove(&path);
+                    self.inflight.worktrees.remove(&path);
                 }
             }
             _ => {}
@@ -2375,6 +2410,7 @@ mod wt_list_lazy_load_tests {
         }];
         app.snap_scroll_to_entry();
         app.request_details_for_selection();
+        app.tick(); // fetches are debounced to the next tick
         assert!(
             app.commands
                 .contains(&Command::LoadWorktreeList(other.clone()))
@@ -2408,6 +2444,7 @@ mod wt_list_lazy_load_tests {
         }];
         app.snap_scroll_to_entry();
         app.request_details_for_selection();
+        app.tick();
         assert!(
             !app.commands
                 .iter()
@@ -2471,6 +2508,103 @@ mod command_queue_tests {
         );
     }
 
+    fn pr_entry(name: &str, number: u64) -> BranchEntry {
+        use crate::git::types::{PrState, RepoId};
+        let repo = RepoId {
+            host: None,
+            owner: "o".into(),
+            name: "r".into(),
+        };
+        BranchEntry {
+            name: name.into(),
+            repo_id: repo.clone(),
+            local_branch: Some(crate::git::types::Branch {
+                name: name.into(),
+                is_current: false,
+                upstream: None,
+                is_merged: false,
+            }),
+            worktree: None,
+            pull_request: Some(PullRequest {
+                number,
+                title: "t".into(),
+                author: "u".into(),
+                state: PrState::Open,
+                head_ref: name.into(),
+                updated_at: "2024".into(),
+                is_draft: false,
+                review_requests: vec![],
+                latest_reviews: vec![],
+                review_status: None,
+                repo_id: repo,
+            }),
+            git_status: None,
+        }
+    }
+
+    fn app_with_pr_entries() -> App {
+        use crate::git::types::RepoId;
+        let mut app = App::new(Config::default());
+        app.active_repo = Some(RepoId {
+            host: None,
+            owner: "o".into(),
+            name: "r".into(),
+        });
+        app.entries = vec![pr_entry("a", 1), pr_entry("b", 2)];
+        app
+    }
+
+    #[test]
+    fn selection_detail_fetch_is_debounced_to_next_tick() {
+        let mut app = app_with_pr_entries();
+        app.request_details_for_selection();
+        assert!(app.commands.is_empty(), "no fetch before the debounce tick");
+        app.tick();
+        assert!(
+            app.commands
+                .iter()
+                .any(|c| matches!(c, Command::FetchPrDetail(_, 1)))
+        );
+    }
+
+    #[test]
+    fn rapid_selection_moves_coalesce_to_latest_target() {
+        let mut app = app_with_pr_entries();
+        // Two selection changes before any tick — like holding `j`.
+        app.request_details_for_selection();
+        app.sidebar_scroll = 1;
+        app.request_details_for_selection();
+        app.tick();
+        let fetches: Vec<u64> = app
+            .commands
+            .iter()
+            .filter_map(|c| match c {
+                Command::FetchPrDetail(_, n) => Some(*n),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(fetches, vec![2], "only the final selection is fetched");
+    }
+
+    #[test]
+    fn cached_detail_queues_no_fetch_after_tick() {
+        use crate::git::types::PrDetail;
+        let mut app = app_with_pr_entries();
+        let repo = app.entries[0].repo_id.clone();
+        app.pr_detail_cache.insert(
+            (repo, 1),
+            PrDetail {
+                number: 1,
+                body: String::new(),
+                additions: 0,
+                deletions: 0,
+            },
+        );
+        app.request_details_for_selection();
+        app.tick();
+        assert!(app.commands.is_empty());
+    }
+
     fn pending(on_confirm: Command) -> PendingConfirm {
         PendingConfirm {
             dialog: ConfirmDialog::new("title", "message"),
@@ -2502,11 +2636,11 @@ mod command_queue_tests {
     #[test]
     fn confirm_decline_force_delete_releases_inflight_path() {
         let mut app = App::new(Config::default());
-        app.wt_inflight.insert("/wt/p".to_string());
+        app.inflight.worktrees.insert("/wt/p".to_string());
         app.confirm_dialog = Some(pending(Command::ForceDeleteWorktree("/wt/p".into())));
         app.handle_key(key(KeyCode::Char('n')));
         assert!(app.confirm_dialog.is_none());
         assert!(app.commands.is_empty());
-        assert!(!app.wt_inflight.contains("/wt/p"));
+        assert!(!app.inflight.worktrees.contains("/wt/p"));
     }
 }
