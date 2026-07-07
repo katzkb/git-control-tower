@@ -19,7 +19,7 @@ pub fn draw(frame: &mut Frame, area: Rect, app: &mut App) {
 }
 
 fn draw_filter_bar(frame: &mut Frame, area: Rect, app: &App) {
-    let bar = if app.search_active {
+    let bar = if app.view.search_active {
         Line::from(vec![
             Span::styled(
                 " /",
@@ -27,11 +27,14 @@ fn draw_filter_bar(frame: &mut Frame, area: Rect, app: &App) {
                     .fg(theme::ACCENT)
                     .add_modifier(Modifier::BOLD),
             ),
-            Span::styled(app.search_query.clone(), Style::default().fg(theme::TEXT)),
+            Span::styled(
+                app.view.search_query.clone(),
+                Style::default().fg(theme::TEXT),
+            ),
             Span::styled("_", Style::default().fg(theme::ACCENT)),
         ])
     } else {
-        let label = app.main_filter.label();
+        let label = app.view.main_filter.label();
         let mut spans = vec![
             Span::styled(" Filter: ", Style::default().fg(theme::TEXT_DIM)),
             Span::styled(
@@ -43,7 +46,7 @@ fn draw_filter_bar(frame: &mut Frame, area: Rect, app: &App) {
         ];
         // Show merged toggle indicator for My PR / Review views
         if matches!(
-            app.main_filter,
+            app.view.main_filter,
             MainFilter::MyPr | MainFilter::ReviewRequested
         ) && app.prs.show_merged
         {
@@ -53,14 +56,14 @@ fn draw_filter_bar(frame: &mut Frame, area: Rect, app: &App) {
             ));
         }
         // Show active search filter
-        if !app.search_query.is_empty() {
+        if !app.view.search_query.is_empty() {
             spans.push(Span::styled(
-                format!(" /{}", app.search_query),
+                format!(" /{}", app.view.search_query),
                 Style::default().fg(theme::ACCENT),
             ));
         }
         // Show team toggle indicator for Review view
-        if app.main_filter == MainFilter::ReviewRequested {
+        if app.view.main_filter == MainFilter::ReviewRequested {
             let team_label = if app.prs.include_team_reviews {
                 " [+team]"
             } else {
@@ -70,7 +73,7 @@ fn draw_filter_bar(frame: &mut Frame, area: Rect, app: &App) {
         }
         // Show repo/PR counter when multiple repos are present
         if matches!(
-            app.main_filter,
+            app.view.main_filter,
             MainFilter::MyPr | MainFilter::ReviewRequested
         ) {
             let filtered = app.filtered_entries();
@@ -96,7 +99,7 @@ fn draw_filter_bar(frame: &mut Frame, area: Rect, app: &App) {
 }
 
 fn draw_entry_list(frame: &mut Frame, area: Rect, app: &mut App) {
-    let show_checkboxes = !app.branch_selected.is_empty();
+    let show_checkboxes = !app.view.branch_selected.is_empty();
     let is_loading = app.is_current_view_loading();
 
     // Build items and capture count before mutably borrowing app
@@ -110,10 +113,10 @@ fn draw_entry_list(frame: &mut Frame, area: Rect, app: &mut App) {
                 Style::default().fg(theme::TEXT_DIM),
             )))]
         } else if rows.is_empty() {
-            let msg = if !app.search_query.is_empty() {
+            let msg = if !app.view.search_query.is_empty() {
                 "  No branches match the search"
             } else {
-                match app.main_filter {
+                match app.view.main_filter {
                     MainFilter::Local => "  No local branches",
                     MainFilter::MyPr => "  No branches with your PRs",
                     MainFilter::ReviewRequested => "  No branches awaiting review",
@@ -124,7 +127,7 @@ fn draw_entry_list(frame: &mut Frame, area: Rect, app: &mut App) {
                 Style::default().fg(theme::TEXT_DIM),
             )))]
         } else {
-            let search_query = &app.search_query;
+            let search_query = &app.view.search_query;
             rows.iter()
                 .map(|row| match row {
                     crate::app::SidebarRow::Header { repo_id } => {
@@ -136,7 +139,7 @@ fn draw_entry_list(frame: &mut Frame, area: Rect, app: &mut App) {
                         )]))
                     }
                     crate::app::SidebarRow::Entry(entry) => {
-                        let is_selected = app.branch_selected.contains(&entry.name);
+                        let is_selected = app.view.branch_selected.contains(&entry.name);
                         let is_protected = app.is_protected_branch(&entry.name);
                         ListItem::new(format_entry_line(
                             entry,
@@ -167,9 +170,9 @@ fn draw_entry_list(frame: &mut Frame, area: Rect, app: &mut App) {
 
     let mut state = ListState::default();
     if item_count > 0 {
-        state.select(Some(app.sidebar_scroll));
+        state.select(Some(app.view.sidebar_scroll));
     }
-    *state.offset_mut() = app.sidebar_offset;
+    *state.offset_mut() = app.view.sidebar_offset;
     frame.render_stateful_widget(list, area, &mut state);
 }
 

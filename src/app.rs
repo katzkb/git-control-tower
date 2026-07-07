@@ -256,6 +256,161 @@ pub struct Inflight {
     pub wt_lists: HashSet<crate::git::types::RepoId>,
 }
 
+/// What the user is looking at: the main-view entry list and its
+/// cursor/filter/search/multi-select state, plus the scroll positions of the
+/// other views (issue #220).
+#[derive(Default)]
+pub struct ViewState {
+    pub entries: Vec<BranchEntry>,
+    pub main_filter: MainFilter,
+    pub sidebar_scroll: usize,
+    pub sidebar_offset: usize,
+    pub search_active: bool,
+    pub search_query: String,
+    search_pre_scroll: usize, // saved scroll position before search
+    /// Branch names multi-selected in the sidebar (space / `a` keys).
+    pub branch_selected: HashSet<String>,
+    pub log_scroll: usize,
+    pub history_scroll: usize,
+    pub pr_detail_scroll: usize,
+}
+
+impl ViewState {
+    pub fn adjust_sidebar_offset(&mut self, visible_height: usize, item_count: usize) {
+        if visible_height == 0 {
+            return;
+        }
+        // Clamp scroll to valid range
+        if item_count > 0 {
+            self.sidebar_scroll = self.sidebar_scroll.min(item_count - 1);
+        } else {
+            self.sidebar_scroll = 0;
+        }
+        // Adjust offset when cursor exceeds viewport bounds
+        if self.sidebar_scroll >= self.sidebar_offset + visible_height {
+            self.sidebar_offset = self.sidebar_scroll - visible_height + 1;
+        }
+        if self.sidebar_scroll < self.sidebar_offset {
+            self.sidebar_offset = self.sidebar_scroll;
+        }
+        // Clamp offset so list doesn't show blank space
+        let max_offset = item_count.saturating_sub(visible_height);
+        self.sidebar_offset = self.sidebar_offset.min(max_offset);
+    }
+
+    pub fn filtered_entries(&self) -> Vec<&BranchEntry> {
+        let search_query = if !self.search_query.is_empty() {
+            Some(self.search_query.to_lowercase())
+        } else {
+            None
+        };
+        self.entries
+            .iter()
+            .filter(|entry| {
+                let passes_filter = match self.main_filter {
+                    MainFilter::Local => entry.has_local(),
+                    // My PR / Review: server-side filtered, just check PR exists
+                    MainFilter::MyPr | MainFilter::ReviewRequested => entry.pull_request.is_some(),
+                };
+                let passes_search = match &search_query {
+                    Some(q) => entry.name.to_lowercase().contains(q.as_str()),
+                    None => true,
+                };
+                passes_filter && passes_search
+            })
+            .collect()
+    }
+
+    /// Build the sidebar rendering rows. Returns a flat list of headers and
+    /// entries; cross-repo grouping kicks in only for My PR / Review when
+    /// `entries` span more than one repo.
+    pub fn sidebar_rows(&self) -> Vec<SidebarRow<'_>> {
+        let filtered = self.filtered_entries();
+        let group_active = matches!(
+            self.main_filter,
+            MainFilter::MyPr | MainFilter::ReviewRequested
+        );
+        let repo_set: std::collections::HashSet<_> =
+            filtered.iter().map(|e| e.repo_id.clone()).collect();
+        let do_group = group_active && repo_set.len() > 1;
+
+        let mut rows = Vec::with_capacity(filtered.len() + repo_set.len());
+        if !do_group {
+            for e in filtered {
+                rows.push(SidebarRow::Entry(e));
+            }
+            return rows;
+        }
+        let mut last_repo: Option<crate::git::types::RepoId> = None;
+        for e in filtered {
+            if last_repo.as_ref() != Some(&e.repo_id) {
+                rows.push(SidebarRow::Header {
+                    repo_id: e.repo_id.clone(),
+                });
+                last_repo = Some(e.repo_id.clone());
+            }
+            rows.push(SidebarRow::Entry(e));
+        }
+        rows
+    }
+
+    pub fn selected_entry(&self) -> Option<&BranchEntry> {
+        let rows = self.sidebar_rows();
+        match rows.get(self.sidebar_scroll)? {
+            SidebarRow::Entry(e) => Some(*e),
+            SidebarRow::Header { .. } => None,
+        }
+    }
+
+    /// If `sidebar_scroll` lands on a Header, advance to the next Entry. If past
+    /// the end, clamp to the last Entry. No-op if already on an Entry.
+    pub fn snap_scroll_to_entry(&mut self) {
+        // Collect row kinds into a plain bool vec (true = is_header) to avoid holding
+        // a borrow on self while mutating sidebar_scroll.
+        let is_header: Vec<bool> = self
+            .sidebar_rows()
+            .iter()
+            .map(|r| matches!(r, SidebarRow::Header { .. }))
+            .collect();
+        if is_header.is_empty() {
+            self.sidebar_scroll = 0;
+            return;
+        }
+        while self.sidebar_scroll < is_header.len() && is_header[self.sidebar_scroll] {
+            self.sidebar_scroll += 1;
+        }
+        if self.sidebar_scroll >= is_header.len() {
+            self.sidebar_scroll = is_header.len().saturating_sub(1);
+        }
+    }
+
+    /// Find the next entry-row index after `from`, skipping headers. None if no entry follows.
+    fn next_entry_index(&self, from: usize) -> Option<usize> {
+        let rows = self.sidebar_rows();
+        let mut next = from + 1;
+        while next < rows.len() && matches!(rows[next], SidebarRow::Header { .. }) {
+            next += 1;
+        }
+        if next < rows.len() { Some(next) } else { None }
+    }
+
+    /// Find the previous entry-row index before `from`, skipping headers. None if no entry precedes.
+    fn prev_entry_index(&self, from: usize) -> Option<usize> {
+        if from == 0 {
+            return None;
+        }
+        let rows = self.sidebar_rows();
+        let mut prev = from - 1;
+        while matches!(rows.get(prev), Some(SidebarRow::Header { .. })) {
+            if prev == 0 {
+                return None;
+            }
+            prev -= 1;
+        }
+        Some(prev)
+    }
+}
+
 /// Modal/overlay UI state, listed in `handle_key` priority order (issue #220).
 #[derive(Default)]
 pub struct Overlays {
@@ -418,29 +573,15 @@ pub struct App {
     pub active_view: ActiveView,
     pub should_quit: bool,
 
-    // Log View
-    pub log_scroll: usize,
-
-    // History View
-    pub history_scroll: usize,
-
-    // Main View — unified entries
-    pub entries: Vec<BranchEntry>,
-    pub main_filter: MainFilter,
-    pub sidebar_scroll: usize,
-    pub sidebar_offset: usize,
-    pub search_active: bool,
-    pub search_query: String,
-    search_pre_scroll: usize, // saved scroll position before search
+    // What the user is looking at: entry list, cursor/filter/search state,
+    // and per-view scroll positions (issue #220).
+    pub view: ViewState,
 
     // Raw data fetched from git/gh (issue #220).
     pub raw: RawData,
 
     // Per-filter PR caches and the PR-detail cache (issue #220).
     pub prs: PrCaches,
-
-    // Detail-pane scroll position.
-    pub pr_detail_scroll: usize,
 
     // Verbose mode
     pub verbose: bool,
@@ -464,7 +605,6 @@ pub struct App {
     pub inflight: Inflight,
     pub progress: ProgressTracker,
     pub quit_pressed_during_progress: bool,
-    pub branch_selected: HashSet<String>,
 
     // Spinner animation
     spinner_tick: usize,
@@ -481,18 +621,9 @@ impl App {
         Self {
             active_view: ActiveView::default(),
             should_quit: false,
-            log_scroll: 0,
-            history_scroll: 0,
-            entries: Vec::new(),
-            main_filter: MainFilter::default(),
-            sidebar_scroll: 0,
-            sidebar_offset: 0,
-            search_active: false,
-            search_query: String::new(),
-            search_pre_scroll: 0,
+            view: ViewState::default(),
             raw: RawData::default(),
             prs: PrCaches::default(),
-            pr_detail_scroll: 0,
             verbose: false,
             verbose_errors: Vec::new(),
             overlays: Overlays::default(),
@@ -502,7 +633,6 @@ impl App {
             inflight: Inflight::default(),
             progress: ProgressTracker::default(),
             quit_pressed_during_progress: false,
-            branch_selected: HashSet::new(),
             spinner_tick: 0,
             config,
             cross_repo: CrossRepoState::default(),
@@ -526,7 +656,7 @@ impl App {
     }
 
     pub fn current_prs(&self) -> &[PullRequest] {
-        self.prs.current(self.main_filter)
+        self.prs.current(self.view.main_filter)
     }
 
     const SPINNER_FRAMES: &'static [&'static str] =
@@ -554,29 +684,11 @@ impl App {
     }
 
     pub fn adjust_sidebar_offset(&mut self, visible_height: usize, item_count: usize) {
-        if visible_height == 0 {
-            return;
-        }
-        // Clamp scroll to valid range
-        if item_count > 0 {
-            self.sidebar_scroll = self.sidebar_scroll.min(item_count - 1);
-        } else {
-            self.sidebar_scroll = 0;
-        }
-        // Adjust offset when cursor exceeds viewport bounds
-        if self.sidebar_scroll >= self.sidebar_offset + visible_height {
-            self.sidebar_offset = self.sidebar_scroll - visible_height + 1;
-        }
-        if self.sidebar_scroll < self.sidebar_offset {
-            self.sidebar_offset = self.sidebar_scroll;
-        }
-        // Clamp offset so list doesn't show blank space
-        let max_offset = item_count.saturating_sub(visible_height);
-        self.sidebar_offset = self.sidebar_offset.min(max_offset);
+        self.view.adjust_sidebar_offset(visible_height, item_count)
     }
 
     pub fn is_current_view_loading(&self) -> bool {
-        self.prs.is_loading(self.main_filter)
+        self.prs.is_loading(self.view.main_filter)
     }
 
     pub fn rebuild_entries(&mut self) {
@@ -585,7 +697,7 @@ impl App {
         // so cross-repo entries are still keyed correctly and worktree injection no-ops
         // safely.
         let active = self.cross_repo.active_repo.clone().unwrap_or_default();
-        self.entries = crate::data::merge_entries(
+        self.view.entries = crate::data::merge_entries(
             &active,
             &self.raw.branches,
             &self.raw.worktrees,
@@ -599,121 +711,25 @@ impl App {
     pub fn rebuild_entries_and_clamp(&mut self) {
         self.rebuild_entries();
         let filtered_len = self.filtered_entries().len();
-        if self.sidebar_scroll >= filtered_len && filtered_len > 0 {
-            self.sidebar_scroll = filtered_len - 1;
+        if self.view.sidebar_scroll >= filtered_len && filtered_len > 0 {
+            self.view.sidebar_scroll = filtered_len - 1;
         }
     }
 
     pub fn filtered_entries(&self) -> Vec<&BranchEntry> {
-        let search_query = if !self.search_query.is_empty() {
-            Some(self.search_query.to_lowercase())
-        } else {
-            None
-        };
-        self.entries
-            .iter()
-            .filter(|entry| {
-                let passes_filter = match self.main_filter {
-                    MainFilter::Local => entry.has_local(),
-                    // My PR / Review: server-side filtered, just check PR exists
-                    MainFilter::MyPr | MainFilter::ReviewRequested => entry.pull_request.is_some(),
-                };
-                let passes_search = match &search_query {
-                    Some(q) => entry.name.to_lowercase().contains(q.as_str()),
-                    None => true,
-                };
-                passes_filter && passes_search
-            })
-            .collect()
+        self.view.filtered_entries()
     }
 
-    /// Build the sidebar rendering rows. Returns a flat list of headers and
-    /// entries; cross-repo grouping kicks in only for My PR / Review when
-    /// `entries` span more than one repo.
     pub fn sidebar_rows(&self) -> Vec<SidebarRow<'_>> {
-        let filtered = self.filtered_entries();
-        let group_active = matches!(
-            self.main_filter,
-            MainFilter::MyPr | MainFilter::ReviewRequested
-        );
-        let repo_set: std::collections::HashSet<_> =
-            filtered.iter().map(|e| e.repo_id.clone()).collect();
-        let do_group = group_active && repo_set.len() > 1;
-
-        let mut rows = Vec::with_capacity(filtered.len() + repo_set.len());
-        if !do_group {
-            for e in filtered {
-                rows.push(SidebarRow::Entry(e));
-            }
-            return rows;
-        }
-        let mut last_repo: Option<crate::git::types::RepoId> = None;
-        for e in filtered {
-            if last_repo.as_ref() != Some(&e.repo_id) {
-                rows.push(SidebarRow::Header {
-                    repo_id: e.repo_id.clone(),
-                });
-                last_repo = Some(e.repo_id.clone());
-            }
-            rows.push(SidebarRow::Entry(e));
-        }
-        rows
+        self.view.sidebar_rows()
     }
 
     pub fn selected_entry(&self) -> Option<&BranchEntry> {
-        let rows = self.sidebar_rows();
-        match rows.get(self.sidebar_scroll)? {
-            SidebarRow::Entry(e) => Some(*e),
-            SidebarRow::Header { .. } => None,
-        }
+        self.view.selected_entry()
     }
 
-    /// If `sidebar_scroll` lands on a Header, advance to the next Entry. If past
-    /// the end, clamp to the last Entry. No-op if already on an Entry.
     pub fn snap_scroll_to_entry(&mut self) {
-        // Collect row kinds into a plain bool vec (true = is_header) to avoid holding
-        // a borrow on self while mutating sidebar_scroll.
-        let is_header: Vec<bool> = self
-            .sidebar_rows()
-            .iter()
-            .map(|r| matches!(r, SidebarRow::Header { .. }))
-            .collect();
-        if is_header.is_empty() {
-            self.sidebar_scroll = 0;
-            return;
-        }
-        while self.sidebar_scroll < is_header.len() && is_header[self.sidebar_scroll] {
-            self.sidebar_scroll += 1;
-        }
-        if self.sidebar_scroll >= is_header.len() {
-            self.sidebar_scroll = is_header.len().saturating_sub(1);
-        }
-    }
-
-    /// Find the next entry-row index after `from`, skipping headers. None if no entry follows.
-    fn next_entry_index(&self, from: usize) -> Option<usize> {
-        let rows = self.sidebar_rows();
-        let mut next = from + 1;
-        while next < rows.len() && matches!(rows[next], SidebarRow::Header { .. }) {
-            next += 1;
-        }
-        if next < rows.len() { Some(next) } else { None }
-    }
-
-    /// Find the previous entry-row index before `from`, skipping headers. None if no entry precedes.
-    fn prev_entry_index(&self, from: usize) -> Option<usize> {
-        if from == 0 {
-            return None;
-        }
-        let rows = self.sidebar_rows();
-        let mut prev = from - 1;
-        while matches!(rows.get(prev), Some(SidebarRow::Header { .. })) {
-            if prev == 0 {
-                return None;
-            }
-            prev -= 1;
-        }
-        Some(prev)
+        self.view.snap_scroll_to_entry()
     }
 
     /// Return the cached PR detail for the currently selected entry, if available.
@@ -729,7 +745,7 @@ impl App {
     /// fetch for the final selection ~80ms after scrolling settles, instead
     /// of spawning a `gh`/`git` subprocess per row passed through.
     pub fn request_details_for_selection(&mut self) {
-        self.pr_detail_scroll = 0;
+        self.view.pr_detail_scroll = 0;
         self.selection_details_pending = true;
     }
 
@@ -812,7 +828,7 @@ impl App {
         }
 
         // Search mode takes priority in Main view
-        if self.search_active && self.active_view == ActiveView::Main {
+        if self.view.search_active && self.active_view == ActiveView::Main {
             self.handle_search_key(key.code);
             return;
         }
@@ -827,11 +843,11 @@ impl App {
                 }
             }
             KeyCode::Esc => {
-                if !self.search_query.is_empty() {
+                if !self.view.search_query.is_empty() {
                     // Clear search filter and restore scroll
-                    self.search_query.clear();
-                    self.sidebar_scroll = self.search_pre_scroll;
-                    self.sidebar_offset = 0;
+                    self.view.search_query.clear();
+                    self.view.sidebar_scroll = self.view.search_pre_scroll;
+                    self.view.sidebar_offset = 0;
                     self.snap_scroll_to_entry();
                     self.request_details_for_selection();
                 } else if matches!(self.active_view, ActiveView::Log | ActiveView::History) {
@@ -846,15 +862,15 @@ impl App {
             KeyCode::Char('h') => {
                 if self.active_view != ActiveView::History {
                     self.active_view = ActiveView::History;
-                    self.history_scroll = 0;
+                    self.view.history_scroll = 0;
                 }
             }
             KeyCode::Char('1') => {
-                self.main_filter = MainFilter::Local;
+                self.view.main_filter = MainFilter::Local;
                 self.active_view = ActiveView::Main;
-                self.search_query.clear();
-                self.sidebar_scroll = 0;
-                self.sidebar_offset = 0;
+                self.view.search_query.clear();
+                self.view.sidebar_scroll = 0;
+                self.view.sidebar_offset = 0;
                 self.rebuild_entries();
                 self.snap_scroll_to_entry();
                 if !self.prs.local_loaded {
@@ -863,11 +879,11 @@ impl App {
                 self.request_details_for_selection();
             }
             KeyCode::Char('2') => {
-                self.main_filter = MainFilter::MyPr;
+                self.view.main_filter = MainFilter::MyPr;
                 self.active_view = ActiveView::Main;
-                self.search_query.clear();
-                self.sidebar_scroll = 0;
-                self.sidebar_offset = 0;
+                self.view.search_query.clear();
+                self.view.sidebar_scroll = 0;
+                self.view.sidebar_offset = 0;
                 self.rebuild_entries();
                 self.snap_scroll_to_entry();
                 if !self.prs.my_loaded {
@@ -876,11 +892,11 @@ impl App {
                 self.request_details_for_selection();
             }
             KeyCode::Char('3') => {
-                self.main_filter = MainFilter::ReviewRequested;
+                self.view.main_filter = MainFilter::ReviewRequested;
                 self.active_view = ActiveView::Main;
-                self.search_query.clear();
-                self.sidebar_scroll = 0;
-                self.sidebar_offset = 0;
+                self.view.search_query.clear();
+                self.view.sidebar_scroll = 0;
+                self.view.sidebar_offset = 0;
                 self.rebuild_entries();
                 self.snap_scroll_to_entry();
                 if !self.prs.review_loaded {
@@ -891,7 +907,7 @@ impl App {
             KeyCode::Char('r') => match self.active_view {
                 ActiveView::Main => {
                     // Invalidate current filter's PR cache so the fetch is forced
-                    self.prs.invalidate(self.main_filter);
+                    self.prs.invalidate(self.view.main_filter);
                     // Clear PR detail cache for ALL filters, not just the current
                     // one — stale detail bodies are risky after a refresh, and the
                     // detail pane will refetch on the next selection.
@@ -901,7 +917,7 @@ impl App {
                     self.inflight.wt_lists.clear();
                     // Signal branches/worktrees reload + PR fetch
                     self.push_command(Command::ReloadBranches);
-                    self.push_command(Command::FetchPrs(self.main_filter));
+                    self.push_command(Command::FetchPrs(self.view.main_filter));
                     self.overlays.notification = Some(Notification::success("Refreshing…"));
                 }
                 ActiveView::Log => {
@@ -923,14 +939,14 @@ impl App {
     fn handle_main_key(&mut self, code: KeyCode) {
         match code {
             KeyCode::Char('j') | KeyCode::Down => {
-                if let Some(next) = self.next_entry_index(self.sidebar_scroll) {
-                    self.sidebar_scroll = next;
+                if let Some(next) = self.view.next_entry_index(self.view.sidebar_scroll) {
+                    self.view.sidebar_scroll = next;
                     self.request_details_for_selection();
                 }
             }
-            KeyCode::Char('k') | KeyCode::Up if self.sidebar_scroll > 0 => {
-                if let Some(prev) = self.prev_entry_index(self.sidebar_scroll) {
-                    self.sidebar_scroll = prev;
+            KeyCode::Char('k') | KeyCode::Up if self.view.sidebar_scroll > 0 => {
+                if let Some(prev) = self.view.prev_entry_index(self.view.sidebar_scroll) {
+                    self.view.sidebar_scroll = prev;
                     self.request_details_for_selection();
                 }
             }
@@ -940,15 +956,16 @@ impl App {
                     && !self.is_protected_branch(&entry.name)
                     && self.cross_repo.active_repo.as_ref() == Some(&entry.repo_id)
                 {
-                    if self.branch_selected.contains(&entry.name) {
-                        self.branch_selected.remove(&entry.name);
+                    if self.view.branch_selected.contains(&entry.name) {
+                        self.view.branch_selected.remove(&entry.name);
                     } else {
-                        self.branch_selected.insert(entry.name);
+                        self.view.branch_selected.insert(entry.name);
                     }
                 }
             }
             KeyCode::Char('a') => {
                 let to_select: Vec<String> = self
+                    .view
                     .entries
                     .iter()
                     .filter(|e| {
@@ -959,7 +976,7 @@ impl App {
                     })
                     .map(|e| e.name.clone())
                     .collect();
-                self.branch_selected.extend(to_select);
+                self.view.branch_selected.extend(to_select);
             }
             KeyCode::Char('d') => {
                 // Only entries that will actually be processed (i.e. have a
@@ -970,9 +987,9 @@ impl App {
                 let mut worktree_count = 0usize;
                 let mut unmerged_count = 0usize;
                 let mut deletable_names: Vec<&str> = Vec::new();
-                if !self.branch_selected.is_empty() {
-                    for name in &self.branch_selected {
-                        if let Some(entry) = self.entries.iter().find(|e| &e.name == name) {
+                if !self.view.branch_selected.is_empty() {
+                    for name in &self.view.branch_selected {
+                        if let Some(entry) = self.view.entries.iter().find(|e| &e.name == name) {
                             let has_branch = entry.local_branch.is_some();
                             let has_worktree = entry.worktree.is_some();
                             if !has_branch && !has_worktree {
@@ -1014,12 +1031,12 @@ impl App {
                     };
                     // Snapshot the whole selection — the dispatcher re-filters
                     // (current/protected/inflight) at execution time.
-                    let names: Vec<String> = self.branch_selected.iter().cloned().collect();
+                    let names: Vec<String> = self.view.branch_selected.iter().cloned().collect();
                     self.overlays.confirm_dialog = Some(PendingConfirm {
                         dialog: ConfirmDialog::new(title, msg),
                         on_confirm: Command::DeleteBranches(names),
                     });
-                } else if !self.branch_selected.is_empty() {
+                } else if !self.view.branch_selected.is_empty() {
                     // Non-empty selection but nothing deletable (e.g. PR-only entries
                     // with no local branch and no worktree). Tell the user rather
                     // than silently no-op.
@@ -1097,7 +1114,7 @@ impl App {
             }
             KeyCode::Char('m') => {
                 if matches!(
-                    self.main_filter,
+                    self.view.main_filter,
                     MainFilter::MyPr | MainFilter::ReviewRequested
                 ) {
                     self.prs.show_merged = !self.prs.show_merged;
@@ -1105,25 +1122,25 @@ impl App {
                     self.prs.invalidate(MainFilter::MyPr);
                     self.prs.invalidate(MainFilter::ReviewRequested);
                     self.rebuild_entries();
-                    self.push_command(Command::FetchPrs(self.main_filter));
-                    self.sidebar_scroll = 0;
-                    self.sidebar_offset = 0;
+                    self.push_command(Command::FetchPrs(self.view.main_filter));
+                    self.view.sidebar_scroll = 0;
+                    self.view.sidebar_offset = 0;
                     self.snap_scroll_to_entry();
                 }
             }
-            KeyCode::Char('t') if self.main_filter == MainFilter::ReviewRequested => {
+            KeyCode::Char('t') if self.view.main_filter == MainFilter::ReviewRequested => {
                 self.prs.include_team_reviews = !self.prs.include_team_reviews;
                 self.prs.invalidate(MainFilter::ReviewRequested);
                 self.rebuild_entries();
                 self.push_command(Command::FetchPrs(MainFilter::ReviewRequested));
-                self.sidebar_scroll = 0;
-                self.sidebar_offset = 0;
+                self.view.sidebar_scroll = 0;
+                self.view.sidebar_offset = 0;
                 self.snap_scroll_to_entry();
             }
             KeyCode::Char('/') => {
-                self.search_pre_scroll = self.sidebar_scroll;
-                self.search_active = true;
-                self.search_query.clear();
+                self.view.search_pre_scroll = self.view.sidebar_scroll;
+                self.view.search_active = true;
+                self.view.search_query.clear();
             }
             _ => {}
         }
@@ -1131,11 +1148,13 @@ impl App {
 
     fn handle_log_key(&mut self, code: KeyCode) {
         match code {
-            KeyCode::Char('j') | KeyCode::Down if self.log_scroll + 1 < self.raw.commits.len() => {
-                self.log_scroll += 1;
+            KeyCode::Char('j') | KeyCode::Down
+                if self.view.log_scroll + 1 < self.raw.commits.len() =>
+            {
+                self.view.log_scroll += 1;
             }
             KeyCode::Char('k') | KeyCode::Up => {
-                self.log_scroll = self.log_scroll.saturating_sub(1);
+                self.view.log_scroll = self.view.log_scroll.saturating_sub(1);
             }
             _ => {}
         }
@@ -1144,11 +1163,11 @@ impl App {
     fn handle_history_key(&mut self, code: KeyCode) {
         let len = crate::git::command::command_history_len();
         match code {
-            KeyCode::Char('j') | KeyCode::Down if len > 0 && self.history_scroll + 1 < len => {
-                self.history_scroll += 1;
+            KeyCode::Char('j') | KeyCode::Down if len > 0 && self.view.history_scroll + 1 < len => {
+                self.view.history_scroll += 1;
             }
             KeyCode::Char('k') | KeyCode::Up => {
-                self.history_scroll = self.history_scroll.saturating_sub(1);
+                self.view.history_scroll = self.view.history_scroll.saturating_sub(1);
             }
             _ => {}
         }
@@ -1157,40 +1176,40 @@ impl App {
     fn handle_search_key(&mut self, code: KeyCode) {
         match code {
             KeyCode::Esc => {
-                self.search_active = false;
-                self.search_query.clear();
-                self.sidebar_scroll = self.search_pre_scroll;
+                self.view.search_active = false;
+                self.view.search_query.clear();
+                self.view.sidebar_scroll = self.view.search_pre_scroll;
                 self.snap_scroll_to_entry();
                 self.request_details_for_selection();
             }
             KeyCode::Enter => {
-                self.search_active = false;
+                self.view.search_active = false;
                 self.request_details_for_selection();
                 self.open_action_menu();
             }
             KeyCode::Backspace => {
-                self.search_query.pop();
-                self.sidebar_scroll = 0;
-                self.sidebar_offset = 0;
+                self.view.search_query.pop();
+                self.view.sidebar_scroll = 0;
+                self.view.sidebar_offset = 0;
                 self.snap_scroll_to_entry();
                 self.request_details_for_selection();
             }
             KeyCode::Char(c) => {
-                self.search_query.push(c);
-                self.sidebar_scroll = 0;
-                self.sidebar_offset = 0;
+                self.view.search_query.push(c);
+                self.view.sidebar_scroll = 0;
+                self.view.sidebar_offset = 0;
                 self.snap_scroll_to_entry();
                 self.request_details_for_selection();
             }
             KeyCode::Down => {
-                if let Some(next) = self.next_entry_index(self.sidebar_scroll) {
-                    self.sidebar_scroll = next;
+                if let Some(next) = self.view.next_entry_index(self.view.sidebar_scroll) {
+                    self.view.sidebar_scroll = next;
                     self.request_details_for_selection();
                 }
             }
-            KeyCode::Up if self.sidebar_scroll > 0 => {
-                if let Some(prev) = self.prev_entry_index(self.sidebar_scroll) {
-                    self.sidebar_scroll = prev;
+            KeyCode::Up if self.view.sidebar_scroll > 0 => {
+                if let Some(prev) = self.view.prev_entry_index(self.view.sidebar_scroll) {
+                    self.view.sidebar_scroll = prev;
                     self.request_details_for_selection();
                 }
             }
@@ -1330,6 +1349,7 @@ impl App {
         name: &str,
     ) {
         let entry = match self
+            .view
             .entries
             .iter()
             .find(|e| e.repo_id == *repo_id && e.name == name)
@@ -1358,7 +1378,7 @@ impl App {
                     let path = wt_path.to_string();
                     // Deleting via the action menu targets one worktree only —
                     // drop any checkbox selection so the sidebar reflects that.
-                    self.branch_selected.clear();
+                    self.view.branch_selected.clear();
                     self.overlays.confirm_dialog = Some(PendingConfirm {
                         dialog: ConfirmDialog::new(
                             "Delete Worktree",
@@ -1925,7 +1945,7 @@ mod cursor_skip_tests {
             name: "y".into(),
         };
         app.cross_repo.active_repo = Some(active.clone());
-        app.main_filter = MainFilter::ReviewRequested;
+        app.view.main_filter = MainFilter::ReviewRequested;
         let make_pr = |num: u64, head: &str, repo: &RepoId| PullRequest {
             number: num,
             title: "t".into(),
@@ -1939,7 +1959,7 @@ mod cursor_skip_tests {
             review_status: None,
             repo_id: repo.clone(),
         };
-        app.entries = vec![
+        app.view.entries = vec![
             BranchEntry {
                 name: "e1".into(),
                 repo_id: active.clone(),
@@ -1960,19 +1980,25 @@ mod cursor_skip_tests {
         // rows = [Header(active), Entry(e1), Header(other), Entry(e2)] → indices 0..=3
         // Initial: snap to first Entry (= 1)
         app.snap_scroll_to_entry();
-        assert_eq!(app.sidebar_scroll, 1);
+        assert_eq!(app.view.sidebar_scroll, 1);
 
         // j → should jump from index 1 to index 3 (skip Header at index 2)
         app.handle_key(KeyEvent::new(KeyCode::Char('j'), KeyModifiers::NONE));
         let rows = app.sidebar_rows();
-        assert_eq!(app.sidebar_scroll, 3);
-        assert!(matches!(rows[app.sidebar_scroll], SidebarRow::Entry(_)));
+        assert_eq!(app.view.sidebar_scroll, 3);
+        assert!(matches!(
+            rows[app.view.sidebar_scroll],
+            SidebarRow::Entry(_)
+        ));
 
         // k → should jump back from 3 to 1
         app.handle_key(KeyEvent::new(KeyCode::Char('k'), KeyModifiers::NONE));
         let rows = app.sidebar_rows();
-        assert_eq!(app.sidebar_scroll, 1);
-        assert!(matches!(rows[app.sidebar_scroll], SidebarRow::Entry(_)));
+        assert_eq!(app.view.sidebar_scroll, 1);
+        assert!(matches!(
+            rows[app.view.sidebar_scroll],
+            SidebarRow::Entry(_)
+        ));
     }
 }
 
@@ -1997,7 +2023,7 @@ mod sidebar_rows_tests {
             name: "r2".into(),
         };
         app.cross_repo.active_repo = Some(active.clone());
-        app.main_filter = MainFilter::ReviewRequested;
+        app.view.main_filter = MainFilter::ReviewRequested;
         let make_pr = |num: u64, head: &str, repo: &RepoId| PullRequest {
             number: num,
             title: "x".into(),
@@ -2011,7 +2037,7 @@ mod sidebar_rows_tests {
             review_status: None,
             repo_id: repo.clone(),
         };
-        app.entries = vec![
+        app.view.entries = vec![
             BranchEntry {
                 name: "f1".into(),
                 repo_id: active.clone(),
@@ -2054,7 +2080,7 @@ mod sidebar_rows_tests {
             name: "r1".into(),
         };
         app.cross_repo.active_repo = Some(active.clone());
-        app.main_filter = MainFilter::ReviewRequested;
+        app.view.main_filter = MainFilter::ReviewRequested;
         let make_pr = |num: u64, head: &str| PullRequest {
             number: num,
             title: "x".into(),
@@ -2068,7 +2094,7 @@ mod sidebar_rows_tests {
             review_status: None,
             repo_id: active.clone(),
         };
-        app.entries = vec![
+        app.view.entries = vec![
             BranchEntry {
                 name: "f1".into(),
                 repo_id: active.clone(),
@@ -2108,7 +2134,7 @@ mod sidebar_rows_tests {
             name: "r1".into(),
         };
         app.cross_repo.active_repo = Some(active.clone());
-        app.main_filter = MainFilter::Local;
+        app.view.main_filter = MainFilter::Local;
         // Local mode: filtered_entries requires has_local. Give entries a local branch.
         let make_branch = |name: &str| crate::git::types::Branch {
             name: name.into(),
@@ -2116,7 +2142,7 @@ mod sidebar_rows_tests {
             upstream: None,
             is_merged: false,
         };
-        app.entries = vec![BranchEntry {
+        app.view.entries = vec![BranchEntry {
             name: "f1".into(),
             repo_id: active.clone(),
             local_branch: Some(make_branch("f1")),
@@ -2223,8 +2249,8 @@ mod action_menu_cross_repo_tests {
                 local_path_resolved: true,
             },
         );
-        app.main_filter = MainFilter::ReviewRequested;
-        app.entries = vec![BranchEntry {
+        app.view.main_filter = MainFilter::ReviewRequested;
+        app.view.entries = vec![BranchEntry {
             name: "feat".into(),
             repo_id: other.clone(),
             local_branch: None,
@@ -2282,8 +2308,8 @@ mod action_menu_cross_repo_tests {
                 local_path_resolved: true,
             },
         );
-        app.main_filter = MainFilter::ReviewRequested;
-        app.entries = vec![BranchEntry {
+        app.view.main_filter = MainFilter::ReviewRequested;
+        app.view.entries = vec![BranchEntry {
             name: "feat".into(),
             repo_id: other.clone(),
             local_branch: None,
@@ -2327,7 +2353,7 @@ mod action_menu_cross_repo_tests {
             name: "y".into(),
         };
         app.cross_repo.active_repo = Some(active);
-        app.entries = vec![BranchEntry {
+        app.view.entries = vec![BranchEntry {
             name: "feat".into(),
             repo_id: other.clone(),
             local_branch: None,
@@ -2405,7 +2431,7 @@ mod action_menu_cross_repo_tests {
             git_status: None,
         };
         // Active repo first per merge_entries sort
-        app.entries = vec![active_entry, cross_entry];
+        app.view.entries = vec![active_entry, cross_entry];
 
         // Dispatch CdIntoWorktree targeting cross-repo branch.
         // The tuple-based execute_action must NOT pick the active-repo entry.
@@ -2446,8 +2472,8 @@ mod wt_list_lazy_load_tests {
                 local_path_resolved: false,
             },
         );
-        app.main_filter = MainFilter::ReviewRequested;
-        app.entries = vec![BranchEntry {
+        app.view.main_filter = MainFilter::ReviewRequested;
+        app.view.entries = vec![BranchEntry {
             name: "feat".into(),
             repo_id: other.clone(),
             local_branch: None,
@@ -2493,7 +2519,7 @@ mod wt_list_lazy_load_tests {
             upstream: None,
             is_merged: false,
         };
-        app.entries = vec![BranchEntry {
+        app.view.entries = vec![BranchEntry {
             name: "feat".into(),
             repo_id: active.clone(),
             local_branch: Some(make_branch("feat")),
@@ -2609,7 +2635,7 @@ mod command_queue_tests {
             owner: "o".into(),
             name: "r".into(),
         });
-        app.entries = vec![pr_entry("a", 1), pr_entry("b", 2)];
+        app.view.entries = vec![pr_entry("a", 1), pr_entry("b", 2)];
         app
     }
 
@@ -2631,7 +2657,7 @@ mod command_queue_tests {
         let mut app = app_with_pr_entries();
         // Two selection changes before any tick — like holding `j`.
         app.request_details_for_selection();
-        app.sidebar_scroll = 1;
+        app.view.sidebar_scroll = 1;
         app.request_details_for_selection();
         app.tick();
         let fetches: Vec<u64> = app
@@ -2649,7 +2675,7 @@ mod command_queue_tests {
     fn cached_detail_queues_no_fetch_after_tick() {
         use crate::git::types::PrDetail;
         let mut app = app_with_pr_entries();
-        let repo = app.entries[0].repo_id.clone();
+        let repo = app.view.entries[0].repo_id.clone();
         app.prs.detail.insert(
             (repo, 1),
             PrDetail {

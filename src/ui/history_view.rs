@@ -35,8 +35,8 @@ pub fn draw(frame: &mut Frame, area: Rect, app: &App) {
         .highlight_style(Style::default().add_modifier(Modifier::REVERSED));
 
     let mut state = ListState::default();
-    if app.history_scroll < records.len() {
-        state.select(Some(app.history_scroll));
+    if app.view.history_scroll < records.len() {
+        state.select(Some(app.view.history_scroll));
     } else {
         // records is guaranteed non-empty here by the early return above
         state.select(Some(records.len() - 1));

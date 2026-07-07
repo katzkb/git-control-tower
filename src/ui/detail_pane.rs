@@ -59,7 +59,7 @@ pub fn draw(frame: &mut Frame, area: Rect, app: &App) {
     let paragraph = Paragraph::new(lines)
         .block(block)
         .wrap(Wrap { trim: false })
-        .scroll((app.pr_detail_scroll as u16, 0));
+        .scroll((app.view.pr_detail_scroll as u16, 0));
     frame.render_widget(paragraph, area);
 }
 

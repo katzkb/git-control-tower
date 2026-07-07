@@ -44,7 +44,7 @@ pub fn draw(frame: &mut Frame, area: Rect, app: &App) {
         .highlight_style(Style::default().add_modifier(Modifier::REVERSED));
 
     let mut state = ListState::default();
-    state.select(Some(app.log_scroll));
+    state.select(Some(app.view.log_scroll));
 
     frame.render_stateful_widget(list, area, &mut state);
 }

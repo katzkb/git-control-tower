@@ -909,7 +909,7 @@ fn apply_pr_list(
     report_fetch_errors(app, "PR fetch failed", errors);
     seed_repos_from_prs(&mut app.cross_repo.repos, &prs);
     app.prs.set(filter, prs);
-    if app.main_filter == filter {
+    if app.view.main_filter == filter {
         app.rebuild_entries_and_clamp();
         app.request_details_for_selection();
     }
@@ -936,6 +936,7 @@ fn handle_result(app: &mut App, result: AsyncResult) {
         AsyncResult::GitStatus { wt_path, status } => {
             app.inflight.git_status.remove(&wt_path);
             if let Some(entry) = app
+                .view
                 .entries
                 .iter_mut()
                 .find(|e| e.worktree_path() == Some(wt_path.as_str()))
@@ -955,7 +956,7 @@ fn handle_result(app: &mut App, result: AsyncResult) {
             for pr in &mut app.prs.review {
                 pr.review_status = Some(compute_review_status(pr, &app.raw.gh_user));
             }
-            if app.main_filter == MainFilter::ReviewRequested {
+            if app.view.main_filter == MainFilter::ReviewRequested {
                 app.rebuild_entries();
             }
         }
@@ -1218,6 +1219,7 @@ fn dispatch_command(app: &mut App, cmd: Command, tasks: &mut RunState) {
         Command::CreateWorktree(req_repo_id, branch_name) => {
             // Resolve target repo (active or cross-repo) and its root path.
             let entry = app
+                .view
                 .entries
                 .iter()
                 .find(|e| e.repo_id == req_repo_id && e.name == branch_name)
@@ -1320,7 +1322,7 @@ fn dispatch_command(app: &mut App, cmd: Command, tasks: &mut RunState) {
         Command::DeleteBranches(selected) => {
             // The op is starting — clear the sidebar checkboxes now
             // (a declined dialog keeps the selection intact).
-            app.branch_selected.clear();
+            app.view.branch_selected.clear();
             struct Work {
                 name: String,
                 wt_path: Option<String>,
@@ -1331,6 +1333,7 @@ fn dispatch_command(app: &mut App, cmd: Command, tasks: &mut RunState) {
             let active_repo = app.cross_repo.active_repo.clone();
             for name in selected {
                 let Some(entry) = app
+                    .view
                     .entries
                     .iter()
                     .find(|e| e.name == name && active_repo.as_ref() == Some(&e.repo_id))

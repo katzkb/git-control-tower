@@ -34,21 +34,21 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     let status_text = match app.active_view {
         ActiveView::Main => {
             let merged_hint = if matches!(
-                app.main_filter,
+                app.view.main_filter,
                 MainFilter::MyPr | MainFilter::ReviewRequested
             ) {
                 "  m:Merged"
             } else {
                 ""
             };
-            let team_hint = if app.main_filter == MainFilter::ReviewRequested {
+            let team_hint = if app.view.main_filter == MainFilter::ReviewRequested {
                 "  t:Team"
             } else {
                 ""
             };
             format!(
                 " [{}]  1:Local  2:My PR  3:Review  Enter:Actions  /:Search{merged_hint}{team_hint}  l:Log  h:History  ?:Help  q:Quit",
-                app.main_filter.label()
+                app.view.main_filter.label()
             )
         }
         ActiveView::Log => {
