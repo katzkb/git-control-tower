@@ -16,7 +16,14 @@ pub fn draw(frame: &mut Frame, area: Rect, app: &mut App) {
     let chunks =
         Layout::horizontal([Constraint::Percentage(35), Constraint::Percentage(65)]).split(area);
 
-    sidebar::draw(frame, chunks[0], app);
+    let sidebar_ctx = sidebar::SidebarContext {
+        is_loading: app.is_current_view_loading(),
+        spinner: app.spinner_frame(),
+        show_merged: app.prs.show_merged,
+        include_team_reviews: app.prs.include_team_reviews,
+        protected_branches: &app.config.protected_branches,
+    };
+    sidebar::draw(frame, chunks[0], &mut app.view, &sidebar_ctx);
     detail_pane::draw(frame, chunks[1], app);
 
     // Confirm dialog overlay
