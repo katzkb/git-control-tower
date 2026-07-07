@@ -3,13 +3,15 @@ use std::time::Duration;
 use ratatui::{
     Frame,
     layout::Rect,
-    style::{Color, Modifier, Style},
+    style::{Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, List, ListItem, ListState},
 };
 
 use crate::app::App;
 use crate::git::command::{CommandRecord, command_history_snapshot, session_elapsed_at};
+
+use crate::ui::theme;
 
 pub fn draw(frame: &mut Frame, area: Rect, app: &App) {
     let block = Block::default().borders(Borders::ALL).title(" History ");
@@ -19,7 +21,7 @@ pub fn draw(frame: &mut Frame, area: Rect, app: &App) {
     if records.is_empty() {
         let placeholder = List::new(vec![ListItem::new(Span::styled(
             "No commands recorded yet.",
-            Style::default().fg(Color::DarkGray),
+            Style::default().fg(theme::TEXT_DIM),
         ))])
         .block(block);
         frame.render_widget(placeholder, area);
@@ -44,14 +46,14 @@ pub fn draw(frame: &mut Frame, area: Rect, app: &App) {
 }
 
 fn format_record(record: &CommandRecord) -> ListItem<'static> {
-    let offset_style = Style::default().fg(Color::DarkGray);
-    let exec_style = Style::default().fg(Color::Cyan);
+    let offset_style = Style::default().fg(theme::TEXT_DIM);
+    let exec_style = Style::default().fg(theme::ACCENT);
     let status_style = if record.success {
-        Style::default().fg(Color::Green)
+        Style::default().fg(theme::SUCCESS)
     } else {
-        Style::default().fg(Color::Red)
+        Style::default().fg(theme::ERROR)
     };
-    let meta_style = Style::default().fg(Color::DarkGray);
+    let meta_style = Style::default().fg(theme::TEXT_DIM);
 
     let status = if record.success { "OK " } else { "ERR" };
     let duration = format_duration(record.duration);
@@ -75,7 +77,7 @@ fn format_record(record: &CommandRecord) -> ListItem<'static> {
         spans.push(Span::raw("  "));
         spans.push(Span::styled(
             err.lines().next().unwrap_or("").to_string(),
-            Style::default().fg(Color::Red),
+            Style::default().fg(theme::ERROR),
         ));
     }
 

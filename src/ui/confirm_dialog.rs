@@ -1,10 +1,12 @@
 use ratatui::{
     Frame,
-    layout::{Constraint, Flex, Layout, Rect},
-    style::{Color, Modifier, Style},
+    style::{Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Clear, Paragraph},
 };
+
+use crate::ui::layout::centered_rect;
+use crate::ui::theme;
 
 #[derive(Debug, Clone)]
 pub struct ConfirmDialog {
@@ -37,16 +39,16 @@ pub fn draw(frame: &mut Frame, dialog: &ConfirmDialog) {
         Span::styled(
             " y ",
             Style::default()
-                .fg(Color::White)
-                .bg(Color::Red)
+                .fg(theme::TEXT)
+                .bg(theme::ERROR)
                 .add_modifier(Modifier::BOLD),
         ),
         Span::raw(" Yes  "),
         Span::styled(
             " n ",
             Style::default()
-                .fg(Color::White)
-                .bg(Color::DarkGray)
+                .fg(theme::TEXT)
+                .bg(theme::TEXT_DIM)
                 .add_modifier(Modifier::BOLD),
         ),
         Span::raw(" No"),
@@ -55,18 +57,8 @@ pub fn draw(frame: &mut Frame, dialog: &ConfirmDialog) {
     let block = Block::default()
         .borders(Borders::ALL)
         .title(format!(" {} ", dialog.title))
-        .border_style(Style::default().fg(Color::Yellow));
+        .border_style(Style::default().fg(theme::WARNING));
 
     let paragraph = Paragraph::new(lines).block(block);
     frame.render_widget(paragraph, area);
-}
-
-fn centered_rect(percent_x: u16, height: u16, area: Rect) -> Rect {
-    let vertical = Layout::vertical([Constraint::Length(height)])
-        .flex(Flex::Center)
-        .split(area);
-    let horizontal = Layout::horizontal([Constraint::Percentage(percent_x)])
-        .flex(Flex::Center)
-        .split(vertical[0]);
-    horizontal[0]
 }

@@ -2,13 +2,15 @@ use std::time::Instant;
 
 use ratatui::{
     Frame,
-    layout::{Constraint, Flex, Layout, Rect},
-    style::{Color, Modifier, Style},
+    style::{Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Clear, Paragraph},
 };
 
 use crate::app::{OpProgress, OpStep, ProgressTracker};
+
+use crate::ui::layout::bottom_rect;
+use crate::ui::theme;
 
 const MAX_VISIBLE_OPS: usize = 7;
 
@@ -20,7 +22,7 @@ pub fn draw(frame: &mut Frame, tracker: &ProgressTracker, quit_warning: bool) {
 
     let block = Block::default()
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(Color::Cyan));
+        .border_style(Style::default().fg(theme::ACCENT));
 
     let paragraph = Paragraph::new(lines).block(block);
     frame.render_widget(paragraph, area);
@@ -33,7 +35,7 @@ fn build_lines(tracker: &ProgressTracker, quit_warning: bool, now: Instant) -> V
         lines.push(Line::from(Span::styled(
             "Delete in progress. Press q/Esc again to quit anyway.".to_string(),
             Style::default()
-                .fg(Color::Yellow)
+                .fg(theme::WARNING)
                 .add_modifier(Modifier::BOLD),
         )));
     }
@@ -47,7 +49,7 @@ fn build_lines(tracker: &ProgressTracker, quit_warning: bool, now: Instant) -> V
     lines.push(Line::from(Span::styled(
         format!("Deleting ({done}/{total} done · {elapsed:.1}s)"),
         Style::default()
-            .fg(Color::White)
+            .fg(theme::TEXT)
             .add_modifier(Modifier::BOLD),
     )));
 
@@ -61,7 +63,7 @@ fn build_lines(tracker: &ProgressTracker, quit_warning: bool, now: Instant) -> V
     if remaining > 0 {
         lines.push(Line::from(Span::styled(
             format!("  +{remaining} more"),
-            Style::default().fg(Color::DarkGray),
+            Style::default().fg(theme::TEXT_DIM),
         )));
     }
 
@@ -75,9 +77,9 @@ fn format_op_line(op: &OpProgress, now: Instant) -> Line<'static> {
         _ => "⏳",
     };
     let icon_style = match op.current_step {
-        OpStep::Done { success: true } => Style::default().fg(Color::Green),
-        OpStep::Done { success: false } => Style::default().fg(Color::Red),
-        _ => Style::default().fg(Color::Yellow),
+        OpStep::Done { success: true } => Style::default().fg(theme::SUCCESS),
+        OpStep::Done { success: false } => Style::default().fg(theme::ERROR),
+        _ => Style::default().fg(theme::WARNING),
     };
     let label = format!(" {:<14}", trunc(&op.label, 14));
     let cmd = op
@@ -91,11 +93,11 @@ fn format_op_line(op: &OpProgress, now: Instant) -> Line<'static> {
         .saturating_duration_since(op.op_started_at)
         .as_secs_f32();
     let row_style = if matches!(op.current_step, OpStep::Done { success: true }) {
-        Style::default().fg(Color::DarkGray)
+        Style::default().fg(theme::TEXT_DIM)
     } else if matches!(op.current_step, OpStep::Done { success: false }) {
-        Style::default().fg(Color::Red)
+        Style::default().fg(theme::ERROR)
     } else {
-        Style::default().fg(Color::White)
+        Style::default().fg(theme::TEXT)
     };
 
     Line::from(vec![
@@ -104,7 +106,7 @@ fn format_op_line(op: &OpProgress, now: Instant) -> Line<'static> {
         Span::styled(format!(" {cmd}"), row_style),
         Span::styled(
             format!("  {elapsed:.1}s"),
-            Style::default().fg(Color::DarkGray),
+            Style::default().fg(theme::TEXT_DIM),
         ),
     ])
 }
@@ -121,14 +123,6 @@ fn trunc(s: &str, n: usize) -> String {
         out.push('…');
         out
     }
-}
-
-fn bottom_rect(percent_x: u16, height: u16, area: Rect) -> Rect {
-    let vertical = Layout::vertical([Constraint::Min(0), Constraint::Length(height)]).split(area);
-    let horizontal = Layout::horizontal([Constraint::Percentage(percent_x)])
-        .flex(Flex::Center)
-        .split(vertical[1]);
-    horizontal[0]
 }
 
 #[cfg(test)]

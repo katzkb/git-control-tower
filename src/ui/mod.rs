@@ -3,17 +3,19 @@ pub mod confirm_dialog;
 mod detail_pane;
 mod help_overlay;
 mod history_view;
+pub mod layout;
 mod log_view;
 mod main_view;
 pub mod markdown;
 pub mod notification;
 pub mod progress_panel;
 pub mod sidebar;
+pub mod theme;
 
 use ratatui::{
     Frame,
     layout::{Constraint, Layout},
-    style::{Color, Style},
+    style::Style,
     widgets::Paragraph,
 };
 
@@ -55,7 +57,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         ActiveView::History => " [History]  j/k:Scroll  Esc:Back  ?:Help  q:Quit".to_string(),
     };
     let status =
-        Paragraph::new(status_text).style(Style::default().fg(Color::White).bg(Color::DarkGray));
+        Paragraph::new(status_text).style(Style::default().fg(theme::TEXT).bg(theme::TEXT_DIM));
     frame.render_widget(status, chunks[1]);
 
     // Branch-create input modal

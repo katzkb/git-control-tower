@@ -7,8 +7,10 @@ use ratatui::{
 };
 
 use crate::app::App;
-use crate::git::types::{BranchEntry, PrDetail, RepoId, ReviewStatus};
+use crate::git::types::{BranchEntry, PrDetail, RepoId};
 use crate::ui::markdown;
+
+use crate::ui::theme;
 
 pub fn draw(frame: &mut Frame, area: Rect, app: &App) {
     let entry = app.selected_entry();
@@ -19,7 +21,7 @@ pub fn draw(frame: &mut Frame, area: Rect, app: &App) {
             Some(e) => format!(" {} ", e.name),
             None => " Detail ".to_string(),
         })
-        .border_style(Style::default().fg(Color::DarkGray));
+        .border_style(Style::default().fg(theme::TEXT_DIM));
 
     let mut lines: Vec<Line> = Vec::new();
 
@@ -37,7 +39,7 @@ pub fn draw(frame: &mut Frame, area: Rect, app: &App) {
     } else {
         lines.push(Line::from(Span::styled(
             " No branch selected",
-            Style::default().fg(Color::DarkGray),
+            Style::default().fg(theme::TEXT_DIM),
         )));
         lines.push(Line::from(""));
     }
@@ -50,7 +52,7 @@ pub fn draw(frame: &mut Frame, area: Rect, app: &App) {
     if lines.is_empty() {
         lines.push(Line::from(Span::styled(
             " No additional information",
-            Style::default().fg(Color::DarkGray),
+            Style::default().fg(theme::TEXT_DIM),
         )));
     }
 
@@ -62,7 +64,7 @@ pub fn draw(frame: &mut Frame, area: Rect, app: &App) {
 }
 
 fn section_header(title: &str) -> Line<'static> {
-    section_header_with_color(title, Color::Cyan)
+    section_header_with_color(title, theme::ACCENT)
 }
 
 fn section_header_with_color(title: &str, color: Color) -> Line<'static> {
@@ -78,7 +80,7 @@ fn draw_git_status_section(lines: &mut Vec<Line<'static>>, entry: &BranchEntry, 
     if entry.worktree.is_none() {
         lines.push(Line::from(Span::styled(
             "  —",
-            Style::default().fg(Color::DarkGray),
+            Style::default().fg(theme::TEXT_DIM),
         )));
         lines.push(Line::from(""));
         return;
@@ -89,7 +91,7 @@ fn draw_git_status_section(lines: &mut Vec<Line<'static>>, entry: &BranchEntry, 
         None => {
             lines.push(Line::from(Span::styled(
                 format!("  {spinner} Loading"),
-                Style::default().fg(Color::DarkGray),
+                Style::default().fg(theme::TEXT_DIM),
             )));
             lines.push(Line::from(""));
             return;
@@ -100,7 +102,7 @@ fn draw_git_status_section(lines: &mut Vec<Line<'static>>, entry: &BranchEntry, 
     for file in &status.staged {
         lines.push(Line::from(Span::styled(
             format!("  {file}"),
-            Style::default().fg(Color::Green),
+            Style::default().fg(theme::SUCCESS),
         )));
     }
 
@@ -108,7 +110,7 @@ fn draw_git_status_section(lines: &mut Vec<Line<'static>>, entry: &BranchEntry, 
     for file in &status.unstaged {
         lines.push(Line::from(Span::styled(
             format!("  {file}"),
-            Style::default().fg(Color::Red),
+            Style::default().fg(theme::ERROR),
         )));
     }
 
@@ -116,7 +118,7 @@ fn draw_git_status_section(lines: &mut Vec<Line<'static>>, entry: &BranchEntry, 
     for file in &status.untracked {
         lines.push(Line::from(Span::styled(
             format!("  ?? {file}"),
-            Style::default().fg(Color::DarkGray),
+            Style::default().fg(theme::TEXT_DIM),
         )));
     }
 
@@ -126,14 +128,14 @@ fn draw_git_status_section(lines: &mut Vec<Line<'static>>, entry: &BranchEntry, 
         if status.ahead > 0 {
             ab_spans.push(Span::styled(
                 format!("↑{}", status.ahead),
-                Style::default().fg(Color::Green),
+                Style::default().fg(theme::SUCCESS),
             ));
             ab_spans.push(Span::raw(" "));
         }
         if status.behind > 0 {
             ab_spans.push(Span::styled(
                 format!("↓{}", status.behind),
-                Style::default().fg(Color::Red),
+                Style::default().fg(theme::ERROR),
             ));
         }
         lines.push(Line::from(ab_spans));
@@ -148,7 +150,7 @@ fn draw_git_status_section(lines: &mut Vec<Line<'static>>, entry: &BranchEntry, 
     {
         lines.push(Line::from(Span::styled(
             "  (clean)",
-            Style::default().fg(Color::DarkGray),
+            Style::default().fg(theme::TEXT_DIM),
         )));
     }
 
@@ -162,13 +164,13 @@ fn draw_worktree_section(lines: &mut Vec<Line<'static>>, entry: &BranchEntry) {
         Some(wt) => {
             lines.push(Line::from(Span::styled(
                 format!("  {}", wt.path),
-                Style::default().fg(Color::White),
+                Style::default().fg(theme::TEXT),
             )));
         }
         None => {
             lines.push(Line::from(Span::styled(
                 "  —",
-                Style::default().fg(Color::DarkGray),
+                Style::default().fg(theme::TEXT_DIM),
             )));
         }
     }
@@ -188,7 +190,7 @@ fn draw_pr_section(
             lines.push(section_header("PR"));
             lines.push(Line::from(Span::styled(
                 "  —",
-                Style::default().fg(Color::DarkGray),
+                Style::default().fg(theme::TEXT_DIM),
             )));
             lines.push(Line::from(""));
             return;
@@ -205,11 +207,11 @@ fn draw_pr_section(
         && active != &entry.repo_id
     {
         lines.push(Line::from(vec![
-            Span::styled("  repo: ", Style::default().fg(Color::DarkGray)),
+            Span::styled("  repo: ", Style::default().fg(theme::TEXT_DIM)),
             Span::styled(
                 entry.repo_id.to_string(),
                 Style::default()
-                    .fg(Color::Cyan)
+                    .fg(theme::ACCENT)
                     .add_modifier(Modifier::BOLD),
             ),
         ]));
@@ -223,33 +225,22 @@ fn draw_pr_section(
 
     // Author + State
     let (state_str, state_color) = if pr.is_draft {
-        ("DRAFT".to_string(), Color::DarkGray)
+        ("DRAFT".to_string(), theme::TEXT_DIM)
     } else {
-        let color = match pr.state.as_str() {
-            "OPEN" => Color::Green,
-            "CLOSED" => Color::Red,
-            "MERGED" => Color::Magenta,
-            _ => Color::White,
-        };
-        (pr.state.clone(), color)
+        (pr.state.clone(), theme::pr_state_color(&pr.state))
     };
     lines.push(Line::from(vec![
-        Span::styled("  Author: ", Style::default().fg(Color::DarkGray)),
-        Span::styled(pr.author.clone(), Style::default().fg(Color::White)),
-        Span::styled("  State: ", Style::default().fg(Color::DarkGray)),
+        Span::styled("  Author: ", Style::default().fg(theme::TEXT_DIM)),
+        Span::styled(pr.author.clone(), Style::default().fg(theme::TEXT)),
+        Span::styled("  State: ", Style::default().fg(theme::TEXT_DIM)),
         Span::styled(state_str, Style::default().fg(state_color)),
     ]));
 
     // Review status
     if let Some(status) = &pr.review_status {
-        let (label, color) = match status {
-            ReviewStatus::NeedsReview => ("Needs review", Color::Red),
-            ReviewStatus::Approved => ("Approved", Color::Green),
-            ReviewStatus::ChangesRequested => ("Changes requested", Color::Yellow),
-            ReviewStatus::Commented => ("Commented", Color::Cyan),
-        };
+        let (label, color) = theme::review_status(status);
         lines.push(Line::from(vec![
-            Span::styled("  Review: ", Style::default().fg(Color::DarkGray)),
+            Span::styled("  Review: ", Style::default().fg(theme::TEXT_DIM)),
             Span::styled(label, Style::default().fg(color)),
         ]));
     }
@@ -261,12 +252,12 @@ fn draw_pr_section(
             lines.push(Line::from(vec![
                 Span::styled(
                     format!("  +{}", detail.additions),
-                    Style::default().fg(Color::Green),
+                    Style::default().fg(theme::SUCCESS),
                 ),
-                Span::styled(" / ", Style::default().fg(Color::DarkGray)),
+                Span::styled(" / ", Style::default().fg(theme::TEXT_DIM)),
                 Span::styled(
                     format!("-{}", detail.deletions),
-                    Style::default().fg(Color::Red),
+                    Style::default().fg(theme::ERROR),
                 ),
             ]));
 
@@ -276,7 +267,7 @@ fn draw_pr_section(
             if detail.body.trim().is_empty() {
                 lines.push(Line::from(Span::styled(
                     "  (no description)",
-                    Style::default().fg(Color::DarkGray),
+                    Style::default().fg(theme::TEXT_DIM),
                 )));
             } else {
                 let md_lines = markdown::render_markdown(&detail.body);
@@ -288,7 +279,7 @@ fn draw_pr_section(
     } else {
         lines.push(Line::from(Span::styled(
             format!("  {spinner} Loading"),
-            Style::default().fg(Color::DarkGray),
+            Style::default().fg(theme::TEXT_DIM),
         )));
     }
 
@@ -296,11 +287,11 @@ fn draw_pr_section(
 }
 
 fn draw_errors_section(lines: &mut Vec<Line<'static>>, errors: &[String]) {
-    lines.push(section_header_with_color("Errors", Color::Red));
+    lines.push(section_header_with_color("Errors", theme::ERROR));
     for err in errors {
         lines.push(Line::from(Span::styled(
             format!("  {err}"),
-            Style::default().fg(Color::Red),
+            Style::default().fg(theme::ERROR),
         )));
     }
     lines.push(Line::from(""));
