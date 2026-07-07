@@ -269,7 +269,6 @@ pub struct App {
 
     // Main View — unified entries
     pub entries: Vec<BranchEntry>,
-    pub entries_loaded: bool,
     pub main_filter: MainFilter,
     pub sidebar_scroll: usize,
     pub sidebar_offset: usize,
@@ -356,7 +355,6 @@ impl App {
             log_scroll: 0,
             history_scroll: 0,
             entries: Vec::new(),
-            entries_loaded: false,
             main_filter: MainFilter::default(),
             sidebar_scroll: 0,
             sidebar_offset: 0,

@@ -840,7 +840,6 @@ async fn startup(
     load_branches(app).await;
     let repo_info = active_id;
     app.rebuild_entries();
-    app.entries_loaded = true;
     app.request_details_for_selection();
 
     // Phase 2: Slow network loads (background, non-blocking)
