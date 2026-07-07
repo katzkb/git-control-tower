@@ -256,6 +256,16 @@ pub struct Inflight {
     pub wt_lists: HashSet<crate::git::types::RepoId>,
 }
 
+/// Modal/overlay UI state, listed in `handle_key` priority order (issue #220).
+#[derive(Default)]
+pub struct Overlays {
+    pub show_help: bool,
+    pub confirm_dialog: Option<PendingConfirm>,
+    pub action_menu: Option<ActionMenu>,
+    pub branch_create_input: Option<BranchCreateInput>,
+    pub notification: Option<Notification>,
+}
+
 /// Per-filter PR list caches keyed by `MainFilter`, their fetch parameters,
 /// and the PR-detail cache (issue #220).
 #[derive(Default)]
@@ -436,12 +446,8 @@ pub struct App {
     pub verbose: bool,
     pub verbose_errors: Vec<String>,
 
-    // Overlays
-    pub confirm_dialog: Option<PendingConfirm>,
-    pub action_menu: Option<ActionMenu>,
-    pub branch_create_input: Option<BranchCreateInput>,
-    pub notification: Option<Notification>,
-    pub show_help: bool,
+    // Modal/overlay UI state (issue #220).
+    pub overlays: Overlays,
 
     // Exit with cd path
     pub cd_path: Option<String>,
@@ -489,11 +495,7 @@ impl App {
             pr_detail_scroll: 0,
             verbose: false,
             verbose_errors: Vec::new(),
-            confirm_dialog: None,
-            action_menu: None,
-            branch_create_input: None,
-            notification: None,
-            show_help: false,
+            overlays: Overlays::default(),
             cd_path: None,
             commands: VecDeque::new(),
             selection_details_pending: false,
@@ -537,12 +539,12 @@ impl App {
         }
         // Don't auto-dismiss while a worktree operation is in progress
         if self.inflight.worktrees.is_empty()
-            && let Some(ref mut n) = self.notification
+            && let Some(ref mut n) = self.overlays.notification
         {
             if n.ticks_remaining > 0 {
                 n.ticks_remaining -= 1;
             } else {
-                self.notification = None;
+                self.overlays.notification = None;
             }
         }
     }
@@ -781,10 +783,10 @@ impl App {
 
     pub fn handle_key(&mut self, key: KeyEvent) {
         // Help overlay takes priority
-        if self.show_help {
+        if self.overlays.show_help {
             match key.code {
                 KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('?') => {
-                    self.show_help = false;
+                    self.overlays.show_help = false;
                 }
                 _ => {}
             }
@@ -792,19 +794,19 @@ impl App {
         }
 
         // Confirm dialog takes priority
-        if self.confirm_dialog.is_some() {
+        if self.overlays.confirm_dialog.is_some() {
             self.handle_confirm_key(key.code);
             return;
         }
 
         // Action menu takes priority
-        if self.action_menu.is_some() {
+        if self.overlays.action_menu.is_some() {
             self.handle_action_menu_key(key.code);
             return;
         }
 
         // Branch-create input modal takes priority
-        if self.branch_create_input.is_some() {
+        if self.overlays.branch_create_input.is_some() {
             self.handle_branch_create_input_key(key.code);
             return;
         }
@@ -816,7 +818,7 @@ impl App {
         }
 
         match key.code {
-            KeyCode::Char('?') => self.show_help = true,
+            KeyCode::Char('?') => self.overlays.show_help = true,
             KeyCode::Char('q') => {
                 if !self.progress.is_active() || self.quit_pressed_during_progress {
                     self.should_quit = true;
@@ -900,11 +902,11 @@ impl App {
                     // Signal branches/worktrees reload + PR fetch
                     self.push_command(Command::ReloadBranches);
                     self.push_command(Command::FetchPrs(self.main_filter));
-                    self.notification = Some(Notification::success("Refreshing…"));
+                    self.overlays.notification = Some(Notification::success("Refreshing…"));
                 }
                 ActiveView::Log => {
                     self.push_command(Command::ReloadCommits);
-                    self.notification = Some(Notification::success("Refreshing…"));
+                    self.overlays.notification = Some(Notification::success("Refreshing…"));
                 }
                 ActiveView::History => {
                     // History updates live as commands run — no manual refresh needed.
@@ -1013,7 +1015,7 @@ impl App {
                     // Snapshot the whole selection — the dispatcher re-filters
                     // (current/protected/inflight) at execution time.
                     let names: Vec<String> = self.branch_selected.iter().cloned().collect();
-                    self.confirm_dialog = Some(PendingConfirm {
+                    self.overlays.confirm_dialog = Some(PendingConfirm {
                         dialog: ConfirmDialog::new(title, msg),
                         on_confirm: Command::DeleteBranches(names),
                     });
@@ -1021,7 +1023,7 @@ impl App {
                     // Non-empty selection but nothing deletable (e.g. PR-only entries
                     // with no local branch and no worktree). Tell the user rather
                     // than silently no-op.
-                    self.notification = Some(Notification::error(
+                    self.overlays.notification = Some(Notification::error(
                         "Nothing to delete in selection".to_string(),
                     ));
                 } else if let Some(entry) = self.selected_entry().cloned()
@@ -1030,7 +1032,7 @@ impl App {
                     && !self.inflight.worktrees.contains(wt_path)
                 {
                     let path = wt_path.to_string();
-                    self.confirm_dialog = Some(PendingConfirm {
+                    self.overlays.confirm_dialog = Some(PendingConfirm {
                         dialog: ConfirmDialog::new(
                             "Delete Worktree",
                             format!("Remove worktree at {path}?"),
@@ -1061,7 +1063,7 @@ impl App {
                 };
                 let cross_repo_no_clone = !is_active && clone_path.is_none();
                 if cross_repo_no_clone {
-                    self.notification = Some(Notification::error(format!(
+                    self.overlays.notification = Some(Notification::error(format!(
                         "{} not cloned. Set [workspace] clone_root.",
                         entry.repo_id
                     )));
@@ -1087,7 +1089,8 @@ impl App {
                     entry.repo_id.clone(),
                     entry.name.clone(),
                 ));
-                self.notification = Some(Notification::success("Creating worktree...".to_string()));
+                self.overlays.notification =
+                    Some(Notification::success("Creating worktree...".to_string()));
             }
             KeyCode::Enter => {
                 self.open_action_menu();
@@ -1286,7 +1289,7 @@ impl App {
         }
 
         if !items.is_empty() {
-            self.action_menu = Some(ActionMenu {
+            self.overlays.action_menu = Some(ActionMenu {
                 items,
                 scroll: 0,
                 target: (entry.repo_id.clone(), entry.name.clone()),
@@ -1296,7 +1299,7 @@ impl App {
     }
 
     fn handle_action_menu_key(&mut self, code: KeyCode) {
-        let menu = match &mut self.action_menu {
+        let menu = match &mut self.overlays.action_menu {
             Some(m) => m,
             None => return,
         };
@@ -1310,11 +1313,11 @@ impl App {
             KeyCode::Enter => {
                 let action = menu.items[menu.scroll];
                 let (repo_id, branch_name) = menu.target.clone();
-                self.action_menu = None;
+                self.overlays.action_menu = None;
                 self.execute_action(action, &repo_id, &branch_name);
             }
             KeyCode::Esc => {
-                self.action_menu = None;
+                self.overlays.action_menu = None;
             }
             _ => {}
         }
@@ -1341,7 +1344,8 @@ impl App {
                     entry.repo_id.clone(),
                     entry.name.clone(),
                 ));
-                self.notification = Some(Notification::success("Creating worktree...".to_string()));
+                self.overlays.notification =
+                    Some(Notification::success("Creating worktree...".to_string()));
             }
             ActionItem::CdIntoWorktree => {
                 if let Some(path) = entry.worktree_path() {
@@ -1355,7 +1359,7 @@ impl App {
                     // Deleting via the action menu targets one worktree only —
                     // drop any checkbox selection so the sidebar reflects that.
                     self.branch_selected.clear();
-                    self.confirm_dialog = Some(PendingConfirm {
+                    self.overlays.confirm_dialog = Some(PendingConfirm {
                         dialog: ConfirmDialog::new(
                             "Delete Worktree",
                             format!("Remove worktree at {path}?"),
@@ -1365,7 +1369,7 @@ impl App {
                 }
             }
             ActionItem::CreateBranch => {
-                self.branch_create_input = Some(BranchCreateInput {
+                self.overlays.branch_create_input = Some(BranchCreateInput {
                     source: entry.name.clone(),
                     name: String::new(),
                     cursor: 0,
@@ -1379,7 +1383,7 @@ impl App {
                 } else {
                     format!("Delete branch {name}?")
                 };
-                self.confirm_dialog = Some(PendingConfirm {
+                self.overlays.confirm_dialog = Some(PendingConfirm {
                     dialog: ConfirmDialog::new("Delete Branch", msg),
                     on_confirm: Command::DeleteBranches(vec![name]),
                 });
@@ -1391,13 +1395,14 @@ impl App {
             }
             ActionItem::CopyBranchName => {
                 self.push_command(Command::CopyBranchName(entry.name.clone()));
-                self.notification = Some(Notification::success(format!("Copied: {}", entry.name)));
+                self.overlays.notification =
+                    Some(Notification::success(format!("Copied: {}", entry.name)));
             }
         }
     }
 
     fn handle_branch_create_input_key(&mut self, code: KeyCode) {
-        let input = match &mut self.branch_create_input {
+        let input = match &mut self.overlays.branch_create_input {
             Some(i) => i,
             None => return,
         };
@@ -1405,12 +1410,12 @@ impl App {
         input.cursor = input.cursor.min(char_len);
         match code {
             KeyCode::Esc => {
-                self.branch_create_input = None;
+                self.overlays.branch_create_input = None;
             }
             KeyCode::Enter if !input.name.is_empty() => {
                 let source = input.source.clone();
                 let name = input.name.clone();
-                self.branch_create_input = None;
+                self.overlays.branch_create_input = None;
                 self.push_command(Command::CreateBranch { source, name });
             }
             KeyCode::Left => {
@@ -1443,12 +1448,12 @@ impl App {
     fn handle_confirm_key(&mut self, code: KeyCode) {
         match code {
             KeyCode::Char('y') => {
-                if let Some(pending) = self.confirm_dialog.take() {
+                if let Some(pending) = self.overlays.confirm_dialog.take() {
                     self.push_command(pending.on_confirm);
                 }
             }
             KeyCode::Char('n') | KeyCode::Esc => {
-                if let Some(pending) = self.confirm_dialog.take()
+                if let Some(pending) = self.overlays.confirm_dialog.take()
                     && let Command::ForceDeleteWorktree(path) = pending.on_confirm
                 {
                     // Declining force-delete ends the op — release the path so
@@ -2241,7 +2246,7 @@ mod action_menu_cross_repo_tests {
         }];
         app.snap_scroll_to_entry();
         app.open_action_menu();
-        let menu = app.action_menu.as_ref().unwrap();
+        let menu = app.overlays.action_menu.as_ref().unwrap();
         assert!(menu.items.contains(&ActionItem::OpenPrInBrowser));
         assert!(menu.items.contains(&ActionItem::CopyBranchName));
         assert!(!menu.items.contains(&ActionItem::CreateWorktree));
@@ -2300,7 +2305,7 @@ mod action_menu_cross_repo_tests {
         }];
         app.snap_scroll_to_entry();
         app.open_action_menu();
-        let menu = app.action_menu.as_ref().unwrap();
+        let menu = app.overlays.action_menu.as_ref().unwrap();
         assert!(menu.items.contains(&ActionItem::CreateWorktree));
         assert!(menu.footer.is_none());
     }
@@ -2669,9 +2674,9 @@ mod command_queue_tests {
     #[test]
     fn confirm_y_pushes_on_confirm_and_closes_dialog() {
         let mut app = App::new(Config::default());
-        app.confirm_dialog = Some(pending(Command::DeleteWorktree("/wt/p".into())));
+        app.overlays.confirm_dialog = Some(pending(Command::DeleteWorktree("/wt/p".into())));
         app.handle_key(key(KeyCode::Char('y')));
-        assert!(app.confirm_dialog.is_none());
+        assert!(app.overlays.confirm_dialog.is_none());
         assert!(
             app.commands
                 .contains(&Command::DeleteWorktree("/wt/p".into()))
@@ -2681,9 +2686,9 @@ mod command_queue_tests {
     #[test]
     fn confirm_decline_pushes_nothing() {
         let mut app = App::new(Config::default());
-        app.confirm_dialog = Some(pending(Command::DeleteWorktree("/wt/p".into())));
+        app.overlays.confirm_dialog = Some(pending(Command::DeleteWorktree("/wt/p".into())));
         app.handle_key(key(KeyCode::Esc));
-        assert!(app.confirm_dialog.is_none());
+        assert!(app.overlays.confirm_dialog.is_none());
         assert!(app.commands.is_empty());
     }
 
@@ -2691,9 +2696,9 @@ mod command_queue_tests {
     fn confirm_decline_force_delete_releases_inflight_path() {
         let mut app = App::new(Config::default());
         app.inflight.worktrees.insert("/wt/p".to_string());
-        app.confirm_dialog = Some(pending(Command::ForceDeleteWorktree("/wt/p".into())));
+        app.overlays.confirm_dialog = Some(pending(Command::ForceDeleteWorktree("/wt/p".into())));
         app.handle_key(key(KeyCode::Char('n')));
-        assert!(app.confirm_dialog.is_none());
+        assert!(app.overlays.confirm_dialog.is_none());
         assert!(app.commands.is_empty());
         assert!(!app.inflight.worktrees.contains("/wt/p"));
     }

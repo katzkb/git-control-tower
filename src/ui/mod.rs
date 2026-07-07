@@ -61,19 +61,19 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     frame.render_widget(status, chunks[1]);
 
     // Branch-create input modal
-    if let Some(input) = &app.branch_create_input {
+    if let Some(input) = &app.overlays.branch_create_input {
         branch_create_input::draw(frame, input);
     }
 
     // Progress panel takes priority over notification while a delete batch runs.
     if app.progress.is_active() {
         progress_panel::draw(frame, &app.progress, app.quit_pressed_during_progress);
-    } else if let Some(notif) = &app.notification {
+    } else if let Some(notif) = &app.overlays.notification {
         notification::draw(frame, notif);
     }
 
     // Help overlay
-    if app.show_help {
+    if app.overlays.show_help {
         help_overlay::draw(frame);
     }
 }

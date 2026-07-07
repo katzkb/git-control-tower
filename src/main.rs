@@ -795,7 +795,7 @@ async fn startup(
         } else {
             String::new()
         };
-        app.notification = Some(Notification::error(format!(
+        app.overlays.notification = Some(Notification::error(format!(
             "Config warning: {first}{suffix}"
         )));
         app.verbose_errors
@@ -929,7 +929,8 @@ fn handle_result(app: &mut App, result: AsyncResult) {
             error,
         } => {
             app.inflight.pr_detail.remove(&(repo_id, number));
-            app.notification = Some(Notification::error(format!("Failed to load PR #{number}")));
+            app.overlays.notification =
+                Some(Notification::error(format!("Failed to load PR #{number}")));
             app.record_error(error);
         }
         AsyncResult::GitStatus { wt_path, status } => {
@@ -945,7 +946,7 @@ fn handle_result(app: &mut App, result: AsyncResult) {
         AsyncResult::GitStatusError(wt_path) => {
             app.inflight.git_status.remove(&wt_path);
             let msg = format!("git status failed for {wt_path}");
-            app.notification = Some(Notification::error(msg.clone()));
+            app.overlays.notification = Some(Notification::error(msg.clone()));
             app.record_error(msg);
         }
         AsyncResult::UserLogin(user) => {
@@ -960,7 +961,7 @@ fn handle_result(app: &mut App, result: AsyncResult) {
         }
         AsyncResult::UserLoginError(error_msg) => {
             app.raw.gh_user_load_failed = true;
-            app.notification = Some(Notification::error(
+            app.overlays.notification = Some(Notification::error(
                 "Failed to load GitHub user — is `gh` authenticated?".to_string(),
             ));
             app.record_error(error_msg);
@@ -981,11 +982,11 @@ fn handle_result(app: &mut App, result: AsyncResult) {
         } => {
             app.inflight.worktrees.remove(&wt_path);
             if copy_errors.is_empty() {
-                app.notification = Some(Notification::success(format!(
+                app.overlays.notification = Some(Notification::success(format!(
                     "Worktree created: {wt_path}"
                 )));
             } else {
-                app.notification = Some(Notification::success(format!(
+                app.overlays.notification = Some(Notification::success(format!(
                     "Worktree created: {wt_path} (copy errors: {})",
                     copy_errors.len()
                 )));
@@ -998,8 +999,8 @@ fn handle_result(app: &mut App, result: AsyncResult) {
             if let Some(repo_id) = target_repo {
                 app.cross_repo.wt_lists_per_repo.remove(&repo_id);
             }
-            if app.confirm_dialog.is_none() {
-                app.confirm_dialog = Some(crate::app::PendingConfirm {
+            if app.overlays.confirm_dialog.is_none() {
+                app.overlays.confirm_dialog = Some(crate::app::PendingConfirm {
                     dialog: crate::ui::confirm_dialog::ConfirmDialog::new(
                         "Move to Worktree",
                         format!(
@@ -1012,7 +1013,7 @@ fn handle_result(app: &mut App, result: AsyncResult) {
         }
         AsyncResult::WtCreateError { wt_path, message } => {
             app.inflight.worktrees.remove(&wt_path);
-            app.notification = Some(Notification::error(message));
+            app.overlays.notification = Some(Notification::error(message));
         }
         AsyncResult::OpStarted { op_id, label } => {
             app.progress.insert(op_id, OpProgress::new(label));
@@ -1048,7 +1049,7 @@ fn handle_result(app: &mut App, result: AsyncResult) {
                 } else {
                     format!("Deleted {}", success_parts.join(", "))
                 };
-                app.notification = Some(Notification::success(msg));
+                app.overlays.notification = Some(Notification::success(msg));
             } else {
                 let short: Vec<String> = failures
                     .iter()
@@ -1063,7 +1064,7 @@ fn handle_result(app: &mut App, result: AsyncResult) {
                         short.join("; ")
                     )
                 };
-                app.notification = Some(Notification::error(summary));
+                app.overlays.notification = Some(Notification::error(summary));
                 for err in failures {
                     app.record_error(err);
                 }
@@ -1074,7 +1075,7 @@ fn handle_result(app: &mut App, result: AsyncResult) {
         }
         AsyncResult::WtForceDecisionRequested { path, reason } => {
             // Plain remove failed; ask the user whether to force.
-            app.confirm_dialog = Some(crate::app::PendingConfirm {
+            app.overlays.confirm_dialog = Some(crate::app::PendingConfirm {
                 dialog: crate::ui::confirm_dialog::ConfirmDialog::new(
                     "Force Delete Worktree",
                     format!("{reason}\nForce remove {path}?"),
@@ -1107,14 +1108,14 @@ fn handle_result(app: &mut App, result: AsyncResult) {
             }
         }
         AsyncResult::BranchCreated { name, source } => {
-            app.notification = Some(Notification::success(format!(
+            app.overlays.notification = Some(Notification::success(format!(
                 "Created branch '{name}' from '{source}'"
             )));
             app.push_command(Command::ReloadBranches);
         }
         AsyncResult::BranchCreateError(err_str) => {
             let short = err_str.lines().next().unwrap_or(&err_str).to_string();
-            app.notification = Some(Notification::error(short));
+            app.overlays.notification = Some(Notification::error(short));
             app.record_error(err_str);
         }
     }
@@ -1240,7 +1241,7 @@ fn dispatch_command(app: &mut App, cmd: Command, tasks: &mut RunState) {
                 Some(p) => p,
                 None if is_active => std::env::current_dir().unwrap_or_default(),
                 None => {
-                    app.notification =
+                    app.overlays.notification =
                         Some(Notification::error(format!("{target_repo} not cloned")));
                     return;
                 }
@@ -1357,7 +1358,8 @@ fn dispatch_command(app: &mut App, cmd: Command, tasks: &mut RunState) {
             }
 
             if work.is_empty() {
-                app.notification = Some(Notification::error("Nothing to delete".to_string()));
+                app.overlays.notification =
+                    Some(Notification::error("Nothing to delete".to_string()));
             } else {
                 let ids: Vec<u64> = app.progress.allocate_ids(work.len()).collect();
                 let mut set: JoinSet<DeleteOpResult> = JoinSet::new();
@@ -1645,7 +1647,7 @@ fn report_fetch_errors(app: &mut App, context: &str, errors: Vec<String>) {
         String::new()
     };
     let toast = format!("{context}: {first}{suffix}");
-    app.notification = Some(Notification::error(toast));
+    app.overlays.notification = Some(Notification::error(toast));
     for e in errors {
         app.record_error(e);
     }
