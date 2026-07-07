@@ -6,20 +6,30 @@ use ratatui::{
     widgets::{Block, Borders, List, ListItem, ListState},
 };
 
-use crate::app::{App, MainFilter};
+use crate::app::{MainFilter, SidebarRow, ViewState};
 use crate::git::types::BranchEntry;
 
 use crate::ui::theme;
 
-pub fn draw(frame: &mut Frame, area: Rect, app: &mut App) {
-    let chunks = Layout::vertical([Constraint::Length(1), Constraint::Min(1)]).split(area);
-
-    draw_filter_bar(frame, chunks[0], app);
-    draw_entry_list(frame, chunks[1], app);
+/// Read-only state the sidebar needs from outside `ViewState`.
+pub struct SidebarContext<'a> {
+    /// Whether the current filter's PR list is still loading.
+    pub is_loading: bool,
+    pub spinner: &'static str,
+    pub show_merged: bool,
+    pub include_team_reviews: bool,
+    pub protected_branches: &'a [String],
 }
 
-fn draw_filter_bar(frame: &mut Frame, area: Rect, app: &App) {
-    let bar = if app.view.search_active {
+pub fn draw(frame: &mut Frame, area: Rect, view: &mut ViewState, ctx: &SidebarContext<'_>) {
+    let chunks = Layout::vertical([Constraint::Length(1), Constraint::Min(1)]).split(area);
+
+    draw_filter_bar(frame, chunks[0], view, ctx);
+    draw_entry_list(frame, chunks[1], view, ctx);
+}
+
+fn draw_filter_bar(frame: &mut Frame, area: Rect, view: &ViewState, ctx: &SidebarContext<'_>) {
+    let bar = if view.search_active {
         Line::from(vec![
             Span::styled(
                 " /",
@@ -27,14 +37,11 @@ fn draw_filter_bar(frame: &mut Frame, area: Rect, app: &App) {
                     .fg(theme::ACCENT)
                     .add_modifier(Modifier::BOLD),
             ),
-            Span::styled(
-                app.view.search_query.clone(),
-                Style::default().fg(theme::TEXT),
-            ),
+            Span::styled(view.search_query.clone(), Style::default().fg(theme::TEXT)),
             Span::styled("_", Style::default().fg(theme::ACCENT)),
         ])
     } else {
-        let label = app.view.main_filter.label();
+        let label = view.main_filter.label();
         let mut spans = vec![
             Span::styled(" Filter: ", Style::default().fg(theme::TEXT_DIM)),
             Span::styled(
@@ -46,9 +53,9 @@ fn draw_filter_bar(frame: &mut Frame, area: Rect, app: &App) {
         ];
         // Show merged toggle indicator for My PR / Review views
         if matches!(
-            app.view.main_filter,
+            view.main_filter,
             MainFilter::MyPr | MainFilter::ReviewRequested
-        ) && app.prs.show_merged
+        ) && ctx.show_merged
         {
             spans.push(Span::styled(
                 " [+merged]",
@@ -56,15 +63,15 @@ fn draw_filter_bar(frame: &mut Frame, area: Rect, app: &App) {
             ));
         }
         // Show active search filter
-        if !app.view.search_query.is_empty() {
+        if !view.search_query.is_empty() {
             spans.push(Span::styled(
-                format!(" /{}", app.view.search_query),
+                format!(" /{}", view.search_query),
                 Style::default().fg(theme::ACCENT),
             ));
         }
         // Show team toggle indicator for Review view
-        if app.view.main_filter == MainFilter::ReviewRequested {
-            let team_label = if app.prs.include_team_reviews {
+        if view.main_filter == MainFilter::ReviewRequested {
+            let team_label = if ctx.include_team_reviews {
                 " [+team]"
             } else {
                 " [me]"
@@ -73,10 +80,10 @@ fn draw_filter_bar(frame: &mut Frame, area: Rect, app: &App) {
         }
         // Show repo/PR counter when multiple repos are present
         if matches!(
-            app.view.main_filter,
+            view.main_filter,
             MainFilter::MyPr | MainFilter::ReviewRequested
         ) {
-            let filtered = app.filtered_entries();
+            let filtered = view.filtered_entries();
             let repo_count = filtered
                 .iter()
                 .map(|e| e.repo_id.clone())
@@ -98,25 +105,25 @@ fn draw_filter_bar(frame: &mut Frame, area: Rect, app: &App) {
     );
 }
 
-fn draw_entry_list(frame: &mut Frame, area: Rect, app: &mut App) {
-    let show_checkboxes = !app.view.branch_selected.is_empty();
-    let is_loading = app.is_current_view_loading();
+fn draw_entry_list(frame: &mut Frame, area: Rect, view: &mut ViewState, ctx: &SidebarContext<'_>) {
+    let show_checkboxes = !view.branch_selected.is_empty();
+    let is_loading = ctx.is_loading;
 
     // Build items and capture count before mutably borrowing app
     let (items, item_count): (Vec<ListItem>, usize) = {
-        let rows = app.sidebar_rows();
+        let rows = view.sidebar_rows();
         let item_count = rows.len();
         let items = if rows.is_empty() && is_loading {
-            let spinner = app.spinner_frame();
+            let spinner = ctx.spinner;
             vec![ListItem::new(Line::from(Span::styled(
                 format!("  {spinner} Loading"),
                 Style::default().fg(theme::TEXT_DIM),
             )))]
         } else if rows.is_empty() {
-            let msg = if !app.view.search_query.is_empty() {
+            let msg = if !view.search_query.is_empty() {
                 "  No branches match the search"
             } else {
-                match app.view.main_filter {
+                match view.main_filter {
                     MainFilter::Local => "  No local branches",
                     MainFilter::MyPr => "  No branches with your PRs",
                     MainFilter::ReviewRequested => "  No branches awaiting review",
@@ -127,10 +134,10 @@ fn draw_entry_list(frame: &mut Frame, area: Rect, app: &mut App) {
                 Style::default().fg(theme::TEXT_DIM),
             )))]
         } else {
-            let search_query = &app.view.search_query;
+            let search_query = &view.search_query;
             rows.iter()
                 .map(|row| match row {
-                    crate::app::SidebarRow::Header { repo_id } => {
+                    SidebarRow::Header { repo_id } => {
                         ListItem::new(Line::from(vec![Span::styled(
                             format!(" ▾ {repo_id} "),
                             Style::default()
@@ -138,9 +145,9 @@ fn draw_entry_list(frame: &mut Frame, area: Rect, app: &mut App) {
                                 .add_modifier(Modifier::DIM | Modifier::BOLD),
                         )]))
                     }
-                    crate::app::SidebarRow::Entry(entry) => {
-                        let is_selected = app.view.branch_selected.contains(&entry.name);
-                        let is_protected = app.is_protected_branch(&entry.name);
+                    SidebarRow::Entry(entry) => {
+                        let is_selected = view.branch_selected.contains(&entry.name);
+                        let is_protected = ctx.protected_branches.iter().any(|b| b == &entry.name);
                         ListItem::new(format_entry_line(
                             entry,
                             show_checkboxes,
@@ -157,7 +164,7 @@ fn draw_entry_list(frame: &mut Frame, area: Rect, app: &mut App) {
 
     // Adjust viewport offset and clamp scroll/offset to valid ranges
     let visible_height = area.height.saturating_sub(2) as usize;
-    app.adjust_sidebar_offset(visible_height, item_count);
+    view.adjust_sidebar_offset(visible_height, item_count);
 
     let block = Block::default()
         .borders(Borders::ALL)
@@ -170,9 +177,9 @@ fn draw_entry_list(frame: &mut Frame, area: Rect, app: &mut App) {
 
     let mut state = ListState::default();
     if item_count > 0 {
-        state.select(Some(app.view.sidebar_scroll));
+        state.select(Some(view.sidebar_scroll));
     }
-    *state.offset_mut() = app.view.sidebar_offset;
+    *state.offset_mut() = view.sidebar_offset;
     frame.render_stateful_widget(list, area, &mut state);
 }
 

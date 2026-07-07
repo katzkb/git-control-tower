@@ -695,10 +695,6 @@ impl App {
         self.overlays.notification = Some(Notification::error(message));
     }
 
-    pub fn adjust_sidebar_offset(&mut self, visible_height: usize, item_count: usize) {
-        self.view.adjust_sidebar_offset(visible_height, item_count)
-    }
-
     pub fn is_current_view_loading(&self) -> bool {
         self.prs.is_loading(self.view.main_filter)
     }
@@ -730,10 +726,6 @@ impl App {
 
     pub fn filtered_entries(&self) -> Vec<&BranchEntry> {
         self.view.filtered_entries()
-    }
-
-    pub fn sidebar_rows(&self) -> Vec<SidebarRow<'_>> {
-        self.view.sidebar_rows()
     }
 
     pub fn selected_entry(&self) -> Option<&BranchEntry> {
@@ -1991,7 +1983,7 @@ mod cursor_skip_tests {
 
         // j → should jump from index 1 to index 3 (skip Header at index 2)
         app.handle_key(KeyEvent::new(KeyCode::Char('j'), KeyModifiers::NONE));
-        let rows = app.sidebar_rows();
+        let rows = app.view.sidebar_rows();
         assert_eq!(app.view.sidebar_scroll, 3);
         assert!(matches!(
             rows[app.view.sidebar_scroll],
@@ -2000,7 +1992,7 @@ mod cursor_skip_tests {
 
         // k → should jump back from 3 to 1
         app.handle_key(KeyEvent::new(KeyCode::Char('k'), KeyModifiers::NONE));
-        let rows = app.sidebar_rows();
+        let rows = app.view.sidebar_rows();
         assert_eq!(app.view.sidebar_scroll, 1);
         assert!(matches!(
             rows[app.view.sidebar_scroll],
@@ -2062,7 +2054,7 @@ mod sidebar_rows_tests {
                 git_status: None,
             },
         ];
-        let rows = app.sidebar_rows();
+        let rows = app.view.sidebar_rows();
         let header_count = rows
             .iter()
             .filter(|r| matches!(r, SidebarRow::Header { .. }))
@@ -2119,7 +2111,7 @@ mod sidebar_rows_tests {
                 git_status: None,
             },
         ];
-        let rows = app.sidebar_rows();
+        let rows = app.view.sidebar_rows();
         assert_eq!(
             rows.iter()
                 .filter(|r| matches!(r, SidebarRow::Header { .. }))
@@ -2157,7 +2149,7 @@ mod sidebar_rows_tests {
             pull_request: None,
             git_status: None,
         }];
-        let rows = app.sidebar_rows();
+        let rows = app.view.sidebar_rows();
         assert_eq!(
             rows.iter()
                 .filter(|r| matches!(r, SidebarRow::Header { .. }))
