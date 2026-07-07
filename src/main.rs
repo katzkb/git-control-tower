@@ -887,7 +887,7 @@ async fn startup(
         });
     } else {
         // No repo info available (no origin remote or unsupported URL format)
-        app.local_prs_loaded = true;
+        app.prs.local_loaded = true;
     }
 
     repo_info
@@ -908,20 +908,7 @@ fn apply_pr_list(
     }
     report_fetch_errors(app, "PR fetch failed", errors);
     seed_repos_from_prs(&mut app.cross_repo.repos, &prs);
-    match filter {
-        MainFilter::Local => {
-            app.local_prs = prs;
-            app.local_prs_loaded = true;
-        }
-        MainFilter::MyPr => {
-            app.my_prs = prs;
-            app.my_prs_loaded = true;
-        }
-        MainFilter::ReviewRequested => {
-            app.review_prs = prs;
-            app.review_prs_loaded = true;
-        }
-    }
+    app.prs.set(filter, prs);
     if app.main_filter == filter {
         app.rebuild_entries_and_clamp();
         app.request_details_for_selection();
@@ -934,7 +921,7 @@ fn handle_result(app: &mut App, result: AsyncResult) {
         AsyncResult::PrDetail { repo_id, detail } => {
             let key = (repo_id.clone(), detail.number);
             app.inflight.pr_detail.remove(&key);
-            app.pr_detail_cache.insert(key, detail);
+            app.prs.detail.insert(key, detail);
         }
         AsyncResult::PrDetailError {
             repo_id,
@@ -964,7 +951,7 @@ fn handle_result(app: &mut App, result: AsyncResult) {
         AsyncResult::UserLogin(user) => {
             app.raw.gh_user = user;
             // Recompute review status now that we know the user
-            for pr in &mut app.review_prs {
+            for pr in &mut app.prs.review {
                 pr.review_status = Some(compute_review_status(pr, &app.raw.gh_user));
             }
             if app.main_filter == MainFilter::ReviewRequested {
@@ -1604,7 +1591,7 @@ fn dispatch_command(app: &mut App, cmd: Command, tasks: &mut RunState) {
                     }
                 }
                 MainFilter::MyPr => {
-                    let show_merged = app.show_merged;
+                    let show_merged = app.prs.show_merged;
                     let hosts = app.known_hosts();
                     tokio::spawn(async move {
                         let (prs, errors) = data::fetch_my_prs(show_merged, &hosts).await;
@@ -1619,13 +1606,13 @@ fn dispatch_command(app: &mut App, cmd: Command, tasks: &mut RunState) {
                     // team PRs even in me-only mode. If the user-login fetch failed,
                     // proceed anyway — no point in spinning forever.
                     if app.raw.gh_user.is_empty()
-                        && !app.include_team_reviews
+                        && !app.prs.include_team_reviews
                         && !app.raw.gh_user_load_failed
                     {
                         app.push_command(Command::FetchPrs(MainFilter::ReviewRequested));
                     } else {
-                        let show_merged = app.show_merged;
-                        let include_team = app.include_team_reviews;
+                        let show_merged = app.prs.show_merged;
+                        let include_team = app.prs.include_team_reviews;
                         let gh_user = app.raw.gh_user.clone();
                         let hosts = app.known_hosts();
                         tokio::spawn(async move {

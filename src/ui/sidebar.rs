@@ -45,7 +45,7 @@ fn draw_filter_bar(frame: &mut Frame, area: Rect, app: &App) {
         if matches!(
             app.main_filter,
             MainFilter::MyPr | MainFilter::ReviewRequested
-        ) && app.show_merged
+        ) && app.prs.show_merged
         {
             spans.push(Span::styled(
                 " [+merged]",
@@ -61,7 +61,7 @@ fn draw_filter_bar(frame: &mut Frame, area: Rect, app: &App) {
         }
         // Show team toggle indicator for Review view
         if app.main_filter == MainFilter::ReviewRequested {
-            let team_label = if app.include_team_reviews {
+            let team_label = if app.prs.include_team_reviews {
                 " [+team]"
             } else {
                 " [me]"

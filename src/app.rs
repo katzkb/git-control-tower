@@ -256,6 +256,77 @@ pub struct Inflight {
     pub wt_lists: HashSet<crate::git::types::RepoId>,
 }
 
+/// Per-filter PR list caches keyed by `MainFilter`, their fetch parameters,
+/// and the PR-detail cache (issue #220).
+#[derive(Default)]
+pub struct PrCaches {
+    pub local: Vec<PullRequest>,
+    pub my: Vec<PullRequest>,
+    pub review: Vec<PullRequest>,
+    pub local_loaded: bool,
+    pub my_loaded: bool,
+    pub review_loaded: bool,
+    pub show_merged: bool,
+    pub include_team_reviews: bool,
+    /// PR detail bodies for the detail pane, cached by `(RepoId, PR number)`.
+    pub detail: HashMap<(crate::git::types::RepoId, u64), PrDetail>,
+}
+
+impl PrCaches {
+    pub fn current(&self, filter: MainFilter) -> &[PullRequest] {
+        match filter {
+            MainFilter::Local => &self.local,
+            MainFilter::MyPr => &self.my,
+            MainFilter::ReviewRequested => &self.review,
+        }
+    }
+
+    /// A filter's list counts as loading until its first fetch lands.
+    pub fn is_loading(&self, filter: MainFilter) -> bool {
+        match filter {
+            MainFilter::Local => !self.local_loaded,
+            MainFilter::MyPr => !self.my_loaded,
+            MainFilter::ReviewRequested => !self.review_loaded,
+        }
+    }
+
+    /// Store a fetched PR list for `filter` and mark it loaded.
+    pub fn set(&mut self, filter: MainFilter, prs: Vec<PullRequest>) {
+        match filter {
+            MainFilter::Local => {
+                self.local = prs;
+                self.local_loaded = true;
+            }
+            MainFilter::MyPr => {
+                self.my = prs;
+                self.my_loaded = true;
+            }
+            MainFilter::ReviewRequested => {
+                self.review = prs;
+                self.review_loaded = true;
+            }
+        }
+    }
+
+    /// Drop a filter's cached list so the next fetch is forced.
+    pub fn invalidate(&mut self, filter: MainFilter) {
+        match filter {
+            MainFilter::Local => {
+                self.local.clear();
+                self.local_loaded = false;
+            }
+            MainFilter::MyPr => {
+                self.my.clear();
+                self.my_loaded = false;
+            }
+            MainFilter::ReviewRequested => {
+                self.review.clear();
+                self.review_loaded = false;
+            }
+        }
+    }
+}
+
 /// Raw data fetched from `git`/`gh`: inputs to `rebuild_entries` and the Log
 /// view, plus the gh identity used for review-status computation (issue #220).
 #[derive(Default)]
@@ -355,18 +426,10 @@ pub struct App {
     // Raw data fetched from git/gh (issue #220).
     pub raw: RawData,
 
-    // Per-view PR caches
-    pub local_prs: Vec<PullRequest>,
-    pub my_prs: Vec<PullRequest>,
-    pub review_prs: Vec<PullRequest>,
-    pub local_prs_loaded: bool,
-    pub my_prs_loaded: bool,
-    pub review_prs_loaded: bool,
-    pub show_merged: bool,
-    pub include_team_reviews: bool,
+    // Per-filter PR caches and the PR-detail cache (issue #220).
+    pub prs: PrCaches,
 
-    // PR Detail (for detail pane, cached by (RepoId, PR number))
-    pub pr_detail_cache: HashMap<(crate::git::types::RepoId, u64), PrDetail>,
+    // Detail-pane scroll position.
     pub pr_detail_scroll: usize,
 
     // Verbose mode
@@ -422,15 +485,7 @@ impl App {
             search_query: String::new(),
             search_pre_scroll: 0,
             raw: RawData::default(),
-            local_prs: Vec::new(),
-            my_prs: Vec::new(),
-            review_prs: Vec::new(),
-            local_prs_loaded: false,
-            my_prs_loaded: false,
-            review_prs_loaded: false,
-            show_merged: false,
-            include_team_reviews: false,
-            pr_detail_cache: HashMap::new(),
+            prs: PrCaches::default(),
             pr_detail_scroll: 0,
             verbose: false,
             verbose_errors: Vec::new(),
@@ -469,11 +524,7 @@ impl App {
     }
 
     pub fn current_prs(&self) -> &[PullRequest] {
-        match self.main_filter {
-            MainFilter::Local => &self.local_prs,
-            MainFilter::MyPr => &self.my_prs,
-            MainFilter::ReviewRequested => &self.review_prs,
-        }
+        self.prs.current(self.main_filter)
     }
 
     const SPINNER_FRAMES: &'static [&'static str] =
@@ -523,11 +574,7 @@ impl App {
     }
 
     pub fn is_current_view_loading(&self) -> bool {
-        match self.main_filter {
-            MainFilter::Local => !self.local_prs_loaded,
-            MainFilter::MyPr => !self.my_prs_loaded,
-            MainFilter::ReviewRequested => !self.review_prs_loaded,
-        }
+        self.prs.is_loading(self.main_filter)
     }
 
     pub fn rebuild_entries(&mut self) {
@@ -671,7 +718,7 @@ impl App {
     pub fn selected_pr_detail(&self) -> Option<&PrDetail> {
         let entry = self.selected_entry()?;
         let pr_num = entry.pr_number()?;
-        self.pr_detail_cache.get(&(entry.repo_id.clone(), pr_num))
+        self.prs.detail.get(&(entry.repo_id.clone(), pr_num))
     }
 
     /// Signal that the selection changed. The actual detail fetches are
@@ -695,7 +742,8 @@ impl App {
             // Request PR detail if entry has a PR and it's not cached
             if let Some(pr_num) = entry.pr_number()
                 && !self
-                    .pr_detail_cache
+                    .prs
+                    .detail
                     .contains_key(&(entry.repo_id.clone(), pr_num))
             {
                 self.push_command(Command::FetchPrDetail(entry.repo_id.clone(), pr_num));
@@ -807,7 +855,7 @@ impl App {
                 self.sidebar_offset = 0;
                 self.rebuild_entries();
                 self.snap_scroll_to_entry();
-                if !self.local_prs_loaded {
+                if !self.prs.local_loaded {
                     self.push_command(Command::FetchPrs(MainFilter::Local));
                 }
                 self.request_details_for_selection();
@@ -820,7 +868,7 @@ impl App {
                 self.sidebar_offset = 0;
                 self.rebuild_entries();
                 self.snap_scroll_to_entry();
-                if !self.my_prs_loaded {
+                if !self.prs.my_loaded {
                     self.push_command(Command::FetchPrs(MainFilter::MyPr));
                 }
                 self.request_details_for_selection();
@@ -833,7 +881,7 @@ impl App {
                 self.sidebar_offset = 0;
                 self.rebuild_entries();
                 self.snap_scroll_to_entry();
-                if !self.review_prs_loaded {
+                if !self.prs.review_loaded {
                     self.push_command(Command::FetchPrs(MainFilter::ReviewRequested));
                 }
                 self.request_details_for_selection();
@@ -841,24 +889,11 @@ impl App {
             KeyCode::Char('r') => match self.active_view {
                 ActiveView::Main => {
                     // Invalidate current filter's PR cache so the fetch is forced
-                    match self.main_filter {
-                        MainFilter::Local => {
-                            self.local_prs.clear();
-                            self.local_prs_loaded = false;
-                        }
-                        MainFilter::MyPr => {
-                            self.my_prs.clear();
-                            self.my_prs_loaded = false;
-                        }
-                        MainFilter::ReviewRequested => {
-                            self.review_prs.clear();
-                            self.review_prs_loaded = false;
-                        }
-                    }
+                    self.prs.invalidate(self.main_filter);
                     // Clear PR detail cache for ALL filters, not just the current
                     // one — stale detail bodies are risky after a refresh, and the
                     // detail pane will refetch on the next selection.
-                    self.pr_detail_cache.clear();
+                    self.prs.detail.clear();
                     // Invalidate cross-repo worktree list caches so they re-fetch.
                     self.cross_repo.wt_lists_per_repo.clear();
                     self.inflight.wt_lists.clear();
@@ -1062,12 +1097,10 @@ impl App {
                     self.main_filter,
                     MainFilter::MyPr | MainFilter::ReviewRequested
                 ) {
-                    self.show_merged = !self.show_merged;
+                    self.prs.show_merged = !self.prs.show_merged;
                     // Invalidate both caches since merged state changed
-                    self.my_prs.clear();
-                    self.my_prs_loaded = false;
-                    self.review_prs.clear();
-                    self.review_prs_loaded = false;
+                    self.prs.invalidate(MainFilter::MyPr);
+                    self.prs.invalidate(MainFilter::ReviewRequested);
                     self.rebuild_entries();
                     self.push_command(Command::FetchPrs(self.main_filter));
                     self.sidebar_scroll = 0;
@@ -1076,9 +1109,8 @@ impl App {
                 }
             }
             KeyCode::Char('t') if self.main_filter == MainFilter::ReviewRequested => {
-                self.include_team_reviews = !self.include_team_reviews;
-                self.review_prs.clear();
-                self.review_prs_loaded = false;
+                self.prs.include_team_reviews = !self.prs.include_team_reviews;
+                self.prs.invalidate(MainFilter::ReviewRequested);
                 self.rebuild_entries();
                 self.push_command(Command::FetchPrs(MainFilter::ReviewRequested));
                 self.sidebar_scroll = 0;
@@ -1729,13 +1761,11 @@ mod pr_detail_cache_tests {
             additions: 0,
             deletions: 0,
         };
-        app.pr_detail_cache
-            .insert((id_a.clone(), 1), detail_a.clone());
-        app.pr_detail_cache
-            .insert((id_b.clone(), 1), detail_b.clone());
-        assert_eq!(app.pr_detail_cache.len(), 2);
-        assert_eq!(app.pr_detail_cache.get(&(id_a, 1)).unwrap().body, "A");
-        assert_eq!(app.pr_detail_cache.get(&(id_b, 1)).unwrap().body, "B");
+        app.prs.detail.insert((id_a.clone(), 1), detail_a.clone());
+        app.prs.detail.insert((id_b.clone(), 1), detail_b.clone());
+        assert_eq!(app.prs.detail.len(), 2);
+        assert_eq!(app.prs.detail.get(&(id_a, 1)).unwrap().body, "A");
+        assert_eq!(app.prs.detail.get(&(id_b, 1)).unwrap().body, "B");
     }
 }
 
@@ -2523,7 +2553,7 @@ mod command_queue_tests {
         assert!(app.commands.contains(&Command::FetchPrs(MainFilter::MyPr)));
 
         let mut loaded = App::new(Config::default());
-        loaded.my_prs_loaded = true;
+        loaded.prs.my_loaded = true;
         loaded.handle_key(key(KeyCode::Char('2')));
         assert!(
             !loaded
@@ -2615,7 +2645,7 @@ mod command_queue_tests {
         use crate::git::types::PrDetail;
         let mut app = app_with_pr_entries();
         let repo = app.entries[0].repo_id.clone();
-        app.pr_detail_cache.insert(
+        app.prs.detail.insert(
             (repo, 1),
             PrDetail {
                 number: 1,
