@@ -67,7 +67,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
 
     // Progress panel takes priority over notification while a delete batch runs.
     if app.progress.is_active() {
-        progress_panel::draw(frame, &app.progress, app.quit_pressed_during_progress);
+        progress_panel::draw(frame, &app.progress);
     } else if let Some(notif) = &app.overlays.notification {
         notification::draw(frame, notif);
     }

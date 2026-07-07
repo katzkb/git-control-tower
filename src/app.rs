@@ -171,6 +171,10 @@ pub struct ProgressTracker {
     pub ops: BTreeMap<u64, OpProgress>,
     next_id: u64,
     pub started_at: Option<Instant>,
+    /// `q`/`Esc` was pressed while ops were active; the next press quits.
+    /// Reset explicitly by the main loop when the op batch finishes —
+    /// deliberately not folded into `clear()`/`sweep_unfinished()` (issue #220).
+    pub quit_pressed: bool,
 }
 
 impl ProgressTracker {
@@ -604,7 +608,6 @@ pub struct App {
     // Async-work dedup bookkeeping (fetches, reloads, worktree ops).
     pub inflight: Inflight,
     pub progress: ProgressTracker,
-    pub quit_pressed_during_progress: bool,
 
     // Spinner animation
     spinner_tick: usize,
@@ -632,7 +635,6 @@ impl App {
             selection_details_pending: false,
             inflight: Inflight::default(),
             progress: ProgressTracker::default(),
-            quit_pressed_during_progress: false,
             spinner_tick: 0,
             config,
             cross_repo: CrossRepoState::default(),
@@ -836,10 +838,10 @@ impl App {
         match key.code {
             KeyCode::Char('?') => self.overlays.show_help = true,
             KeyCode::Char('q') => {
-                if !self.progress.is_active() || self.quit_pressed_during_progress {
+                if !self.progress.is_active() || self.progress.quit_pressed {
                     self.should_quit = true;
                 } else {
-                    self.quit_pressed_during_progress = true;
+                    self.progress.quit_pressed = true;
                 }
             }
             KeyCode::Esc => {
@@ -852,10 +854,10 @@ impl App {
                     self.request_details_for_selection();
                 } else if matches!(self.active_view, ActiveView::Log | ActiveView::History) {
                     self.active_view = ActiveView::Main;
-                } else if !self.progress.is_active() || self.quit_pressed_during_progress {
+                } else if !self.progress.is_active() || self.progress.quit_pressed {
                     self.should_quit = true;
                 } else {
-                    self.quit_pressed_during_progress = true;
+                    self.progress.quit_pressed = true;
                 }
             }
             KeyCode::Char('l') => self.active_view = ActiveView::Log,
@@ -1710,7 +1712,7 @@ mod text_edit_tests {
             crossterm::event::KeyModifiers::NONE,
         ));
         assert!(!app.should_quit);
-        assert!(app.quit_pressed_during_progress);
+        assert!(app.progress.quit_pressed);
 
         // Second 'q': force quits.
         app.handle_key(crossterm::event::KeyEvent::new(
@@ -1744,7 +1746,7 @@ mod text_edit_tests {
             crossterm::event::KeyModifiers::NONE,
         ));
         assert!(!app.should_quit);
-        assert!(app.quit_pressed_during_progress);
+        assert!(app.progress.quit_pressed);
 
         // Second Esc: force quits.
         app.handle_key(crossterm::event::KeyEvent::new(

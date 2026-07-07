@@ -1071,7 +1071,7 @@ fn handle_result(app: &mut App, result: AsyncResult) {
                 }
             }
             app.progress.clear();
-            app.quit_pressed_during_progress = false;
+            app.progress.quit_pressed = false;
             app.push_command(Command::ReloadBranches);
         }
         AsyncResult::WtForceDecisionRequested { path, reason } => {
