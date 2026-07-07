@@ -47,6 +47,53 @@ pub enum ReviewStatus {
     Commented,
 }
 
+/// Raw GitHub GraphQL `PullRequestState` — a closed three-value enum.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum PrState {
+    Open,
+    Closed,
+    Merged,
+}
+
+impl PrState {
+    /// Parse a raw GraphQL value. `None` for anything outside the closed
+    /// variant set — impossible today; it would signal a GitHub API change.
+    pub fn from_graphql(s: &str) -> Option<Self> {
+        match s {
+            "OPEN" => Some(Self::Open),
+            "CLOSED" => Some(Self::Closed),
+            "MERGED" => Some(Self::Merged),
+            _ => None,
+        }
+    }
+}
+
+/// Raw GitHub GraphQL `PullRequestReviewState`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum ReviewState {
+    Approved,
+    ChangesRequested,
+    Commented,
+    Dismissed,
+    Pending,
+}
+
+impl ReviewState {
+    /// Parse a raw GraphQL value. Unknown values fall back to `Commented`,
+    /// preserving the long-standing catch-all in review-status derivation.
+    pub fn from_graphql(s: &str) -> Self {
+        match s {
+            "APPROVED" => Self::Approved,
+            "CHANGES_REQUESTED" => Self::ChangesRequested,
+            "DISMISSED" => Self::Dismissed,
+            "PENDING" => Self::Pending,
+            _ => Self::Commented,
+        }
+    }
+}
+
 // label() methods are on the UI side (sidebar.rs, detail_pane.rs) to keep
 // display logic separate from data types.
 
@@ -74,7 +121,7 @@ pub struct PullRequest {
     pub title: String,
     #[serde(deserialize_with = "deserialize_author")]
     pub author: String,
-    pub state: String,
+    pub state: PrState,
     #[serde(rename = "headRefName")]
     pub head_ref: String,
     #[serde(rename = "updatedAt")]
@@ -101,7 +148,7 @@ pub struct ReviewRequest {
 pub struct LatestReview {
     #[serde(deserialize_with = "deserialize_author")]
     pub author: String,
-    pub state: String,
+    pub state: ReviewState,
 }
 
 fn deserialize_author<'de, D>(deserializer: D) -> Result<String, D::Error>
@@ -162,7 +209,7 @@ impl BranchEntry {
     pub fn pr_is_merged(&self) -> bool {
         self.pull_request
             .as_ref()
-            .is_some_and(|pr| pr.state == "MERGED")
+            .is_some_and(|pr| pr.state == PrState::Merged)
     }
 
     pub fn worktree_path(&self) -> Option<&str> {

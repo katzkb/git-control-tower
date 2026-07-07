@@ -1817,7 +1817,7 @@ mod cursor_skip_tests {
     fn cursor_moves_skips_headers_in_grouped_view() {
         use crate::app::SidebarRow;
         use crate::config::Config;
-        use crate::git::types::{BranchEntry, PullRequest, RepoId};
+        use crate::git::types::{BranchEntry, PrState, PullRequest, RepoId};
         use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
         let mut app = App::new(Config::default());
         let active = RepoId {
@@ -1836,7 +1836,7 @@ mod cursor_skip_tests {
             number: num,
             title: "t".into(),
             author: "u".into(),
-            state: "OPEN".into(),
+            state: PrState::Open,
             head_ref: head.into(),
             updated_at: "2024".into(),
             is_draft: false,
@@ -1890,7 +1890,7 @@ mod sidebar_rows_tests {
     fn render_rows_groups_when_multi_repo() {
         use crate::app::SidebarRow;
         use crate::config::Config;
-        use crate::git::types::{BranchEntry, PullRequest, RepoId};
+        use crate::git::types::{BranchEntry, PrState, PullRequest, RepoId};
         let mut app = App::new(Config::default());
         let active = RepoId {
             host: None,
@@ -1908,7 +1908,7 @@ mod sidebar_rows_tests {
             number: num,
             title: "x".into(),
             author: "u".into(),
-            state: "OPEN".into(),
+            state: PrState::Open,
             head_ref: head.into(),
             updated_at: "2024".into(),
             is_draft: false,
@@ -1952,7 +1952,7 @@ mod sidebar_rows_tests {
     fn render_rows_no_headers_when_single_repo() {
         use crate::app::SidebarRow;
         use crate::config::Config;
-        use crate::git::types::{BranchEntry, PullRequest, RepoId};
+        use crate::git::types::{BranchEntry, PrState, PullRequest, RepoId};
         let mut app = App::new(Config::default());
         let active = RepoId {
             host: None,
@@ -1965,7 +1965,7 @@ mod sidebar_rows_tests {
             number: num,
             title: "x".into(),
             author: "u".into(),
-            state: "OPEN".into(),
+            state: PrState::Open,
             head_ref: head.into(),
             updated_at: "2024".into(),
             is_draft: false,
@@ -2109,7 +2109,7 @@ mod action_menu_cross_repo_tests {
     fn action_menu_cross_repo_no_clone_excludes_worktree_actions() {
         use crate::app::ActionItem;
         use crate::config::Config;
-        use crate::git::types::{BranchEntry, PullRequest, RepoId, RepoMeta};
+        use crate::git::types::{BranchEntry, PrState, PullRequest, RepoId, RepoMeta};
         let mut app = App::new(Config::default());
         let active = RepoId {
             host: None,
@@ -2139,7 +2139,7 @@ mod action_menu_cross_repo_tests {
                 number: 1,
                 title: "x".into(),
                 author: "u".into(),
-                state: "OPEN".into(),
+                state: PrState::Open,
                 head_ref: "feat".into(),
                 updated_at: "2024".into(),
                 is_draft: false,
@@ -2165,7 +2165,7 @@ mod action_menu_cross_repo_tests {
     fn action_menu_cross_repo_with_clone_enables_worktree_create() {
         use crate::app::ActionItem;
         use crate::config::Config;
-        use crate::git::types::{BranchEntry, PullRequest, RepoId, RepoMeta};
+        use crate::git::types::{BranchEntry, PrState, PullRequest, RepoId, RepoMeta};
         let mut app = App::new(Config::default());
         let active = RepoId {
             host: None,
@@ -2198,7 +2198,7 @@ mod action_menu_cross_repo_tests {
                 number: 1,
                 title: "x".into(),
                 author: "u".into(),
-                state: "OPEN".into(),
+                state: PrState::Open,
                 head_ref: "feat".into(),
                 updated_at: "2024".into(),
                 is_draft: false,
@@ -2256,7 +2256,7 @@ mod action_menu_cross_repo_tests {
     fn execute_action_targets_correct_repo_when_branch_names_collide() {
         use crate::app::ActionItem;
         use crate::config::Config;
-        use crate::git::types::{Branch, BranchEntry, PullRequest, RepoId, Worktree};
+        use crate::git::types::{Branch, BranchEntry, PrState, PullRequest, RepoId, Worktree};
         let mut app = App::new(Config::default());
         let active = RepoId {
             host: None,
@@ -2299,7 +2299,7 @@ mod action_menu_cross_repo_tests {
                 number: 7,
                 title: "x".into(),
                 author: "u".into(),
-                state: "OPEN".into(),
+                state: PrState::Open,
                 head_ref: "feature/auth".into(),
                 updated_at: "2024".into(),
                 is_draft: false,
@@ -2327,7 +2327,7 @@ mod wt_list_lazy_load_tests {
     #[test]
     fn selecting_cross_repo_entry_signals_wt_list_load() {
         use crate::config::Config;
-        use crate::git::types::{BranchEntry, PullRequest, RepoId, RepoMeta};
+        use crate::git::types::{BranchEntry, PrState, PullRequest, RepoId, RepoMeta};
         let tmp = tempfile::tempdir().unwrap();
         let clone_path = tmp.path().join("github.com").join("b").join("y");
         std::fs::create_dir_all(&clone_path).unwrap();
@@ -2362,7 +2362,7 @@ mod wt_list_lazy_load_tests {
                 number: 1,
                 title: "x".into(),
                 author: "u".into(),
-                state: "OPEN".into(),
+                state: PrState::Open,
                 head_ref: "feat".into(),
                 updated_at: "2024".into(),
                 is_draft: false,
