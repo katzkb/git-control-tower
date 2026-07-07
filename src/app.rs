@@ -886,9 +886,15 @@ impl App {
                     self.progress.quit_pressed = true;
                 }
             }
-            KeyCode::Char('l') => self.active_view = ActiveView::Log,
+            KeyCode::Char('l') => {
+                // Leaving the Main view drops detail-pane focus so j/k drive
+                // the sidebar again when the user comes back.
+                self.view.pane_focus = PaneFocus::Sidebar;
+                self.active_view = ActiveView::Log;
+            }
             KeyCode::Char('h') => {
                 if self.active_view != ActiveView::History {
+                    self.view.pane_focus = PaneFocus::Sidebar;
                     self.active_view = ActiveView::History;
                     self.view.history_scroll = 0;
                 }
@@ -2921,6 +2927,23 @@ mod detail_scroll_tests {
         app.handle_key(key(KeyCode::Right));
         assert_eq!(app.view.pane_focus, PaneFocus::Detail);
         app.handle_key(key(KeyCode::Char('1')));
+        assert_eq!(app.view.pane_focus, PaneFocus::Sidebar);
+    }
+
+    #[test]
+    fn leaving_main_view_resets_focus() {
+        let mut app = App::new(Config::default());
+        app.handle_key(key(KeyCode::Right));
+        assert_eq!(app.view.pane_focus, PaneFocus::Detail);
+        // Switch to the Log view and come back: focus must be gone so j/k
+        // drive the sidebar again.
+        app.handle_key(key(KeyCode::Char('l')));
+        app.handle_key(key(KeyCode::Esc));
+        assert_eq!(app.active_view, ActiveView::Main);
+        assert_eq!(app.view.pane_focus, PaneFocus::Sidebar);
+
+        app.handle_key(key(KeyCode::Right));
+        app.handle_key(key(KeyCode::Char('h')));
         assert_eq!(app.view.pane_focus, PaneFocus::Sidebar);
     }
 
