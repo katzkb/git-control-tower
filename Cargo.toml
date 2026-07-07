@@ -13,7 +13,7 @@ name = "gct"
 path = "src/main.rs"
 
 [dependencies]
-ratatui = "0.30"
+ratatui = { version = "0.30", features = ["unstable-rendered-line-info"] }
 crossterm = "0.29"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "process", "sync", "time"] }
 anyhow = "1"

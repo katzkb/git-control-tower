@@ -6,7 +6,7 @@ use ratatui::{
     widgets::{Block, Borders, Paragraph, Wrap},
 };
 
-use crate::app::{PrCaches, ViewState};
+use crate::app::{PaneFocus, PrCaches, ViewState};
 use crate::git::types::{BranchEntry, PrDetail, RepoId};
 use crate::ui::markdown;
 
@@ -68,15 +68,29 @@ pub fn draw(frame: &mut Frame, area: Rect, view: &mut ViewState, ctx: &DetailPan
         (title, lines)
     };
 
+    // Highlight the border while the pane has key focus (issue #269).
+    let border_color = if view.pane_focus == PaneFocus::Detail {
+        theme::ACCENT
+    } else {
+        theme::TEXT_DIM
+    };
     let block = Block::default()
         .borders(Borders::ALL)
         .title(title)
-        .border_style(Style::default().fg(theme::TEXT_DIM));
+        .border_style(Style::default().fg(border_color));
 
     let paragraph = Paragraph::new(lines)
         .block(block)
-        .wrap(Wrap { trim: false })
-        .scroll((view.pr_detail_scroll as u16, 0));
+        .wrap(Wrap { trim: false });
+
+    // Clamp to the wrapped line count so the last page stays reachable —
+    // the render is the only place viewport height and line count are known
+    // (same pattern as adjust_sidebar_offset in the sidebar).
+    let total_lines = paragraph.line_count(area.width.saturating_sub(2));
+    let visible_height = area.height.saturating_sub(2) as usize;
+    view.clamp_pr_detail_scroll(visible_height, total_lines);
+
+    let paragraph = paragraph.scroll((view.pr_detail_scroll.min(u16::MAX as usize) as u16, 0));
     frame.render_widget(paragraph, area);
 }
 
