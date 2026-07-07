@@ -256,6 +256,17 @@ pub struct Inflight {
     pub wt_lists: HashSet<crate::git::types::RepoId>,
 }
 
+/// Raw data fetched from `git`/`gh`: inputs to `rebuild_entries` and the Log
+/// view, plus the gh identity used for review-status computation (issue #220).
+#[derive(Default)]
+pub struct RawData {
+    pub branches: Vec<Branch>,
+    pub worktrees: Vec<Worktree>,
+    pub commits: Vec<Commit>,
+    pub gh_user: String,
+    pub gh_user_load_failed: bool,
+}
+
 /// Cross-repo context: active repo, clone root, lazily-populated per-repo
 /// metadata and worktree lists, and the merged global config layers used to
 /// resolve per-repo effective configs (issue #220).
@@ -327,7 +338,6 @@ pub struct App {
     pub should_quit: bool,
 
     // Log View
-    pub commits: Vec<Commit>,
     pub log_scroll: usize,
 
     // History View
@@ -342,11 +352,8 @@ pub struct App {
     pub search_query: String,
     search_pre_scroll: usize, // saved scroll position before search
 
-    // Raw data sources (for merge_entries and async reload)
-    pub branches: Vec<Branch>,
-    pub worktrees: Vec<Worktree>,
-    pub gh_user: String,
-    pub gh_user_load_failed: bool,
+    // Raw data fetched from git/gh (issue #220).
+    pub raw: RawData,
 
     // Per-view PR caches
     pub local_prs: Vec<PullRequest>,
@@ -405,7 +412,6 @@ impl App {
         Self {
             active_view: ActiveView::default(),
             should_quit: false,
-            commits: Vec::new(),
             log_scroll: 0,
             history_scroll: 0,
             entries: Vec::new(),
@@ -415,10 +421,7 @@ impl App {
             search_active: false,
             search_query: String::new(),
             search_pre_scroll: 0,
-            branches: Vec::new(),
-            worktrees: Vec::new(),
-            gh_user: String::new(),
-            gh_user_load_failed: false,
+            raw: RawData::default(),
             local_prs: Vec::new(),
             my_prs: Vec::new(),
             review_prs: Vec::new(),
@@ -535,8 +538,8 @@ impl App {
         let active = self.cross_repo.active_repo.clone().unwrap_or_default();
         self.entries = crate::data::merge_entries(
             &active,
-            &self.branches,
-            &self.worktrees,
+            &self.raw.branches,
+            &self.raw.worktrees,
             self.current_prs(),
             &self.cross_repo.wt_lists_per_repo,
         );
@@ -1093,7 +1096,7 @@ impl App {
 
     fn handle_log_key(&mut self, code: KeyCode) {
         match code {
-            KeyCode::Char('j') | KeyCode::Down if self.log_scroll + 1 < self.commits.len() => {
+            KeyCode::Char('j') | KeyCode::Down if self.log_scroll + 1 < self.raw.commits.len() => {
                 self.log_scroll += 1;
             }
             KeyCode::Char('k') | KeyCode::Up => {

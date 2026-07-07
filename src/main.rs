@@ -833,10 +833,10 @@ async fn startup(
 
     // Phase 1: Fast local loads (blocking, ~170ms)
     if let Ok(output) = run_git(LOG_ARGS).await {
-        app.commits = parse_log(&output);
+        app.raw.commits = parse_log(&output);
     }
     if let Ok(output) = run_git(&["worktree", "list", "--porcelain"]).await {
-        app.worktrees = parse_worktrees(&output);
+        app.raw.worktrees = parse_worktrees(&output);
     }
     load_branches(app).await;
     let repo_info = active_id;
@@ -876,7 +876,7 @@ async fn startup(
     // Fetch Local PRs via GraphQL (startup default view)
     if let Some(ref info) = repo_info {
         let tx_local = tx.clone();
-        let branch_names: Vec<String> = app.branches.iter().map(|b| b.name.clone()).collect();
+        let branch_names: Vec<String> = app.raw.branches.iter().map(|b| b.name.clone()).collect();
         let owner = info.owner.clone();
         let repo = info.name.clone();
         let hostname = info.host.clone();
@@ -903,7 +903,7 @@ fn apply_pr_list(
 ) {
     if filter == MainFilter::ReviewRequested {
         for pr in &mut prs {
-            pr.review_status = Some(compute_review_status(pr, &app.gh_user));
+            pr.review_status = Some(compute_review_status(pr, &app.raw.gh_user));
         }
     }
     report_fetch_errors(app, "PR fetch failed", errors);
@@ -962,17 +962,17 @@ fn handle_result(app: &mut App, result: AsyncResult) {
             app.record_error(msg);
         }
         AsyncResult::UserLogin(user) => {
-            app.gh_user = user;
+            app.raw.gh_user = user;
             // Recompute review status now that we know the user
             for pr in &mut app.review_prs {
-                pr.review_status = Some(compute_review_status(pr, &app.gh_user));
+                pr.review_status = Some(compute_review_status(pr, &app.raw.gh_user));
             }
             if app.main_filter == MainFilter::ReviewRequested {
                 app.rebuild_entries();
             }
         }
         AsyncResult::UserLoginError(error_msg) => {
-            app.gh_user_load_failed = true;
+            app.raw.gh_user_load_failed = true;
             app.notification = Some(Notification::error(
                 "Failed to load GitHub user — is `gh` authenticated?".to_string(),
             ));
@@ -1104,10 +1104,10 @@ fn handle_result(app: &mut App, result: AsyncResult) {
         AsyncResult::BranchesReloaded(data) => {
             app.inflight.branches_reload = false;
             if let Some(branches) = data.branches {
-                app.branches = branches;
+                app.raw.branches = branches;
             }
             if let Some(worktrees) = data.worktrees {
-                app.worktrees = worktrees;
+                app.raw.worktrees = worktrees;
             }
             report_fetch_errors(app, "Branch reload failed", data.errors);
             app.rebuild_entries_and_clamp();
@@ -1116,7 +1116,7 @@ fn handle_result(app: &mut App, result: AsyncResult) {
         AsyncResult::CommitsReloaded(commits) => {
             app.inflight.commits_reload = false;
             if let Some(commits) = commits {
-                app.commits = commits;
+                app.raw.commits = commits;
             }
         }
         AsyncResult::BranchCreated { name, source } => {
@@ -1274,7 +1274,7 @@ fn dispatch_command(app: &mut App, cmd: Command, tasks: &mut RunState) {
             }
 
             let is_active_with_local =
-                is_active && app.branches.iter().any(|b| b.name == branch_name);
+                is_active && app.raw.branches.iter().any(|b| b.name == branch_name);
             let post_create = cfg.worktree.post_create.clone();
             let target_repo_for_send = if is_active {
                 None
@@ -1587,7 +1587,7 @@ fn dispatch_command(app: &mut App, cmd: Command, tasks: &mut RunState) {
                 MainFilter::Local => {
                     if let Some(ref info) = tasks.repo_info {
                         let branch_names: Vec<String> =
-                            app.branches.iter().map(|b| b.name.clone()).collect();
+                            app.raw.branches.iter().map(|b| b.name.clone()).collect();
                         let owner = info.owner.clone();
                         let repo = info.name.clone();
                         let hostname = info.host.clone();
@@ -1618,15 +1618,15 @@ fn dispatch_command(app: &mut App, cmd: Command, tasks: &mut RunState) {
                     // this guard, switching to Review right after startup can show
                     // team PRs even in me-only mode. If the user-login fetch failed,
                     // proceed anyway — no point in spinning forever.
-                    if app.gh_user.is_empty()
+                    if app.raw.gh_user.is_empty()
                         && !app.include_team_reviews
-                        && !app.gh_user_load_failed
+                        && !app.raw.gh_user_load_failed
                     {
                         app.push_command(Command::FetchPrs(MainFilter::ReviewRequested));
                     } else {
                         let show_merged = app.show_merged;
                         let include_team = app.include_team_reviews;
-                        let gh_user = app.gh_user.clone();
+                        let gh_user = app.raw.gh_user.clone();
                         let hosts = app.known_hosts();
                         tokio::spawn(async move {
                             let (prs, errors) =
@@ -1693,7 +1693,7 @@ async fn load_branches(app: &mut App) {
             String::new()
         }
     };
-    app.branches = parse_branches(&branch_output, &merged_output, base_hash.trim());
+    app.raw.branches = parse_branches(&branch_output, &merged_output, base_hash.trim());
 }
 
 async fn detect_default_branch() -> String {

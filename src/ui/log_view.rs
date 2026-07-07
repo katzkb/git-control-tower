@@ -13,13 +13,14 @@ use crate::ui::theme;
 pub fn draw(frame: &mut Frame, area: Rect, app: &App) {
     let block = Block::default().borders(Borders::ALL).title(" Log ");
 
-    if app.commits.is_empty() {
+    if app.raw.commits.is_empty() {
         let loading = List::new(vec![ListItem::new("Loading...")]).block(block);
         frame.render_widget(loading, area);
         return;
     }
 
     let items: Vec<ListItem> = app
+        .raw
         .commits
         .iter()
         .map(|commit| {
