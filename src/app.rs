@@ -236,6 +236,26 @@ impl ProgressTracker {
     }
 }
 
+/// All async-work dedup state, in one place (issue #236).
+///
+/// At dispatch time the `HashSet`-tracked fetches are *dropped* when already
+/// inflight (a duplicate fetch is pointless), while the two reload bools use
+/// *requeue-if-busy* (a reload requested mid-reload must still produce a
+/// fresh fetch afterwards).
+#[derive(Default)]
+pub struct Inflight {
+    pub pr_detail: HashSet<(crate::git::types::RepoId, u64)>,
+    /// Worktree paths with a running `git status` load.
+    pub git_status: HashSet<String>,
+    pub branches_reload: bool,
+    pub commits_reload: bool,
+    /// Worktree paths with an in-flight create/delete, gated per-path so
+    /// unrelated worktrees stay actionable in the UI while one is running.
+    pub worktrees: HashSet<String>,
+    /// Repos with a running cross-repo worktree-list load.
+    pub wt_lists: HashSet<crate::git::types::RepoId>,
+}
+
 pub struct App {
     pub active_view: ActiveView,
     pub should_quit: bool,
@@ -295,9 +315,8 @@ pub struct App {
     // handling in `run()`), drained once per loop iteration in `run()`.
     pub commands: VecDeque<Command>,
 
-    /// Worktree paths with an in-flight create/delete, gated per-path so unrelated
-    /// worktrees stay actionable in the UI while one is still running.
-    pub wt_inflight: HashSet<String>,
+    // Async-work dedup bookkeeping (fetches, reloads, worktree ops).
+    pub inflight: Inflight,
     pub progress: ProgressTracker,
     pub quit_pressed_during_progress: bool,
     pub branch_selected: HashSet<String>,
@@ -322,9 +341,6 @@ pub struct App {
     // Worktree lists per repo (populated lazily as cross-repo PRs are selected)
     pub wt_lists_per_repo:
         std::collections::HashMap<crate::git::types::RepoId, Vec<crate::git::types::Worktree>>,
-
-    // Cross-repo worktree list lazy-load state
-    pub wt_list_inflight: HashSet<crate::git::types::RepoId>,
 }
 
 impl App {
@@ -366,7 +382,7 @@ impl App {
             show_help: false,
             cd_path: None,
             commands: VecDeque::new(),
-            wt_inflight: HashSet::new(),
+            inflight: Inflight::default(),
             progress: ProgressTracker::default(),
             quit_pressed_during_progress: false,
             branch_selected: HashSet::new(),
@@ -377,7 +393,6 @@ impl App {
             clone_root: None,
             repos: HashMap::new(),
             wt_lists_per_repo: HashMap::new(),
-            wt_list_inflight: HashSet::new(),
         }
     }
 
@@ -411,7 +426,7 @@ impl App {
     pub fn tick(&mut self) {
         self.spinner_tick = self.spinner_tick.wrapping_add(1);
         // Don't auto-dismiss while a worktree operation is in progress
-        if self.wt_inflight.is_empty()
+        if self.inflight.worktrees.is_empty()
             && let Some(ref mut n) = self.notification
         {
             if n.ticks_remaining > 0 {
@@ -627,7 +642,7 @@ impl App {
         if let Some(entry) = &selected
             && self.active_repo.as_ref() != Some(&entry.repo_id)
             && !self.wt_lists_per_repo.contains_key(&entry.repo_id)
-            && !self.wt_list_inflight.contains(&entry.repo_id)
+            && !self.inflight.wt_lists.contains(&entry.repo_id)
         {
             self.resolve_local_path(&entry.repo_id);
             if self
@@ -771,7 +786,7 @@ impl App {
                     self.pr_detail_cache.clear();
                     // Invalidate cross-repo worktree list caches so they re-fetch.
                     self.wt_lists_per_repo.clear();
-                    self.wt_list_inflight.clear();
+                    self.inflight.wt_lists.clear();
                     // Signal branches/worktrees reload + PR fetch
                     self.push_command(Command::ReloadBranches);
                     self.push_command(Command::FetchPrs(self.main_filter));
@@ -902,7 +917,7 @@ impl App {
                 } else if let Some(entry) = self.selected_entry().cloned()
                     && let Some(wt_path) = entry.worktree_path()
                     && !entry.is_current()
-                    && !self.wt_inflight.contains(wt_path)
+                    && !self.inflight.worktrees.contains(wt_path)
                 {
                     let path = wt_path.to_string();
                     self.confirm_dialog = Some(PendingConfirm {
@@ -954,7 +969,7 @@ impl App {
                         &entry.name,
                     )
                 };
-                if self.wt_inflight.contains(&wt_path) {
+                if self.inflight.worktrees.contains(&wt_path) {
                     return;
                 }
                 self.push_command(Command::CreateWorktree(
@@ -1123,7 +1138,7 @@ impl App {
             && !cross_repo_no_clone
             && wt_path_for_inflight
                 .as_deref()
-                .map(|p| !self.wt_inflight.contains(p))
+                .map(|p| !self.inflight.worktrees.contains(p))
                 .unwrap_or(false);
         if can_create_wt {
             items.push(ActionItem::CreateWorktree);
@@ -1133,7 +1148,7 @@ impl App {
         if is_active_repo
             && let Some(wt_path) = entry.worktree_path()
             && !entry.is_current()
-            && !self.wt_inflight.contains(wt_path)
+            && !self.inflight.worktrees.contains(wt_path)
         {
             items.push(ActionItem::DeleteWorktree);
         }
@@ -1328,7 +1343,7 @@ impl App {
                 {
                     // Declining force-delete ends the op — release the path so
                     // its action items reappear.
-                    self.wt_inflight.remove(&path);
+                    self.inflight.worktrees.remove(&path);
                 }
             }
             _ => {}
@@ -2502,11 +2517,11 @@ mod command_queue_tests {
     #[test]
     fn confirm_decline_force_delete_releases_inflight_path() {
         let mut app = App::new(Config::default());
-        app.wt_inflight.insert("/wt/p".to_string());
+        app.inflight.worktrees.insert("/wt/p".to_string());
         app.confirm_dialog = Some(pending(Command::ForceDeleteWorktree("/wt/p".into())));
         app.handle_key(key(KeyCode::Char('n')));
         assert!(app.confirm_dialog.is_none());
         assert!(app.commands.is_empty());
-        assert!(!app.wt_inflight.contains("/wt/p"));
+        assert!(!app.inflight.worktrees.contains("/wt/p"));
     }
 }

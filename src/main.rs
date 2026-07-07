@@ -8,7 +8,6 @@ mod ops;
 mod ui;
 
 use anyhow::Context;
-use std::collections::HashSet;
 use std::fs::OpenOptions;
 use std::process;
 use std::time::Duration;
@@ -725,14 +724,7 @@ async fn run(
     let mut events = EventHandler::new(Duration::from_millis(80));
     let (tx, mut rx) = mpsc::unbounded_channel::<AsyncResult>();
     let repo_info = startup(&mut app, config_warnings, &tx).await;
-    let mut tasks = RunState {
-        tx,
-        repo_info,
-        pr_inflight: HashSet::new(),
-        status_inflight: HashSet::new(),
-        branches_reload_inflight: false,
-        commits_reload_inflight: false,
-    };
+    let mut tasks = RunState { tx, repo_info };
 
     loop {
         if let Err(e) = terminal.draw(|frame| ui::draw(frame, &mut app)) {
@@ -753,7 +745,7 @@ async fn run(
 
         // Receive completed background results (non-blocking)
         while let Ok(result) = rx.try_recv() {
-            handle_result(&mut app, result, &mut tasks);
+            handle_result(&mut app, result);
         }
 
         // Dispatch commands staged by key handling above and by the
@@ -774,16 +766,12 @@ async fn run(
     (Ok(()), cd_path)
 }
 
-/// Loop-local state of `run()`: the task-result channel sender, the active
-/// repo's identity, and inflight-dedup bookkeeping shared between result
-/// handling and command dispatch.
+/// Loop-local state of `run()`: the task-result channel sender and the
+/// active repo's identity. (Inflight-dedup bookkeeping lives on
+/// `App::inflight` so key handling and dispatch share one tracker.)
 struct RunState {
     tx: mpsc::UnboundedSender<AsyncResult>,
     repo_info: Option<crate::git::types::RepoId>,
-    pr_inflight: HashSet<(crate::git::types::RepoId, u64)>,
-    status_inflight: HashSet<String>,
-    branches_reload_inflight: bool,
-    commits_reload_inflight: bool,
 }
 
 /// One-time startup: surface config warnings, detect the active repo, run
@@ -937,11 +925,11 @@ fn apply_pr_list(
 }
 
 /// Handle one completed background-task result.
-fn handle_result(app: &mut App, result: AsyncResult, tasks: &mut RunState) {
+fn handle_result(app: &mut App, result: AsyncResult) {
     match result {
         AsyncResult::PrDetail { repo_id, detail } => {
             let key = (repo_id.clone(), detail.number);
-            tasks.pr_inflight.remove(&key);
+            app.inflight.pr_detail.remove(&key);
             app.pr_detail_cache.insert(key, detail);
         }
         AsyncResult::PrDetailError {
@@ -949,12 +937,12 @@ fn handle_result(app: &mut App, result: AsyncResult, tasks: &mut RunState) {
             number,
             error,
         } => {
-            tasks.pr_inflight.remove(&(repo_id, number));
+            app.inflight.pr_detail.remove(&(repo_id, number));
             app.notification = Some(Notification::error(format!("Failed to load PR #{number}")));
             app.record_error(error);
         }
         AsyncResult::GitStatus { wt_path, status } => {
-            tasks.status_inflight.remove(&wt_path);
+            app.inflight.git_status.remove(&wt_path);
             if let Some(entry) = app
                 .entries
                 .iter_mut()
@@ -964,7 +952,7 @@ fn handle_result(app: &mut App, result: AsyncResult, tasks: &mut RunState) {
             }
         }
         AsyncResult::GitStatusError(wt_path) => {
-            tasks.status_inflight.remove(&wt_path);
+            app.inflight.git_status.remove(&wt_path);
             let msg = format!("git status failed for {wt_path}");
             app.notification = Some(Notification::error(msg.clone()));
             app.record_error(msg);
@@ -1000,7 +988,7 @@ fn handle_result(app: &mut App, result: AsyncResult, tasks: &mut RunState) {
             copy_errors,
             target_repo,
         } => {
-            app.wt_inflight.remove(&wt_path);
+            app.inflight.worktrees.remove(&wt_path);
             if copy_errors.is_empty() {
                 app.notification = Some(Notification::success(format!(
                     "Worktree created: {wt_path}"
@@ -1032,7 +1020,7 @@ fn handle_result(app: &mut App, result: AsyncResult, tasks: &mut RunState) {
             }
         }
         AsyncResult::WtCreateError { wt_path, message } => {
-            app.wt_inflight.remove(&wt_path);
+            app.inflight.worktrees.remove(&wt_path);
             app.notification = Some(Notification::error(message));
         }
         AsyncResult::OpStarted { op_id, label } => {
@@ -1059,7 +1047,7 @@ fn handle_result(app: &mut App, result: AsyncResult, tasks: &mut RunState) {
             wt_paths_claimed,
         } => {
             for path in &wt_paths_claimed {
-                app.wt_inflight.remove(path);
+                app.inflight.worktrees.remove(path);
             }
             app.progress.sweep_unfinished();
             let success_parts = bulk_success_parts(branches_deleted.len(), worktrees_removed.len());
@@ -1104,13 +1092,13 @@ fn handle_result(app: &mut App, result: AsyncResult, tasks: &mut RunState) {
             });
         }
         AsyncResult::WtListLoaded { repo_id, list } => {
-            app.wt_list_inflight.remove(&repo_id);
+            app.inflight.wt_lists.remove(&repo_id);
             app.wt_lists_per_repo.insert(repo_id, list);
             app.rebuild_entries();
             app.snap_scroll_to_entry();
         }
         AsyncResult::BranchesReloaded(data) => {
-            tasks.branches_reload_inflight = false;
+            app.inflight.branches_reload = false;
             if let Some(branches) = data.branches {
                 app.branches = branches;
             }
@@ -1122,7 +1110,7 @@ fn handle_result(app: &mut App, result: AsyncResult, tasks: &mut RunState) {
             app.snap_scroll_to_entry();
         }
         AsyncResult::CommitsReloaded(commits) => {
-            tasks.commits_reload_inflight = false;
+            app.inflight.commits_reload = false;
             if let Some(commits) = commits {
                 app.commits = commits;
             }
@@ -1147,7 +1135,7 @@ fn dispatch_command(app: &mut App, cmd: Command, tasks: &mut RunState) {
     match cmd {
         // Delete worktree (single-item, no auto-force fallback).
         Command::DeleteWorktree(path) => {
-            app.wt_inflight.insert(path.clone());
+            app.inflight.worktrees.insert(path.clone());
             let op_id = app.progress.allocate_ids(1).start;
             let label = wt_label_for(&path);
             let claimed = vec![path.clone()];
@@ -1200,7 +1188,7 @@ fn dispatch_command(app: &mut App, cmd: Command, tasks: &mut RunState) {
 
         // Force delete worktree after confirmation (single-item, force only).
         Command::ForceDeleteWorktree(path) => {
-            app.wt_inflight.insert(path.clone());
+            app.inflight.worktrees.insert(path.clone());
             let op_id = app.progress.allocate_ids(1).start;
             let label = wt_label_for(&path);
             let claimed = vec![path.clone()];
@@ -1275,7 +1263,7 @@ fn dispatch_command(app: &mut App, cmd: Command, tasks: &mut RunState) {
             };
 
             let wt_path = cfg.worktree_path_for(&target_root, &entry.repo_id.name, &branch_name);
-            app.wt_inflight.insert(wt_path.clone());
+            app.inflight.worktrees.insert(wt_path.clone());
             if let Some(parent) = std::path::Path::new(&wt_path).parent() {
                 let _ = std::fs::create_dir_all(parent);
             }
@@ -1361,12 +1349,12 @@ fn dispatch_command(app: &mut App, cmd: Command, tasks: &mut RunState) {
                 }
                 let wt_path = entry.worktree_path().map(str::to_string);
                 if let Some(ref p) = wt_path
-                    && app.wt_inflight.contains(p)
+                    && app.inflight.worktrees.contains(p)
                 {
                     continue;
                 }
                 if let Some(ref p) = wt_path {
-                    app.wt_inflight.insert(p.clone());
+                    app.inflight.worktrees.insert(p.clone());
                     wt_paths_claimed.push(p.clone());
                 }
                 work.push(Work {
@@ -1455,10 +1443,10 @@ fn dispatch_command(app: &mut App, cmd: Command, tasks: &mut RunState) {
 
         // Spawn PR detail load in background (deduplicated)
         Command::FetchPrDetail(repo_id, number) => {
-            if tasks.pr_inflight.contains(&(repo_id.clone(), number)) {
+            if app.inflight.pr_detail.contains(&(repo_id.clone(), number)) {
                 return;
             }
-            tasks.pr_inflight.insert((repo_id.clone(), number));
+            app.inflight.pr_detail.insert((repo_id.clone(), number));
             let tx = tasks.tx.clone();
             // `gh pr view` doesn't accept --hostname; the host (if any) is
             // embedded into --repo as `[HOST/]OWNER/REPO`.
@@ -1501,13 +1489,13 @@ fn dispatch_command(app: &mut App, cmd: Command, tasks: &mut RunState) {
 
         // Spawn cross-repo worktree list load in background (deduplicated)
         Command::LoadWorktreeList(repo_id) => {
-            if app.wt_list_inflight.contains(&repo_id) {
+            if app.inflight.wt_lists.contains(&repo_id) {
                 return;
             }
             let Some(path) = app.repos.get(&repo_id).and_then(|m| m.local_path.clone()) else {
                 return;
             };
-            app.wt_list_inflight.insert(repo_id.clone());
+            app.inflight.wt_lists.insert(repo_id.clone());
             let tx_c = tasks.tx.clone();
             let repo_id_c = repo_id.clone();
             tokio::spawn(async move {
@@ -1533,13 +1521,13 @@ fn dispatch_command(app: &mut App, cmd: Command, tasks: &mut RunState) {
         // Triggered by `r` in Main view, and also re-armed after
         // worktree/branch mutations that invalidate the cached entries.
         Command::ReloadBranches => {
-            if tasks.branches_reload_inflight {
+            if app.inflight.branches_reload {
                 // A reload is already running — retry next iteration so a
                 // request issued mid-reload still yields a fresh fetch.
                 app.push_command(Command::ReloadBranches);
                 return;
             }
-            tasks.branches_reload_inflight = true;
+            app.inflight.branches_reload = true;
             let tx = tasks.tx.clone();
             tokio::spawn(async move {
                 let data = fetch_branches_and_worktrees().await;
@@ -1549,14 +1537,14 @@ fn dispatch_command(app: &mut App, cmd: Command, tasks: &mut RunState) {
 
         // Reload commits on `r` refresh from Log view (deduplicated)
         Command::ReloadCommits => {
-            if tasks.commits_reload_inflight {
+            if app.inflight.commits_reload {
                 app.push_command(Command::ReloadCommits);
                 return;
             }
-            tasks.commits_reload_inflight = true;
+            app.inflight.commits_reload = true;
             let tx = tasks.tx.clone();
             tokio::spawn(async move {
-                // Always send, even on failure, so `commits_reload_inflight`
+                // Always send, even on failure, so `Inflight.commits_reload`
                 // is reliably cleared instead of getting stuck forever.
                 let commits = run_git(LOG_ARGS)
                     .await
@@ -1568,10 +1556,10 @@ fn dispatch_command(app: &mut App, cmd: Command, tasks: &mut RunState) {
 
         // Spawn git status load in background (deduplicated)
         Command::LoadGitStatus(wt_path) => {
-            if tasks.status_inflight.contains(&wt_path) {
+            if app.inflight.git_status.contains(&wt_path) {
                 return;
             }
-            tasks.status_inflight.insert(wt_path.clone());
+            app.inflight.git_status.insert(wt_path.clone());
             let tx = tasks.tx.clone();
             tokio::spawn(async move {
                 if let Some(status) = data::load_git_status(&wt_path).await {
