@@ -6,60 +6,77 @@ use ratatui::{
     widgets::{Block, Borders, Paragraph, Wrap},
 };
 
-use crate::app::App;
+use crate::app::{PrCaches, ViewState};
 use crate::git::types::{BranchEntry, PrDetail, RepoId};
 use crate::ui::markdown;
 
 use crate::ui::theme;
 
-pub fn draw(frame: &mut Frame, area: Rect, app: &App) {
-    let entry = app.selected_entry();
+/// Read-only state the detail pane needs from outside `ViewState`.
+pub struct DetailPaneContext<'a> {
+    /// Current spinner animation frame for loading indicators.
+    pub spinner: &'static str,
+    /// PR caches, for the detail-body lookup of the selected entry.
+    pub prs: &'a PrCaches,
+    /// Active repo, to label cross-repo entries.
+    pub active_repo: Option<&'a RepoId>,
+    /// Errors to render at the bottom; empty unless verbose mode is on.
+    pub verbose_errors: &'a [String],
+}
+
+pub fn draw(frame: &mut Frame, area: Rect, view: &mut ViewState, ctx: &DetailPaneContext<'_>) {
+    // Build owned title + lines in a scoped block so the selected-entry
+    // borrow of `view` ends before the scroll state is touched below.
+    let (title, lines): (String, Vec<Line<'static>>) = {
+        let entry = view.selected_entry();
+        let title = match &entry {
+            Some(e) => format!(" {} ", e.name),
+            None => " Detail ".to_string(),
+        };
+
+        let mut lines: Vec<Line> = Vec::new();
+        if let Some(entry) = &entry {
+            draw_git_status_section(&mut lines, entry, ctx.spinner);
+            draw_worktree_section(&mut lines, entry);
+            draw_pr_section(
+                &mut lines,
+                entry,
+                ctx.prs.detail_for(entry),
+                ctx.spinner,
+                ctx.active_repo,
+            );
+        } else {
+            lines.push(Line::from(Span::styled(
+                " No branch selected",
+                Style::default().fg(theme::TEXT_DIM),
+            )));
+            lines.push(Line::from(""));
+        }
+
+        // Errors section — always drawn, even with no entry (the slice is
+        // empty unless verbose mode is on).
+        if !ctx.verbose_errors.is_empty() {
+            draw_errors_section(&mut lines, ctx.verbose_errors);
+        }
+
+        if lines.is_empty() {
+            lines.push(Line::from(Span::styled(
+                " No additional information",
+                Style::default().fg(theme::TEXT_DIM),
+            )));
+        }
+        (title, lines)
+    };
 
     let block = Block::default()
         .borders(Borders::ALL)
-        .title(match &entry {
-            Some(e) => format!(" {} ", e.name),
-            None => " Detail ".to_string(),
-        })
+        .title(title)
         .border_style(Style::default().fg(theme::TEXT_DIM));
-
-    let mut lines: Vec<Line> = Vec::new();
-
-    let spinner = app.spinner_frame();
-    if let Some(entry) = &entry {
-        draw_git_status_section(&mut lines, entry, spinner);
-        draw_worktree_section(&mut lines, entry);
-        draw_pr_section(
-            &mut lines,
-            entry,
-            app.selected_pr_detail(),
-            spinner,
-            app.cross_repo.active_repo.as_ref(),
-        );
-    } else {
-        lines.push(Line::from(Span::styled(
-            " No branch selected",
-            Style::default().fg(theme::TEXT_DIM),
-        )));
-        lines.push(Line::from(""));
-    }
-
-    // Errors section (verbose mode only) — always drawn, even with no entry
-    if app.verbose && !app.verbose_errors.is_empty() {
-        draw_errors_section(&mut lines, &app.verbose_errors);
-    }
-
-    if lines.is_empty() {
-        lines.push(Line::from(Span::styled(
-            " No additional information",
-            Style::default().fg(theme::TEXT_DIM),
-        )));
-    }
 
     let paragraph = Paragraph::new(lines)
         .block(block)
         .wrap(Wrap { trim: false })
-        .scroll((app.view.pr_detail_scroll as u16, 0));
+        .scroll((view.pr_detail_scroll as u16, 0));
     frame.render_widget(paragraph, area);
 }
 

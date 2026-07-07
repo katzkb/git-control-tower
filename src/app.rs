@@ -442,6 +442,12 @@ pub struct PrCaches {
 }
 
 impl PrCaches {
+    /// Cached PR detail for `entry`, if the entry has a PR and it is cached.
+    pub fn detail_for(&self, entry: &BranchEntry) -> Option<&PrDetail> {
+        let pr_num = entry.pr_number()?;
+        self.detail.get(&(entry.repo_id.clone(), pr_num))
+    }
+
     pub fn current(&self, filter: MainFilter) -> &[PullRequest] {
         match filter {
             MainFilter::Local => &self.local,
@@ -734,13 +740,6 @@ impl App {
 
     pub fn snap_scroll_to_entry(&mut self) {
         self.view.snap_scroll_to_entry()
-    }
-
-    /// Return the cached PR detail for the currently selected entry, if available.
-    pub fn selected_pr_detail(&self) -> Option<&PrDetail> {
-        let entry = self.selected_entry()?;
-        let pr_num = entry.pr_number()?;
-        self.prs.detail.get(&(entry.repo_id.clone(), pr_num))
     }
 
     /// Signal that the selection changed. The actual detail fetches are

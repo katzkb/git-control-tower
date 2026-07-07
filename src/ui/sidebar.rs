@@ -15,9 +15,13 @@ use crate::ui::theme;
 pub struct SidebarContext<'a> {
     /// Whether the current filter's PR list is still loading.
     pub is_loading: bool,
+    /// Current spinner animation frame for the loading indicator.
     pub spinner: &'static str,
+    /// Whether merged PRs are included (`[+merged]` indicator).
     pub show_merged: bool,
+    /// Whether team review requests are included (`[+team]` / `[me]`).
     pub include_team_reviews: bool,
+    /// Branches that never get merged/deletable styling.
     pub protected_branches: &'a [String],
 }
 

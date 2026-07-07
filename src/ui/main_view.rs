@@ -24,7 +24,18 @@ pub fn draw(frame: &mut Frame, area: Rect, app: &mut App) {
         protected_branches: &app.config.protected_branches,
     };
     sidebar::draw(frame, chunks[0], &mut app.view, &sidebar_ctx);
-    detail_pane::draw(frame, chunks[1], app);
+
+    let detail_ctx = detail_pane::DetailPaneContext {
+        spinner: app.spinner_frame(),
+        prs: &app.prs,
+        active_repo: app.cross_repo.active_repo.as_ref(),
+        verbose_errors: if app.verbose {
+            app.verbose_errors.as_slice()
+        } else {
+            &[]
+        },
+    };
+    detail_pane::draw(frame, chunks[1], &mut app.view, &detail_ctx);
 
     // Confirm dialog overlay
     if let Some(pending) = &app.overlays.confirm_dialog {
