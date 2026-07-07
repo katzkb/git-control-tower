@@ -13,13 +13,14 @@ use crate::ui::theme;
 pub fn draw(frame: &mut Frame, area: Rect, app: &App) {
     let block = Block::default().borders(Borders::ALL).title(" Log ");
 
-    if app.commits.is_empty() {
+    if app.raw.commits.is_empty() {
         let loading = List::new(vec![ListItem::new("Loading...")]).block(block);
         frame.render_widget(loading, area);
         return;
     }
 
     let items: Vec<ListItem> = app
+        .raw
         .commits
         .iter()
         .map(|commit| {
@@ -43,7 +44,7 @@ pub fn draw(frame: &mut Frame, area: Rect, app: &App) {
         .highlight_style(Style::default().add_modifier(Modifier::REVERSED));
 
     let mut state = ListState::default();
-    state.select(Some(app.log_scroll));
+    state.select(Some(app.view.log_scroll));
 
     frame.render_stateful_widget(list, area, &mut state);
 }

@@ -171,6 +171,10 @@ pub struct ProgressTracker {
     pub ops: BTreeMap<u64, OpProgress>,
     next_id: u64,
     pub started_at: Option<Instant>,
+    /// `q`/`Esc` was pressed while ops were active; the next press quits.
+    /// Reset explicitly by the main loop when the op batch finishes —
+    /// deliberately not folded into `clear()`/`sweep_unfinished()` (issue #220).
+    pub quit_pressed: bool,
 }
 
 impl ProgressTracker {
@@ -256,199 +260,26 @@ pub struct Inflight {
     pub wt_lists: HashSet<crate::git::types::RepoId>,
 }
 
-pub struct App {
-    pub active_view: ActiveView,
-    pub should_quit: bool,
-
-    // Log View
-    pub commits: Vec<Commit>,
-    pub log_scroll: usize,
-
-    // History View
-    pub history_scroll: usize,
-
-    // Main View — unified entries
+/// What the user is looking at: the main-view entry list and its
+/// cursor/filter/search/multi-select state, plus the scroll positions of the
+/// other views (issue #220).
+#[derive(Default)]
+pub struct ViewState {
     pub entries: Vec<BranchEntry>,
-    pub entries_loaded: bool,
     pub main_filter: MainFilter,
     pub sidebar_scroll: usize,
     pub sidebar_offset: usize,
     pub search_active: bool,
     pub search_query: String,
     search_pre_scroll: usize, // saved scroll position before search
-
-    // Raw data sources (for merge_entries and async reload)
-    pub branches: Vec<Branch>,
-    pub worktrees: Vec<Worktree>,
-    pub gh_user: String,
-    pub gh_user_load_failed: bool,
-
-    // Per-view PR caches
-    pub local_prs: Vec<PullRequest>,
-    pub my_prs: Vec<PullRequest>,
-    pub review_prs: Vec<PullRequest>,
-    pub local_prs_loaded: bool,
-    pub my_prs_loaded: bool,
-    pub review_prs_loaded: bool,
-    pub show_merged: bool,
-    pub include_team_reviews: bool,
-
-    // PR Detail (for detail pane, cached by (RepoId, PR number))
-    pub pr_detail_cache: HashMap<(crate::git::types::RepoId, u64), PrDetail>,
-    pub pr_detail_scroll: usize,
-
-    // Verbose mode
-    pub verbose: bool,
-    pub verbose_errors: Vec<String>,
-
-    // Overlays
-    pub confirm_dialog: Option<PendingConfirm>,
-    pub action_menu: Option<ActionMenu>,
-    pub branch_create_input: Option<BranchCreateInput>,
-    pub notification: Option<Notification>,
-    pub show_help: bool,
-
-    // Exit with cd path
-    pub cd_path: Option<String>,
-
-    // Command queue: intents staged by key handling (and async-result
-    // handling in `run()`), drained once per loop iteration in `run()`.
-    pub commands: VecDeque<Command>,
-
-    // Selection changed; detail fetches are flushed on the next tick
-    // (debounce — see request_details_for_selection).
-    selection_details_pending: bool,
-
-    // Async-work dedup bookkeeping (fetches, reloads, worktree ops).
-    pub inflight: Inflight,
-    pub progress: ProgressTracker,
-    pub quit_pressed_during_progress: bool,
+    /// Branch names multi-selected in the sidebar (space / `a` keys).
     pub branch_selected: HashSet<String>,
-
-    // Spinner animation
-    spinner_tick: usize,
-
-    // Loaded TOML config (protected_branches, worktree, …) for the active repo.
-    pub config: crate::config::Config,
-
-    // Merged global config layers (home-dir files only), used to resolve a
-    // per-repo effective config for cross-repo worktree operations.
-    pub global_layers: toml::Table,
-
-    // Cross-repo context (set at startup)
-    pub active_repo: Option<crate::git::types::RepoId>,
-    pub clone_root: Option<std::path::PathBuf>,
-
-    // Per-repo metadata (populated lazily as repos are selected)
-    pub repos: std::collections::HashMap<crate::git::types::RepoId, crate::git::types::RepoMeta>,
-
-    // Worktree lists per repo (populated lazily as cross-repo PRs are selected)
-    pub wt_lists_per_repo:
-        std::collections::HashMap<crate::git::types::RepoId, Vec<crate::git::types::Worktree>>,
+    pub log_scroll: usize,
+    pub history_scroll: usize,
+    pub pr_detail_scroll: usize,
 }
 
-impl App {
-    pub fn new(config: crate::config::Config) -> Self {
-        Self {
-            active_view: ActiveView::default(),
-            should_quit: false,
-            commits: Vec::new(),
-            log_scroll: 0,
-            history_scroll: 0,
-            entries: Vec::new(),
-            entries_loaded: false,
-            main_filter: MainFilter::default(),
-            sidebar_scroll: 0,
-            sidebar_offset: 0,
-            search_active: false,
-            search_query: String::new(),
-            search_pre_scroll: 0,
-            branches: Vec::new(),
-            worktrees: Vec::new(),
-            gh_user: String::new(),
-            gh_user_load_failed: false,
-            local_prs: Vec::new(),
-            my_prs: Vec::new(),
-            review_prs: Vec::new(),
-            local_prs_loaded: false,
-            my_prs_loaded: false,
-            review_prs_loaded: false,
-            show_merged: false,
-            include_team_reviews: false,
-            pr_detail_cache: HashMap::new(),
-            pr_detail_scroll: 0,
-            verbose: false,
-            verbose_errors: Vec::new(),
-            confirm_dialog: None,
-            action_menu: None,
-            branch_create_input: None,
-            notification: None,
-            show_help: false,
-            cd_path: None,
-            commands: VecDeque::new(),
-            selection_details_pending: false,
-            inflight: Inflight::default(),
-            progress: ProgressTracker::default(),
-            quit_pressed_during_progress: false,
-            branch_selected: HashSet::new(),
-            spinner_tick: 0,
-            config,
-            global_layers: toml::Table::new(),
-            active_repo: None,
-            clone_root: None,
-            repos: HashMap::new(),
-            wt_lists_per_repo: HashMap::new(),
-        }
-    }
-
-    /// Queue a command for the main loop, coalescing exact duplicates —
-    /// pushing an intent that is already pending is a no-op, matching the
-    /// one-slot semantics of the request flags this queue replaced.
-    pub fn push_command(&mut self, cmd: Command) {
-        if !self.commands.contains(&cmd) {
-            self.commands.push_back(cmd);
-        }
-    }
-
-    /// Take a snapshot of the queued commands, leaving the queue empty.
-    /// `run()` dispatches the snapshot; commands pushed during dispatch land
-    /// on the fresh queue and are serviced next iteration (no busy re-loop).
-    pub fn take_commands(&mut self) -> VecDeque<Command> {
-        std::mem::take(&mut self.commands)
-    }
-
-    pub fn current_prs(&self) -> &[PullRequest] {
-        match self.main_filter {
-            MainFilter::Local => &self.local_prs,
-            MainFilter::MyPr => &self.my_prs,
-            MainFilter::ReviewRequested => &self.review_prs,
-        }
-    }
-
-    const SPINNER_FRAMES: &'static [&'static str] =
-        &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
-
-    pub fn tick(&mut self) {
-        self.spinner_tick = self.spinner_tick.wrapping_add(1);
-        if std::mem::take(&mut self.selection_details_pending) {
-            self.flush_selection_details();
-        }
-        // Don't auto-dismiss while a worktree operation is in progress
-        if self.inflight.worktrees.is_empty()
-            && let Some(ref mut n) = self.notification
-        {
-            if n.ticks_remaining > 0 {
-                n.ticks_remaining -= 1;
-            } else {
-                self.notification = None;
-            }
-        }
-    }
-
-    pub fn spinner_frame(&self) -> &'static str {
-        Self::SPINNER_FRAMES[self.spinner_tick % Self::SPINNER_FRAMES.len()]
-    }
-
+impl ViewState {
     pub fn adjust_sidebar_offset(&mut self, visible_height: usize, item_count: usize) {
         if visible_height == 0 {
             return;
@@ -469,39 +300,6 @@ impl App {
         // Clamp offset so list doesn't show blank space
         let max_offset = item_count.saturating_sub(visible_height);
         self.sidebar_offset = self.sidebar_offset.min(max_offset);
-    }
-
-    pub fn is_current_view_loading(&self) -> bool {
-        match self.main_filter {
-            MainFilter::Local => !self.local_prs_loaded,
-            MainFilter::MyPr => !self.my_prs_loaded,
-            MainFilter::ReviewRequested => !self.review_prs_loaded,
-        }
-    }
-
-    pub fn rebuild_entries(&mut self) {
-        // When `active_repo` is absent (startup couldn't infer one), unwrap_or_default
-        // produces a sentinel empty RepoId. It can't collide with any real PR's repo_id,
-        // so cross-repo entries are still keyed correctly and worktree injection no-ops
-        // safely.
-        let active = self.active_repo.clone().unwrap_or_default();
-        self.entries = crate::data::merge_entries(
-            &active,
-            &self.branches,
-            &self.worktrees,
-            self.current_prs(),
-            &self.wt_lists_per_repo,
-        );
-    }
-
-    /// Rebuild entries after a data change and clamp the sidebar selection
-    /// to the (possibly shorter) filtered list.
-    pub fn rebuild_entries_and_clamp(&mut self) {
-        self.rebuild_entries();
-        let filtered_len = self.filtered_entries().len();
-        if self.sidebar_scroll >= filtered_len && filtered_len > 0 {
-            self.sidebar_scroll = filtered_len - 1;
-        }
     }
 
     pub fn filtered_entries(&self) -> Vec<&BranchEntry> {
@@ -615,12 +413,332 @@ impl App {
         }
         Some(prev)
     }
+}
+
+/// Modal/overlay UI state, listed in `handle_key` priority order (issue #220).
+#[derive(Default)]
+pub struct Overlays {
+    pub show_help: bool,
+    pub confirm_dialog: Option<PendingConfirm>,
+    pub action_menu: Option<ActionMenu>,
+    pub branch_create_input: Option<BranchCreateInput>,
+    pub notification: Option<Notification>,
+}
+
+/// Per-filter PR list caches keyed by `MainFilter`, their fetch parameters,
+/// and the PR-detail cache (issue #220).
+#[derive(Default)]
+pub struct PrCaches {
+    pub local: Vec<PullRequest>,
+    pub my: Vec<PullRequest>,
+    pub review: Vec<PullRequest>,
+    pub local_loaded: bool,
+    pub my_loaded: bool,
+    pub review_loaded: bool,
+    pub show_merged: bool,
+    pub include_team_reviews: bool,
+    /// PR detail bodies for the detail pane, cached by `(RepoId, PR number)`.
+    pub detail: HashMap<(crate::git::types::RepoId, u64), PrDetail>,
+}
+
+impl PrCaches {
+    pub fn current(&self, filter: MainFilter) -> &[PullRequest] {
+        match filter {
+            MainFilter::Local => &self.local,
+            MainFilter::MyPr => &self.my,
+            MainFilter::ReviewRequested => &self.review,
+        }
+    }
+
+    /// A filter's list counts as loading until its first fetch lands.
+    pub fn is_loading(&self, filter: MainFilter) -> bool {
+        match filter {
+            MainFilter::Local => !self.local_loaded,
+            MainFilter::MyPr => !self.my_loaded,
+            MainFilter::ReviewRequested => !self.review_loaded,
+        }
+    }
+
+    /// Store a fetched PR list for `filter` and mark it loaded.
+    pub fn set(&mut self, filter: MainFilter, prs: Vec<PullRequest>) {
+        match filter {
+            MainFilter::Local => {
+                self.local = prs;
+                self.local_loaded = true;
+            }
+            MainFilter::MyPr => {
+                self.my = prs;
+                self.my_loaded = true;
+            }
+            MainFilter::ReviewRequested => {
+                self.review = prs;
+                self.review_loaded = true;
+            }
+        }
+    }
+
+    /// Drop a filter's cached list so the next fetch is forced.
+    pub fn invalidate(&mut self, filter: MainFilter) {
+        match filter {
+            MainFilter::Local => {
+                self.local.clear();
+                self.local_loaded = false;
+            }
+            MainFilter::MyPr => {
+                self.my.clear();
+                self.my_loaded = false;
+            }
+            MainFilter::ReviewRequested => {
+                self.review.clear();
+                self.review_loaded = false;
+            }
+        }
+    }
+}
+
+/// Raw data fetched from `git`/`gh`: inputs to `rebuild_entries` and the Log
+/// view, plus the gh identity used for review-status computation (issue #220).
+#[derive(Default)]
+pub struct RawData {
+    pub branches: Vec<Branch>,
+    pub worktrees: Vec<Worktree>,
+    pub commits: Vec<Commit>,
+    pub gh_user: String,
+    pub gh_user_load_failed: bool,
+}
+
+/// Cross-repo context: active repo, clone root, lazily-populated per-repo
+/// metadata and worktree lists, and the merged global config layers used to
+/// resolve per-repo effective configs (issue #220).
+#[derive(Default)]
+pub struct CrossRepoState {
+    /// Set at startup; `None` when startup couldn't infer a repo.
+    pub active_repo: Option<crate::git::types::RepoId>,
+    pub clone_root: Option<std::path::PathBuf>,
+    /// Per-repo metadata (populated lazily as repos are selected).
+    pub repos: std::collections::HashMap<crate::git::types::RepoId, crate::git::types::RepoMeta>,
+    /// Worktree lists per repo (populated lazily as cross-repo PRs are selected).
+    pub wt_lists_per_repo:
+        std::collections::HashMap<crate::git::types::RepoId, Vec<crate::git::types::Worktree>>,
+    /// Merged global config layers (home-dir files only), used to resolve a
+    /// per-repo effective config for cross-repo worktree operations.
+    pub global_layers: toml::Table,
+}
+
+impl CrossRepoState {
+    /// Hosts the user can reasonably be expected to have PRs on, derived from
+    /// the origin remotes of every repo we have metadata for. Empty repo map
+    /// falls back to `[None]` (default host = github.com) so cross-repo
+    /// aggregation behaves identically to the single-host case before any
+    /// repo metadata is collected. The output is unique-by-host and sorted
+    /// (None first) for deterministic ordering.
+    pub fn known_hosts(&self) -> Vec<Option<String>> {
+        use std::collections::BTreeSet;
+        let set: BTreeSet<Option<String>> = self.repos.keys().map(|id| id.host.clone()).collect();
+        if set.is_empty() {
+            vec![None]
+        } else {
+            set.into_iter().collect()
+        }
+    }
+
+    /// Effective config for a specific repo root: the global layers overlaid
+    /// with `<repo_root>/.gct.toml`. Used for cross-repo worktree operations so
+    /// the target repo's own `.gct.toml` applies (not the launching repo's).
+    pub fn resolve_repo_config(&self, repo_root: &std::path::Path) -> crate::config::Config {
+        crate::config::resolve_config(&self.global_layers, Some(repo_root))
+    }
+
+    /// Resolve a repo's local clone path under `clone_root`. Idempotent: only
+    /// hits the filesystem once per repo. Sets `local_path_resolved = true`
+    /// regardless of outcome to prevent re-tries.
+    pub fn resolve_local_path(&mut self, id: &crate::git::types::RepoId) {
+        // Snapshot clone_root first (no borrow on self.repos held).
+        let root = self.clone_root.clone();
+        let Some(meta) = self.repos.get_mut(id) else {
+            return;
+        };
+        if meta.local_path_resolved {
+            return;
+        }
+        meta.local_path_resolved = true;
+        let Some(root) = root else {
+            return;
+        };
+        let host = id.host.as_deref().unwrap_or("github.com");
+        let candidate = root.join(host).join(&id.owner).join(&id.name);
+        if candidate.is_dir() {
+            meta.local_path = Some(candidate);
+        }
+    }
+}
+
+pub struct App {
+    pub active_view: ActiveView,
+    pub should_quit: bool,
+
+    // What the user is looking at: entry list, cursor/filter/search state,
+    // and per-view scroll positions (issue #220).
+    pub view: ViewState,
+
+    // Raw data fetched from git/gh (issue #220).
+    pub raw: RawData,
+
+    // Per-filter PR caches and the PR-detail cache (issue #220).
+    pub prs: PrCaches,
+
+    // Verbose mode
+    pub verbose: bool,
+    pub verbose_errors: Vec<String>,
+
+    // Modal/overlay UI state (issue #220).
+    pub overlays: Overlays,
+
+    // Exit with cd path
+    pub cd_path: Option<String>,
+
+    // Command queue: intents staged by key handling (and async-result
+    // handling in `run()`), drained once per loop iteration in `run()`.
+    pub commands: VecDeque<Command>,
+
+    // Selection changed; detail fetches are flushed on the next tick
+    // (debounce — see request_details_for_selection).
+    selection_details_pending: bool,
+
+    // Async-work dedup bookkeeping (fetches, reloads, worktree ops).
+    pub inflight: Inflight,
+    pub progress: ProgressTracker,
+
+    // Spinner animation
+    spinner_tick: usize,
+
+    // Loaded TOML config (protected_branches, worktree, …) for the active repo.
+    pub config: crate::config::Config,
+
+    // Cross-repo context and per-repo metadata (issue #220).
+    pub cross_repo: CrossRepoState,
+}
+
+impl App {
+    pub fn new(config: crate::config::Config) -> Self {
+        Self {
+            active_view: ActiveView::default(),
+            should_quit: false,
+            view: ViewState::default(),
+            raw: RawData::default(),
+            prs: PrCaches::default(),
+            verbose: false,
+            verbose_errors: Vec::new(),
+            overlays: Overlays::default(),
+            cd_path: None,
+            commands: VecDeque::new(),
+            selection_details_pending: false,
+            inflight: Inflight::default(),
+            progress: ProgressTracker::default(),
+            spinner_tick: 0,
+            config,
+            cross_repo: CrossRepoState::default(),
+        }
+    }
+
+    /// Queue a command for the main loop, coalescing exact duplicates —
+    /// pushing an intent that is already pending is a no-op, matching the
+    /// one-slot semantics of the request flags this queue replaced.
+    pub fn push_command(&mut self, cmd: Command) {
+        if !self.commands.contains(&cmd) {
+            self.commands.push_back(cmd);
+        }
+    }
+
+    /// Take a snapshot of the queued commands, leaving the queue empty.
+    /// `run()` dispatches the snapshot; commands pushed during dispatch land
+    /// on the fresh queue and are serviced next iteration (no busy re-loop).
+    pub fn take_commands(&mut self) -> VecDeque<Command> {
+        std::mem::take(&mut self.commands)
+    }
+
+    pub fn current_prs(&self) -> &[PullRequest] {
+        self.prs.current(self.view.main_filter)
+    }
+
+    const SPINNER_FRAMES: &'static [&'static str] =
+        &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+
+    pub fn tick(&mut self) {
+        self.spinner_tick = self.spinner_tick.wrapping_add(1);
+        if std::mem::take(&mut self.selection_details_pending) {
+            self.flush_selection_details();
+        }
+        // Don't auto-dismiss while a worktree operation is in progress
+        if self.inflight.worktrees.is_empty()
+            && let Some(ref mut n) = self.overlays.notification
+        {
+            if n.ticks_remaining > 0 {
+                n.ticks_remaining -= 1;
+            } else {
+                self.overlays.notification = None;
+            }
+        }
+    }
+
+    pub fn spinner_frame(&self) -> &'static str {
+        Self::SPINNER_FRAMES[self.spinner_tick % Self::SPINNER_FRAMES.len()]
+    }
+
+    pub fn adjust_sidebar_offset(&mut self, visible_height: usize, item_count: usize) {
+        self.view.adjust_sidebar_offset(visible_height, item_count)
+    }
+
+    pub fn is_current_view_loading(&self) -> bool {
+        self.prs.is_loading(self.view.main_filter)
+    }
+
+    pub fn rebuild_entries(&mut self) {
+        // When `active_repo` is absent (startup couldn't infer one), unwrap_or_default
+        // produces a sentinel empty RepoId. It can't collide with any real PR's repo_id,
+        // so cross-repo entries are still keyed correctly and worktree injection no-ops
+        // safely.
+        let active = self.cross_repo.active_repo.clone().unwrap_or_default();
+        self.view.entries = crate::data::merge_entries(
+            &active,
+            &self.raw.branches,
+            &self.raw.worktrees,
+            self.current_prs(),
+            &self.cross_repo.wt_lists_per_repo,
+        );
+    }
+
+    /// Rebuild entries after a data change and clamp the sidebar selection
+    /// to the (possibly shorter) filtered list.
+    pub fn rebuild_entries_and_clamp(&mut self) {
+        self.rebuild_entries();
+        let filtered_len = self.filtered_entries().len();
+        if self.view.sidebar_scroll >= filtered_len && filtered_len > 0 {
+            self.view.sidebar_scroll = filtered_len - 1;
+        }
+    }
+
+    pub fn filtered_entries(&self) -> Vec<&BranchEntry> {
+        self.view.filtered_entries()
+    }
+
+    pub fn sidebar_rows(&self) -> Vec<SidebarRow<'_>> {
+        self.view.sidebar_rows()
+    }
+
+    pub fn selected_entry(&self) -> Option<&BranchEntry> {
+        self.view.selected_entry()
+    }
+
+    pub fn snap_scroll_to_entry(&mut self) {
+        self.view.snap_scroll_to_entry()
+    }
 
     /// Return the cached PR detail for the currently selected entry, if available.
     pub fn selected_pr_detail(&self) -> Option<&PrDetail> {
         let entry = self.selected_entry()?;
         let pr_num = entry.pr_number()?;
-        self.pr_detail_cache.get(&(entry.repo_id.clone(), pr_num))
+        self.prs.detail.get(&(entry.repo_id.clone(), pr_num))
     }
 
     /// Signal that the selection changed. The actual detail fetches are
@@ -629,7 +747,7 @@ impl App {
     /// fetch for the final selection ~80ms after scrolling settles, instead
     /// of spawning a `gh`/`git` subprocess per row passed through.
     pub fn request_details_for_selection(&mut self) {
-        self.pr_detail_scroll = 0;
+        self.view.pr_detail_scroll = 0;
         self.selection_details_pending = true;
     }
 
@@ -644,7 +762,8 @@ impl App {
             // Request PR detail if entry has a PR and it's not cached
             if let Some(pr_num) = entry.pr_number()
                 && !self
-                    .pr_detail_cache
+                    .prs
+                    .detail
                     .contains_key(&(entry.repo_id.clone(), pr_num))
             {
                 self.push_command(Command::FetchPrDetail(entry.repo_id.clone(), pr_num));
@@ -660,12 +779,16 @@ impl App {
 
         // Signal lazy load of cross-repo worktree list if not yet fetched (use the same `selected` binding)
         if let Some(entry) = &selected
-            && self.active_repo.as_ref() != Some(&entry.repo_id)
-            && !self.wt_lists_per_repo.contains_key(&entry.repo_id)
+            && self.cross_repo.active_repo.as_ref() != Some(&entry.repo_id)
+            && !self
+                .cross_repo
+                .wt_lists_per_repo
+                .contains_key(&entry.repo_id)
             && !self.inflight.wt_lists.contains(&entry.repo_id)
         {
             self.resolve_local_path(&entry.repo_id);
             if self
+                .cross_repo
                 .repos
                 .get(&entry.repo_id)
                 .and_then(|m| m.local_path.as_ref())
@@ -678,10 +801,10 @@ impl App {
 
     pub fn handle_key(&mut self, key: KeyEvent) {
         // Help overlay takes priority
-        if self.show_help {
+        if self.overlays.show_help {
             match key.code {
                 KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('?') => {
-                    self.show_help = false;
+                    self.overlays.show_help = false;
                 }
                 _ => {}
             }
@@ -689,96 +812,96 @@ impl App {
         }
 
         // Confirm dialog takes priority
-        if self.confirm_dialog.is_some() {
+        if self.overlays.confirm_dialog.is_some() {
             self.handle_confirm_key(key.code);
             return;
         }
 
         // Action menu takes priority
-        if self.action_menu.is_some() {
+        if self.overlays.action_menu.is_some() {
             self.handle_action_menu_key(key.code);
             return;
         }
 
         // Branch-create input modal takes priority
-        if self.branch_create_input.is_some() {
+        if self.overlays.branch_create_input.is_some() {
             self.handle_branch_create_input_key(key.code);
             return;
         }
 
         // Search mode takes priority in Main view
-        if self.search_active && self.active_view == ActiveView::Main {
+        if self.view.search_active && self.active_view == ActiveView::Main {
             self.handle_search_key(key.code);
             return;
         }
 
         match key.code {
-            KeyCode::Char('?') => self.show_help = true,
+            KeyCode::Char('?') => self.overlays.show_help = true,
             KeyCode::Char('q') => {
-                if !self.progress.is_active() || self.quit_pressed_during_progress {
+                if !self.progress.is_active() || self.progress.quit_pressed {
                     self.should_quit = true;
                 } else {
-                    self.quit_pressed_during_progress = true;
+                    self.progress.quit_pressed = true;
                 }
             }
             KeyCode::Esc => {
-                if !self.search_query.is_empty() {
+                if !self.view.search_query.is_empty() {
                     // Clear search filter and restore scroll
-                    self.search_query.clear();
-                    self.sidebar_scroll = self.search_pre_scroll;
-                    self.sidebar_offset = 0;
+                    self.view.search_query.clear();
+                    self.view.sidebar_scroll = self.view.search_pre_scroll;
+                    self.view.sidebar_offset = 0;
                     self.snap_scroll_to_entry();
                     self.request_details_for_selection();
                 } else if matches!(self.active_view, ActiveView::Log | ActiveView::History) {
                     self.active_view = ActiveView::Main;
-                } else if !self.progress.is_active() || self.quit_pressed_during_progress {
+                } else if !self.progress.is_active() || self.progress.quit_pressed {
                     self.should_quit = true;
                 } else {
-                    self.quit_pressed_during_progress = true;
+                    self.progress.quit_pressed = true;
                 }
             }
             KeyCode::Char('l') => self.active_view = ActiveView::Log,
             KeyCode::Char('h') => {
                 if self.active_view != ActiveView::History {
                     self.active_view = ActiveView::History;
-                    self.history_scroll = 0;
+                    self.view.history_scroll = 0;
                 }
             }
             KeyCode::Char('1') => {
-                self.main_filter = MainFilter::Local;
+                self.view.main_filter = MainFilter::Local;
                 self.active_view = ActiveView::Main;
-                self.search_query.clear();
-                self.sidebar_scroll = 0;
-                self.sidebar_offset = 0;
+                self.view.search_query.clear();
+                self.view.sidebar_scroll = 0;
+                self.view.sidebar_offset = 0;
                 self.rebuild_entries();
                 self.snap_scroll_to_entry();
-                if !self.local_prs_loaded {
+                if !self.prs.local_loaded {
                     self.push_command(Command::FetchPrs(MainFilter::Local));
                 }
                 self.request_details_for_selection();
             }
             KeyCode::Char('2') => {
-                self.main_filter = MainFilter::MyPr;
+                self.view.main_filter = MainFilter::MyPr;
                 self.active_view = ActiveView::Main;
-                self.search_query.clear();
-                self.sidebar_scroll = 0;
-                self.sidebar_offset = 0;
+                self.view.search_query.clear();
+                self.view.sidebar_scroll = 0;
+                self.view.sidebar_offset = 0;
                 self.rebuild_entries();
                 self.snap_scroll_to_entry();
-                if !self.my_prs_loaded {
+                if !self.prs.my_loaded {
                     self.push_command(Command::FetchPrs(MainFilter::MyPr));
                 }
                 self.request_details_for_selection();
             }
             KeyCode::Char('3') => {
-                self.main_filter = MainFilter::ReviewRequested;
+                self.view.main_filter = MainFilter::ReviewRequested;
                 self.active_view = ActiveView::Main;
-                self.search_query.clear();
-                self.sidebar_scroll = 0;
-                self.sidebar_offset = 0;
+                self.view.search_query.clear();
+                self.view.sidebar_scroll = 0;
+                self.view.sidebar_offset = 0;
                 self.rebuild_entries();
                 self.snap_scroll_to_entry();
-                if !self.review_prs_loaded {
+                if !self.prs.review_loaded {
                     self.push_command(Command::FetchPrs(MainFilter::ReviewRequested));
                 }
                 self.request_details_for_selection();
@@ -786,35 +909,22 @@ impl App {
             KeyCode::Char('r') => match self.active_view {
                 ActiveView::Main => {
                     // Invalidate current filter's PR cache so the fetch is forced
-                    match self.main_filter {
-                        MainFilter::Local => {
-                            self.local_prs.clear();
-                            self.local_prs_loaded = false;
-                        }
-                        MainFilter::MyPr => {
-                            self.my_prs.clear();
-                            self.my_prs_loaded = false;
-                        }
-                        MainFilter::ReviewRequested => {
-                            self.review_prs.clear();
-                            self.review_prs_loaded = false;
-                        }
-                    }
+                    self.prs.invalidate(self.view.main_filter);
                     // Clear PR detail cache for ALL filters, not just the current
                     // one — stale detail bodies are risky after a refresh, and the
                     // detail pane will refetch on the next selection.
-                    self.pr_detail_cache.clear();
+                    self.prs.detail.clear();
                     // Invalidate cross-repo worktree list caches so they re-fetch.
-                    self.wt_lists_per_repo.clear();
+                    self.cross_repo.wt_lists_per_repo.clear();
                     self.inflight.wt_lists.clear();
                     // Signal branches/worktrees reload + PR fetch
                     self.push_command(Command::ReloadBranches);
-                    self.push_command(Command::FetchPrs(self.main_filter));
-                    self.notification = Some(Notification::success("Refreshing…"));
+                    self.push_command(Command::FetchPrs(self.view.main_filter));
+                    self.overlays.notification = Some(Notification::success("Refreshing…"));
                 }
                 ActiveView::Log => {
                     self.push_command(Command::ReloadCommits);
-                    self.notification = Some(Notification::success("Refreshing…"));
+                    self.overlays.notification = Some(Notification::success("Refreshing…"));
                 }
                 ActiveView::History => {
                     // History updates live as commands run — no manual refresh needed.
@@ -831,14 +941,14 @@ impl App {
     fn handle_main_key(&mut self, code: KeyCode) {
         match code {
             KeyCode::Char('j') | KeyCode::Down => {
-                if let Some(next) = self.next_entry_index(self.sidebar_scroll) {
-                    self.sidebar_scroll = next;
+                if let Some(next) = self.view.next_entry_index(self.view.sidebar_scroll) {
+                    self.view.sidebar_scroll = next;
                     self.request_details_for_selection();
                 }
             }
-            KeyCode::Char('k') | KeyCode::Up if self.sidebar_scroll > 0 => {
-                if let Some(prev) = self.prev_entry_index(self.sidebar_scroll) {
-                    self.sidebar_scroll = prev;
+            KeyCode::Char('k') | KeyCode::Up if self.view.sidebar_scroll > 0 => {
+                if let Some(prev) = self.view.prev_entry_index(self.view.sidebar_scroll) {
+                    self.view.sidebar_scroll = prev;
                     self.request_details_for_selection();
                 }
             }
@@ -846,28 +956,29 @@ impl App {
                 if let Some(entry) = self.selected_entry().cloned()
                     && !entry.is_current()
                     && !self.is_protected_branch(&entry.name)
-                    && self.active_repo.as_ref() == Some(&entry.repo_id)
+                    && self.cross_repo.active_repo.as_ref() == Some(&entry.repo_id)
                 {
-                    if self.branch_selected.contains(&entry.name) {
-                        self.branch_selected.remove(&entry.name);
+                    if self.view.branch_selected.contains(&entry.name) {
+                        self.view.branch_selected.remove(&entry.name);
                     } else {
-                        self.branch_selected.insert(entry.name);
+                        self.view.branch_selected.insert(entry.name);
                     }
                 }
             }
             KeyCode::Char('a') => {
                 let to_select: Vec<String> = self
+                    .view
                     .entries
                     .iter()
                     .filter(|e| {
                         (e.is_merged() || e.pr_is_merged())
                             && !e.is_current()
                             && !self.is_protected_branch(&e.name)
-                            && self.active_repo.as_ref() == Some(&e.repo_id)
+                            && self.cross_repo.active_repo.as_ref() == Some(&e.repo_id)
                     })
                     .map(|e| e.name.clone())
                     .collect();
-                self.branch_selected.extend(to_select);
+                self.view.branch_selected.extend(to_select);
             }
             KeyCode::Char('d') => {
                 // Only entries that will actually be processed (i.e. have a
@@ -878,9 +989,9 @@ impl App {
                 let mut worktree_count = 0usize;
                 let mut unmerged_count = 0usize;
                 let mut deletable_names: Vec<&str> = Vec::new();
-                if !self.branch_selected.is_empty() {
-                    for name in &self.branch_selected {
-                        if let Some(entry) = self.entries.iter().find(|e| &e.name == name) {
+                if !self.view.branch_selected.is_empty() {
+                    for name in &self.view.branch_selected {
+                        if let Some(entry) = self.view.entries.iter().find(|e| &e.name == name) {
                             let has_branch = entry.local_branch.is_some();
                             let has_worktree = entry.worktree.is_some();
                             if !has_branch && !has_worktree {
@@ -922,16 +1033,16 @@ impl App {
                     };
                     // Snapshot the whole selection — the dispatcher re-filters
                     // (current/protected/inflight) at execution time.
-                    let names: Vec<String> = self.branch_selected.iter().cloned().collect();
-                    self.confirm_dialog = Some(PendingConfirm {
+                    let names: Vec<String> = self.view.branch_selected.iter().cloned().collect();
+                    self.overlays.confirm_dialog = Some(PendingConfirm {
                         dialog: ConfirmDialog::new(title, msg),
                         on_confirm: Command::DeleteBranches(names),
                     });
-                } else if !self.branch_selected.is_empty() {
+                } else if !self.view.branch_selected.is_empty() {
                     // Non-empty selection but nothing deletable (e.g. PR-only entries
                     // with no local branch and no worktree). Tell the user rather
                     // than silently no-op.
-                    self.notification = Some(Notification::error(
+                    self.overlays.notification = Some(Notification::error(
                         "Nothing to delete in selection".to_string(),
                     ));
                 } else if let Some(entry) = self.selected_entry().cloned()
@@ -940,7 +1051,7 @@ impl App {
                     && !self.inflight.worktrees.contains(wt_path)
                 {
                     let path = wt_path.to_string();
-                    self.confirm_dialog = Some(PendingConfirm {
+                    self.overlays.confirm_dialog = Some(PendingConfirm {
                         dialog: ConfirmDialog::new(
                             "Delete Worktree",
                             format!("Remove worktree at {path}?"),
@@ -959,18 +1070,19 @@ impl App {
                 {
                     return;
                 }
-                let is_active = self.active_repo.as_ref() == Some(&entry.repo_id);
+                let is_active = self.cross_repo.active_repo.as_ref() == Some(&entry.repo_id);
                 let clone_path: Option<std::path::PathBuf> = if is_active {
                     None
                 } else {
                     self.resolve_local_path(&entry.repo_id);
-                    self.repos
+                    self.cross_repo
+                        .repos
                         .get(&entry.repo_id)
                         .and_then(|m| m.local_path.clone())
                 };
                 let cross_repo_no_clone = !is_active && clone_path.is_none();
                 if cross_repo_no_clone {
-                    self.notification = Some(Notification::error(format!(
+                    self.overlays.notification = Some(Notification::error(format!(
                         "{} not cloned. Set [workspace] clone_root.",
                         entry.repo_id
                     )));
@@ -996,43 +1108,41 @@ impl App {
                     entry.repo_id.clone(),
                     entry.name.clone(),
                 ));
-                self.notification = Some(Notification::success("Creating worktree...".to_string()));
+                self.overlays.notification =
+                    Some(Notification::success("Creating worktree...".to_string()));
             }
             KeyCode::Enter => {
                 self.open_action_menu();
             }
             KeyCode::Char('m') => {
                 if matches!(
-                    self.main_filter,
+                    self.view.main_filter,
                     MainFilter::MyPr | MainFilter::ReviewRequested
                 ) {
-                    self.show_merged = !self.show_merged;
+                    self.prs.show_merged = !self.prs.show_merged;
                     // Invalidate both caches since merged state changed
-                    self.my_prs.clear();
-                    self.my_prs_loaded = false;
-                    self.review_prs.clear();
-                    self.review_prs_loaded = false;
+                    self.prs.invalidate(MainFilter::MyPr);
+                    self.prs.invalidate(MainFilter::ReviewRequested);
                     self.rebuild_entries();
-                    self.push_command(Command::FetchPrs(self.main_filter));
-                    self.sidebar_scroll = 0;
-                    self.sidebar_offset = 0;
+                    self.push_command(Command::FetchPrs(self.view.main_filter));
+                    self.view.sidebar_scroll = 0;
+                    self.view.sidebar_offset = 0;
                     self.snap_scroll_to_entry();
                 }
             }
-            KeyCode::Char('t') if self.main_filter == MainFilter::ReviewRequested => {
-                self.include_team_reviews = !self.include_team_reviews;
-                self.review_prs.clear();
-                self.review_prs_loaded = false;
+            KeyCode::Char('t') if self.view.main_filter == MainFilter::ReviewRequested => {
+                self.prs.include_team_reviews = !self.prs.include_team_reviews;
+                self.prs.invalidate(MainFilter::ReviewRequested);
                 self.rebuild_entries();
                 self.push_command(Command::FetchPrs(MainFilter::ReviewRequested));
-                self.sidebar_scroll = 0;
-                self.sidebar_offset = 0;
+                self.view.sidebar_scroll = 0;
+                self.view.sidebar_offset = 0;
                 self.snap_scroll_to_entry();
             }
             KeyCode::Char('/') => {
-                self.search_pre_scroll = self.sidebar_scroll;
-                self.search_active = true;
-                self.search_query.clear();
+                self.view.search_pre_scroll = self.view.sidebar_scroll;
+                self.view.search_active = true;
+                self.view.search_query.clear();
             }
             _ => {}
         }
@@ -1040,11 +1150,13 @@ impl App {
 
     fn handle_log_key(&mut self, code: KeyCode) {
         match code {
-            KeyCode::Char('j') | KeyCode::Down if self.log_scroll + 1 < self.commits.len() => {
-                self.log_scroll += 1;
+            KeyCode::Char('j') | KeyCode::Down
+                if self.view.log_scroll + 1 < self.raw.commits.len() =>
+            {
+                self.view.log_scroll += 1;
             }
             KeyCode::Char('k') | KeyCode::Up => {
-                self.log_scroll = self.log_scroll.saturating_sub(1);
+                self.view.log_scroll = self.view.log_scroll.saturating_sub(1);
             }
             _ => {}
         }
@@ -1053,11 +1165,11 @@ impl App {
     fn handle_history_key(&mut self, code: KeyCode) {
         let len = crate::git::command::command_history_len();
         match code {
-            KeyCode::Char('j') | KeyCode::Down if len > 0 && self.history_scroll + 1 < len => {
-                self.history_scroll += 1;
+            KeyCode::Char('j') | KeyCode::Down if len > 0 && self.view.history_scroll + 1 < len => {
+                self.view.history_scroll += 1;
             }
             KeyCode::Char('k') | KeyCode::Up => {
-                self.history_scroll = self.history_scroll.saturating_sub(1);
+                self.view.history_scroll = self.view.history_scroll.saturating_sub(1);
             }
             _ => {}
         }
@@ -1066,40 +1178,40 @@ impl App {
     fn handle_search_key(&mut self, code: KeyCode) {
         match code {
             KeyCode::Esc => {
-                self.search_active = false;
-                self.search_query.clear();
-                self.sidebar_scroll = self.search_pre_scroll;
+                self.view.search_active = false;
+                self.view.search_query.clear();
+                self.view.sidebar_scroll = self.view.search_pre_scroll;
                 self.snap_scroll_to_entry();
                 self.request_details_for_selection();
             }
             KeyCode::Enter => {
-                self.search_active = false;
+                self.view.search_active = false;
                 self.request_details_for_selection();
                 self.open_action_menu();
             }
             KeyCode::Backspace => {
-                self.search_query.pop();
-                self.sidebar_scroll = 0;
-                self.sidebar_offset = 0;
+                self.view.search_query.pop();
+                self.view.sidebar_scroll = 0;
+                self.view.sidebar_offset = 0;
                 self.snap_scroll_to_entry();
                 self.request_details_for_selection();
             }
             KeyCode::Char(c) => {
-                self.search_query.push(c);
-                self.sidebar_scroll = 0;
-                self.sidebar_offset = 0;
+                self.view.search_query.push(c);
+                self.view.sidebar_scroll = 0;
+                self.view.sidebar_offset = 0;
                 self.snap_scroll_to_entry();
                 self.request_details_for_selection();
             }
             KeyCode::Down => {
-                if let Some(next) = self.next_entry_index(self.sidebar_scroll) {
-                    self.sidebar_scroll = next;
+                if let Some(next) = self.view.next_entry_index(self.view.sidebar_scroll) {
+                    self.view.sidebar_scroll = next;
                     self.request_details_for_selection();
                 }
             }
-            KeyCode::Up if self.sidebar_scroll > 0 => {
-                if let Some(prev) = self.prev_entry_index(self.sidebar_scroll) {
-                    self.sidebar_scroll = prev;
+            KeyCode::Up if self.view.sidebar_scroll > 0 => {
+                if let Some(prev) = self.view.prev_entry_index(self.view.sidebar_scroll) {
+                    self.view.sidebar_scroll = prev;
                     self.request_details_for_selection();
                 }
             }
@@ -1112,13 +1224,14 @@ impl App {
             Some(e) => e,
             None => return,
         };
-        let is_active_repo = self.active_repo.as_ref() == Some(&entry.repo_id);
+        let is_active_repo = self.cross_repo.active_repo.as_ref() == Some(&entry.repo_id);
         let clone_path: Option<std::path::PathBuf> = if is_active_repo {
             None // active repo runs in CWD, no clone path needed
         } else {
             // cross-repo: resolve once, then read
             self.resolve_local_path(&entry.repo_id);
-            self.repos
+            self.cross_repo
+                .repos
                 .get(&entry.repo_id)
                 .and_then(|m| m.local_path.clone())
         };
@@ -1185,6 +1298,7 @@ impl App {
 
         if cross_repo_no_clone {
             let hint_root = self
+                .cross_repo
                 .clone_root
                 .as_ref()
                 .map(|p| p.display().to_string())
@@ -1196,7 +1310,7 @@ impl App {
         }
 
         if !items.is_empty() {
-            self.action_menu = Some(ActionMenu {
+            self.overlays.action_menu = Some(ActionMenu {
                 items,
                 scroll: 0,
                 target: (entry.repo_id.clone(), entry.name.clone()),
@@ -1206,7 +1320,7 @@ impl App {
     }
 
     fn handle_action_menu_key(&mut self, code: KeyCode) {
-        let menu = match &mut self.action_menu {
+        let menu = match &mut self.overlays.action_menu {
             Some(m) => m,
             None => return,
         };
@@ -1220,11 +1334,11 @@ impl App {
             KeyCode::Enter => {
                 let action = menu.items[menu.scroll];
                 let (repo_id, branch_name) = menu.target.clone();
-                self.action_menu = None;
+                self.overlays.action_menu = None;
                 self.execute_action(action, &repo_id, &branch_name);
             }
             KeyCode::Esc => {
-                self.action_menu = None;
+                self.overlays.action_menu = None;
             }
             _ => {}
         }
@@ -1237,6 +1351,7 @@ impl App {
         name: &str,
     ) {
         let entry = match self
+            .view
             .entries
             .iter()
             .find(|e| e.repo_id == *repo_id && e.name == name)
@@ -1251,7 +1366,8 @@ impl App {
                     entry.repo_id.clone(),
                     entry.name.clone(),
                 ));
-                self.notification = Some(Notification::success("Creating worktree...".to_string()));
+                self.overlays.notification =
+                    Some(Notification::success("Creating worktree...".to_string()));
             }
             ActionItem::CdIntoWorktree => {
                 if let Some(path) = entry.worktree_path() {
@@ -1264,8 +1380,8 @@ impl App {
                     let path = wt_path.to_string();
                     // Deleting via the action menu targets one worktree only —
                     // drop any checkbox selection so the sidebar reflects that.
-                    self.branch_selected.clear();
-                    self.confirm_dialog = Some(PendingConfirm {
+                    self.view.branch_selected.clear();
+                    self.overlays.confirm_dialog = Some(PendingConfirm {
                         dialog: ConfirmDialog::new(
                             "Delete Worktree",
                             format!("Remove worktree at {path}?"),
@@ -1275,7 +1391,7 @@ impl App {
                 }
             }
             ActionItem::CreateBranch => {
-                self.branch_create_input = Some(BranchCreateInput {
+                self.overlays.branch_create_input = Some(BranchCreateInput {
                     source: entry.name.clone(),
                     name: String::new(),
                     cursor: 0,
@@ -1289,7 +1405,7 @@ impl App {
                 } else {
                     format!("Delete branch {name}?")
                 };
-                self.confirm_dialog = Some(PendingConfirm {
+                self.overlays.confirm_dialog = Some(PendingConfirm {
                     dialog: ConfirmDialog::new("Delete Branch", msg),
                     on_confirm: Command::DeleteBranches(vec![name]),
                 });
@@ -1301,13 +1417,14 @@ impl App {
             }
             ActionItem::CopyBranchName => {
                 self.push_command(Command::CopyBranchName(entry.name.clone()));
-                self.notification = Some(Notification::success(format!("Copied: {}", entry.name)));
+                self.overlays.notification =
+                    Some(Notification::success(format!("Copied: {}", entry.name)));
             }
         }
     }
 
     fn handle_branch_create_input_key(&mut self, code: KeyCode) {
-        let input = match &mut self.branch_create_input {
+        let input = match &mut self.overlays.branch_create_input {
             Some(i) => i,
             None => return,
         };
@@ -1315,12 +1432,12 @@ impl App {
         input.cursor = input.cursor.min(char_len);
         match code {
             KeyCode::Esc => {
-                self.branch_create_input = None;
+                self.overlays.branch_create_input = None;
             }
             KeyCode::Enter if !input.name.is_empty() => {
                 let source = input.source.clone();
                 let name = input.name.clone();
-                self.branch_create_input = None;
+                self.overlays.branch_create_input = None;
                 self.push_command(Command::CreateBranch { source, name });
             }
             KeyCode::Left => {
@@ -1353,12 +1470,12 @@ impl App {
     fn handle_confirm_key(&mut self, code: KeyCode) {
         match code {
             KeyCode::Char('y') => {
-                if let Some(pending) = self.confirm_dialog.take() {
+                if let Some(pending) = self.overlays.confirm_dialog.take() {
                     self.push_command(pending.on_confirm);
                 }
             }
             KeyCode::Char('n') | KeyCode::Esc => {
-                if let Some(pending) = self.confirm_dialog.take()
+                if let Some(pending) = self.overlays.confirm_dialog.take()
                     && let Command::ForceDeleteWorktree(path) = pending.on_confirm
                 {
                     // Declining force-delete ends the op — release the path so
@@ -1374,20 +1491,8 @@ impl App {
         self.config.protected_branches.iter().any(|b| b == name)
     }
 
-    /// Hosts the user can reasonably be expected to have PRs on, derived from
-    /// the origin remotes of every repo we have metadata for. Empty repo map
-    /// falls back to `[None]` (default host = github.com) so cross-repo
-    /// aggregation behaves identically to the single-host case before any
-    /// repo metadata is collected. The output is unique-by-host and sorted
-    /// (None first) for deterministic ordering.
     pub fn known_hosts(&self) -> Vec<Option<String>> {
-        use std::collections::BTreeSet;
-        let set: BTreeSet<Option<String>> = self.repos.keys().map(|id| id.host.clone()).collect();
-        if set.is_empty() {
-            vec![None]
-        } else {
-            set.into_iter().collect()
-        }
+        self.cross_repo.known_hosts()
     }
 
     /// Remember a background-operation error for the error list shown in
@@ -1400,34 +1505,12 @@ impl App {
         }
     }
 
-    /// Effective config for a specific repo root: the global layers overlaid
-    /// with `<repo_root>/.gct.toml`. Used for cross-repo worktree operations so
-    /// the target repo's own `.gct.toml` applies (not the launching repo's).
     pub fn resolve_repo_config(&self, repo_root: &std::path::Path) -> crate::config::Config {
-        crate::config::resolve_config(&self.global_layers, Some(repo_root))
+        self.cross_repo.resolve_repo_config(repo_root)
     }
 
-    /// Resolve a repo's local clone path under `clone_root`. Idempotent: only
-    /// hits the filesystem once per repo. Sets `local_path_resolved = true`
-    /// regardless of outcome to prevent re-tries.
     pub fn resolve_local_path(&mut self, id: &crate::git::types::RepoId) {
-        // Snapshot clone_root first (no borrow on self.repos held).
-        let root = self.clone_root.clone();
-        let Some(meta) = self.repos.get_mut(id) else {
-            return;
-        };
-        if meta.local_path_resolved {
-            return;
-        }
-        meta.local_path_resolved = true;
-        let Some(root) = root else {
-            return;
-        };
-        let host = id.host.as_deref().unwrap_or("github.com");
-        let candidate = root.join(host).join(&id.owner).join(&id.name);
-        if candidate.is_dir() {
-            meta.local_path = Some(candidate);
-        }
+        self.cross_repo.resolve_local_path(id)
     }
 }
 
@@ -1629,7 +1712,7 @@ mod text_edit_tests {
             crossterm::event::KeyModifiers::NONE,
         ));
         assert!(!app.should_quit);
-        assert!(app.quit_pressed_during_progress);
+        assert!(app.progress.quit_pressed);
 
         // Second 'q': force quits.
         app.handle_key(crossterm::event::KeyEvent::new(
@@ -1663,7 +1746,7 @@ mod text_edit_tests {
             crossterm::event::KeyModifiers::NONE,
         ));
         assert!(!app.should_quit);
-        assert!(app.quit_pressed_during_progress);
+        assert!(app.progress.quit_pressed);
 
         // Second Esc: force quits.
         app.handle_key(crossterm::event::KeyEvent::new(
@@ -1705,13 +1788,11 @@ mod pr_detail_cache_tests {
             additions: 0,
             deletions: 0,
         };
-        app.pr_detail_cache
-            .insert((id_a.clone(), 1), detail_a.clone());
-        app.pr_detail_cache
-            .insert((id_b.clone(), 1), detail_b.clone());
-        assert_eq!(app.pr_detail_cache.len(), 2);
-        assert_eq!(app.pr_detail_cache.get(&(id_a, 1)).unwrap().body, "A");
-        assert_eq!(app.pr_detail_cache.get(&(id_b, 1)).unwrap().body, "B");
+        app.prs.detail.insert((id_a.clone(), 1), detail_a.clone());
+        app.prs.detail.insert((id_b.clone(), 1), detail_b.clone());
+        assert_eq!(app.prs.detail.len(), 2);
+        assert_eq!(app.prs.detail.get(&(id_a, 1)).unwrap().body, "A");
+        assert_eq!(app.prs.detail.get(&(id_b, 1)).unwrap().body, "B");
     }
 }
 
@@ -1740,7 +1821,7 @@ mod known_hosts_tests {
     fn known_hosts_dedups_multiple_repos_per_host() {
         let mut app = App::new(Config::default());
         for (owner, name) in [("a", "x"), ("b", "y"), ("c", "z")] {
-            app.repos.insert(
+            app.cross_repo.repos.insert(
                 RepoId {
                     host: None,
                     owner: owner.into(),
@@ -1763,7 +1844,7 @@ mod known_hosts_tests {
             (Some("ghe.example.com"), "team", "infra"),
             (Some("ghe.other.com"), "alice", "tools"),
         ] {
-            app.repos.insert(
+            app.cross_repo.repos.insert(
                 RepoId {
                     host: host.map(|s| s.to_string()),
                     owner: owner.into(),
@@ -1799,13 +1880,13 @@ mod resolve_local_path_tests {
         std::fs::create_dir_all(&host_dir).unwrap();
 
         let mut app = App::new(Config::default());
-        app.clone_root = Some(tmp.path().to_path_buf());
+        app.cross_repo.clone_root = Some(tmp.path().to_path_buf());
         let id = RepoId {
             host: None,
             owner: "owner".into(),
             name: "name".into(),
         };
-        app.repos.insert(
+        app.cross_repo.repos.insert(
             id.clone(),
             crate::git::types::RepoMeta {
                 local_path: None,
@@ -1813,7 +1894,7 @@ mod resolve_local_path_tests {
             },
         );
         app.resolve_local_path(&id);
-        let meta = app.repos.get(&id).unwrap();
+        let meta = app.cross_repo.repos.get(&id).unwrap();
         assert!(meta.local_path_resolved);
         assert_eq!(meta.local_path.as_ref().unwrap(), &host_dir);
     }
@@ -1824,13 +1905,13 @@ mod resolve_local_path_tests {
         use crate::git::types::RepoId;
         let tmp = tempfile::tempdir().unwrap();
         let mut app = App::new(Config::default());
-        app.clone_root = Some(tmp.path().to_path_buf());
+        app.cross_repo.clone_root = Some(tmp.path().to_path_buf());
         let id = RepoId {
             host: None,
             owner: "x".into(),
             name: "y".into(),
         };
-        app.repos.insert(
+        app.cross_repo.repos.insert(
             id.clone(),
             crate::git::types::RepoMeta {
                 local_path: None,
@@ -1838,7 +1919,7 @@ mod resolve_local_path_tests {
             },
         );
         app.resolve_local_path(&id);
-        let meta = app.repos.get(&id).unwrap();
+        let meta = app.cross_repo.repos.get(&id).unwrap();
         assert!(meta.local_path_resolved);
         assert!(meta.local_path.is_none());
     }
@@ -1865,8 +1946,8 @@ mod cursor_skip_tests {
             owner: "b".into(),
             name: "y".into(),
         };
-        app.active_repo = Some(active.clone());
-        app.main_filter = MainFilter::ReviewRequested;
+        app.cross_repo.active_repo = Some(active.clone());
+        app.view.main_filter = MainFilter::ReviewRequested;
         let make_pr = |num: u64, head: &str, repo: &RepoId| PullRequest {
             number: num,
             title: "t".into(),
@@ -1880,7 +1961,7 @@ mod cursor_skip_tests {
             review_status: None,
             repo_id: repo.clone(),
         };
-        app.entries = vec![
+        app.view.entries = vec![
             BranchEntry {
                 name: "e1".into(),
                 repo_id: active.clone(),
@@ -1901,19 +1982,25 @@ mod cursor_skip_tests {
         // rows = [Header(active), Entry(e1), Header(other), Entry(e2)] → indices 0..=3
         // Initial: snap to first Entry (= 1)
         app.snap_scroll_to_entry();
-        assert_eq!(app.sidebar_scroll, 1);
+        assert_eq!(app.view.sidebar_scroll, 1);
 
         // j → should jump from index 1 to index 3 (skip Header at index 2)
         app.handle_key(KeyEvent::new(KeyCode::Char('j'), KeyModifiers::NONE));
         let rows = app.sidebar_rows();
-        assert_eq!(app.sidebar_scroll, 3);
-        assert!(matches!(rows[app.sidebar_scroll], SidebarRow::Entry(_)));
+        assert_eq!(app.view.sidebar_scroll, 3);
+        assert!(matches!(
+            rows[app.view.sidebar_scroll],
+            SidebarRow::Entry(_)
+        ));
 
         // k → should jump back from 3 to 1
         app.handle_key(KeyEvent::new(KeyCode::Char('k'), KeyModifiers::NONE));
         let rows = app.sidebar_rows();
-        assert_eq!(app.sidebar_scroll, 1);
-        assert!(matches!(rows[app.sidebar_scroll], SidebarRow::Entry(_)));
+        assert_eq!(app.view.sidebar_scroll, 1);
+        assert!(matches!(
+            rows[app.view.sidebar_scroll],
+            SidebarRow::Entry(_)
+        ));
     }
 }
 
@@ -1937,8 +2024,8 @@ mod sidebar_rows_tests {
             owner: "b".into(),
             name: "r2".into(),
         };
-        app.active_repo = Some(active.clone());
-        app.main_filter = MainFilter::ReviewRequested;
+        app.cross_repo.active_repo = Some(active.clone());
+        app.view.main_filter = MainFilter::ReviewRequested;
         let make_pr = |num: u64, head: &str, repo: &RepoId| PullRequest {
             number: num,
             title: "x".into(),
@@ -1952,7 +2039,7 @@ mod sidebar_rows_tests {
             review_status: None,
             repo_id: repo.clone(),
         };
-        app.entries = vec![
+        app.view.entries = vec![
             BranchEntry {
                 name: "f1".into(),
                 repo_id: active.clone(),
@@ -1994,8 +2081,8 @@ mod sidebar_rows_tests {
             owner: "a".into(),
             name: "r1".into(),
         };
-        app.active_repo = Some(active.clone());
-        app.main_filter = MainFilter::ReviewRequested;
+        app.cross_repo.active_repo = Some(active.clone());
+        app.view.main_filter = MainFilter::ReviewRequested;
         let make_pr = |num: u64, head: &str| PullRequest {
             number: num,
             title: "x".into(),
@@ -2009,7 +2096,7 @@ mod sidebar_rows_tests {
             review_status: None,
             repo_id: active.clone(),
         };
-        app.entries = vec![
+        app.view.entries = vec![
             BranchEntry {
                 name: "f1".into(),
                 repo_id: active.clone(),
@@ -2048,8 +2135,8 @@ mod sidebar_rows_tests {
             owner: "a".into(),
             name: "r1".into(),
         };
-        app.active_repo = Some(active.clone());
-        app.main_filter = MainFilter::Local;
+        app.cross_repo.active_repo = Some(active.clone());
+        app.view.main_filter = MainFilter::Local;
         // Local mode: filtered_entries requires has_local. Give entries a local branch.
         let make_branch = |name: &str| crate::git::types::Branch {
             name: name.into(),
@@ -2057,7 +2144,7 @@ mod sidebar_rows_tests {
             upstream: None,
             is_merged: false,
         };
-        app.entries = vec![BranchEntry {
+        app.view.entries = vec![BranchEntry {
             name: "f1".into(),
             repo_id: active.clone(),
             local_branch: Some(make_branch("f1")),
@@ -2156,16 +2243,16 @@ mod action_menu_cross_repo_tests {
             owner: "b".into(),
             name: "y".into(),
         };
-        app.active_repo = Some(active.clone());
-        app.repos.insert(
+        app.cross_repo.active_repo = Some(active.clone());
+        app.cross_repo.repos.insert(
             other.clone(),
             RepoMeta {
                 local_path: None,
                 local_path_resolved: true,
             },
         );
-        app.main_filter = MainFilter::ReviewRequested;
-        app.entries = vec![BranchEntry {
+        app.view.main_filter = MainFilter::ReviewRequested;
+        app.view.entries = vec![BranchEntry {
             name: "feat".into(),
             repo_id: other.clone(),
             local_branch: None,
@@ -2187,7 +2274,7 @@ mod action_menu_cross_repo_tests {
         }];
         app.snap_scroll_to_entry();
         app.open_action_menu();
-        let menu = app.action_menu.as_ref().unwrap();
+        let menu = app.overlays.action_menu.as_ref().unwrap();
         assert!(menu.items.contains(&ActionItem::OpenPrInBrowser));
         assert!(menu.items.contains(&ActionItem::CopyBranchName));
         assert!(!menu.items.contains(&ActionItem::CreateWorktree));
@@ -2215,16 +2302,16 @@ mod action_menu_cross_repo_tests {
         let tmp = tempfile::tempdir().unwrap();
         let clone_path = tmp.path().join("github.com").join("b").join("y");
         std::fs::create_dir_all(&clone_path).unwrap();
-        app.active_repo = Some(active.clone());
-        app.repos.insert(
+        app.cross_repo.active_repo = Some(active.clone());
+        app.cross_repo.repos.insert(
             other.clone(),
             RepoMeta {
                 local_path: Some(clone_path),
                 local_path_resolved: true,
             },
         );
-        app.main_filter = MainFilter::ReviewRequested;
-        app.entries = vec![BranchEntry {
+        app.view.main_filter = MainFilter::ReviewRequested;
+        app.view.entries = vec![BranchEntry {
             name: "feat".into(),
             repo_id: other.clone(),
             local_branch: None,
@@ -2246,7 +2333,7 @@ mod action_menu_cross_repo_tests {
         }];
         app.snap_scroll_to_entry();
         app.open_action_menu();
-        let menu = app.action_menu.as_ref().unwrap();
+        let menu = app.overlays.action_menu.as_ref().unwrap();
         assert!(menu.items.contains(&ActionItem::CreateWorktree));
         assert!(menu.footer.is_none());
     }
@@ -2267,8 +2354,8 @@ mod action_menu_cross_repo_tests {
             owner: "b".into(),
             name: "y".into(),
         };
-        app.active_repo = Some(active);
-        app.entries = vec![BranchEntry {
+        app.cross_repo.active_repo = Some(active);
+        app.view.entries = vec![BranchEntry {
             name: "feat".into(),
             repo_id: other.clone(),
             local_branch: None,
@@ -2303,7 +2390,7 @@ mod action_menu_cross_repo_tests {
             owner: "other".into(),
             name: "y".into(),
         };
-        app.active_repo = Some(active.clone());
+        app.cross_repo.active_repo = Some(active.clone());
 
         // Active repo has a local branch called feature/auth
         let active_entry = BranchEntry {
@@ -2346,7 +2433,7 @@ mod action_menu_cross_repo_tests {
             git_status: None,
         };
         // Active repo first per merge_entries sort
-        app.entries = vec![active_entry, cross_entry];
+        app.view.entries = vec![active_entry, cross_entry];
 
         // Dispatch CdIntoWorktree targeting cross-repo branch.
         // The tuple-based execute_action must NOT pick the active-repo entry.
@@ -2378,17 +2465,17 @@ mod wt_list_lazy_load_tests {
             owner: "b".into(),
             name: "y".into(),
         };
-        app.active_repo = Some(active);
-        app.clone_root = Some(tmp.path().to_path_buf());
-        app.repos.insert(
+        app.cross_repo.active_repo = Some(active);
+        app.cross_repo.clone_root = Some(tmp.path().to_path_buf());
+        app.cross_repo.repos.insert(
             other.clone(),
             RepoMeta {
                 local_path: None,
                 local_path_resolved: false,
             },
         );
-        app.main_filter = MainFilter::ReviewRequested;
-        app.entries = vec![BranchEntry {
+        app.view.main_filter = MainFilter::ReviewRequested;
+        app.view.entries = vec![BranchEntry {
             name: "feat".into(),
             repo_id: other.clone(),
             local_branch: None,
@@ -2427,14 +2514,14 @@ mod wt_list_lazy_load_tests {
             owner: "a".into(),
             name: "x".into(),
         };
-        app.active_repo = Some(active.clone());
+        app.cross_repo.active_repo = Some(active.clone());
         let make_branch = |name: &str| crate::git::types::Branch {
             name: name.into(),
             is_current: false,
             upstream: None,
             is_merged: false,
         };
-        app.entries = vec![BranchEntry {
+        app.view.entries = vec![BranchEntry {
             name: "feat".into(),
             repo_id: active.clone(),
             local_branch: Some(make_branch("feat")),
@@ -2499,7 +2586,7 @@ mod command_queue_tests {
         assert!(app.commands.contains(&Command::FetchPrs(MainFilter::MyPr)));
 
         let mut loaded = App::new(Config::default());
-        loaded.my_prs_loaded = true;
+        loaded.prs.my_loaded = true;
         loaded.handle_key(key(KeyCode::Char('2')));
         assert!(
             !loaded
@@ -2545,12 +2632,12 @@ mod command_queue_tests {
     fn app_with_pr_entries() -> App {
         use crate::git::types::RepoId;
         let mut app = App::new(Config::default());
-        app.active_repo = Some(RepoId {
+        app.cross_repo.active_repo = Some(RepoId {
             host: None,
             owner: "o".into(),
             name: "r".into(),
         });
-        app.entries = vec![pr_entry("a", 1), pr_entry("b", 2)];
+        app.view.entries = vec![pr_entry("a", 1), pr_entry("b", 2)];
         app
     }
 
@@ -2572,7 +2659,7 @@ mod command_queue_tests {
         let mut app = app_with_pr_entries();
         // Two selection changes before any tick — like holding `j`.
         app.request_details_for_selection();
-        app.sidebar_scroll = 1;
+        app.view.sidebar_scroll = 1;
         app.request_details_for_selection();
         app.tick();
         let fetches: Vec<u64> = app
@@ -2590,8 +2677,8 @@ mod command_queue_tests {
     fn cached_detail_queues_no_fetch_after_tick() {
         use crate::git::types::PrDetail;
         let mut app = app_with_pr_entries();
-        let repo = app.entries[0].repo_id.clone();
-        app.pr_detail_cache.insert(
+        let repo = app.view.entries[0].repo_id.clone();
+        app.prs.detail.insert(
             (repo, 1),
             PrDetail {
                 number: 1,
@@ -2615,9 +2702,9 @@ mod command_queue_tests {
     #[test]
     fn confirm_y_pushes_on_confirm_and_closes_dialog() {
         let mut app = App::new(Config::default());
-        app.confirm_dialog = Some(pending(Command::DeleteWorktree("/wt/p".into())));
+        app.overlays.confirm_dialog = Some(pending(Command::DeleteWorktree("/wt/p".into())));
         app.handle_key(key(KeyCode::Char('y')));
-        assert!(app.confirm_dialog.is_none());
+        assert!(app.overlays.confirm_dialog.is_none());
         assert!(
             app.commands
                 .contains(&Command::DeleteWorktree("/wt/p".into()))
@@ -2627,9 +2714,9 @@ mod command_queue_tests {
     #[test]
     fn confirm_decline_pushes_nothing() {
         let mut app = App::new(Config::default());
-        app.confirm_dialog = Some(pending(Command::DeleteWorktree("/wt/p".into())));
+        app.overlays.confirm_dialog = Some(pending(Command::DeleteWorktree("/wt/p".into())));
         app.handle_key(key(KeyCode::Esc));
-        assert!(app.confirm_dialog.is_none());
+        assert!(app.overlays.confirm_dialog.is_none());
         assert!(app.commands.is_empty());
     }
 
@@ -2637,9 +2724,9 @@ mod command_queue_tests {
     fn confirm_decline_force_delete_releases_inflight_path() {
         let mut app = App::new(Config::default());
         app.inflight.worktrees.insert("/wt/p".to_string());
-        app.confirm_dialog = Some(pending(Command::ForceDeleteWorktree("/wt/p".into())));
+        app.overlays.confirm_dialog = Some(pending(Command::ForceDeleteWorktree("/wt/p".into())));
         app.handle_key(key(KeyCode::Char('n')));
-        assert!(app.confirm_dialog.is_none());
+        assert!(app.overlays.confirm_dialog.is_none());
         assert!(app.commands.is_empty());
         assert!(!app.inflight.worktrees.contains("/wt/p"));
     }

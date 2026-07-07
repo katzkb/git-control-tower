@@ -14,8 +14,8 @@ use crate::ui::theme;
 
 const MAX_VISIBLE_OPS: usize = 7;
 
-pub fn draw(frame: &mut Frame, tracker: &ProgressTracker, quit_warning: bool) {
-    let lines = build_lines(tracker, quit_warning, Instant::now());
+pub fn draw(frame: &mut Frame, tracker: &ProgressTracker) {
+    let lines = build_lines(tracker, tracker.quit_pressed, Instant::now());
     let height = (lines.len() as u16) + 2; // borders
     let area = bottom_rect(80, height, frame.area());
     frame.render_widget(Clear, area);

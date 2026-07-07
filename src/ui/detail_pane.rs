@@ -34,7 +34,7 @@ pub fn draw(frame: &mut Frame, area: Rect, app: &App) {
             entry,
             app.selected_pr_detail(),
             spinner,
-            app.active_repo.as_ref(),
+            app.cross_repo.active_repo.as_ref(),
         );
     } else {
         lines.push(Line::from(Span::styled(
@@ -59,7 +59,7 @@ pub fn draw(frame: &mut Frame, area: Rect, app: &App) {
     let paragraph = Paragraph::new(lines)
         .block(block)
         .wrap(Wrap { trim: false })
-        .scroll((app.pr_detail_scroll as u16, 0));
+        .scroll((app.view.pr_detail_scroll as u16, 0));
     frame.render_widget(paragraph, area);
 }
 

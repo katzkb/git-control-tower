@@ -20,12 +20,12 @@ pub fn draw(frame: &mut Frame, area: Rect, app: &mut App) {
     detail_pane::draw(frame, chunks[1], app);
 
     // Confirm dialog overlay
-    if let Some(pending) = &app.confirm_dialog {
+    if let Some(pending) = &app.overlays.confirm_dialog {
         confirm_dialog::draw(frame, &pending.dialog);
     }
 
     // Action menu overlay
-    if let Some(menu) = &app.action_menu {
+    if let Some(menu) = &app.overlays.action_menu {
         draw_action_menu(frame, menu);
     }
 }

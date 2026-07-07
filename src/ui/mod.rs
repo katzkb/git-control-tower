@@ -34,21 +34,21 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     let status_text = match app.active_view {
         ActiveView::Main => {
             let merged_hint = if matches!(
-                app.main_filter,
+                app.view.main_filter,
                 MainFilter::MyPr | MainFilter::ReviewRequested
             ) {
                 "  m:Merged"
             } else {
                 ""
             };
-            let team_hint = if app.main_filter == MainFilter::ReviewRequested {
+            let team_hint = if app.view.main_filter == MainFilter::ReviewRequested {
                 "  t:Team"
             } else {
                 ""
             };
             format!(
                 " [{}]  1:Local  2:My PR  3:Review  Enter:Actions  /:Search{merged_hint}{team_hint}  l:Log  h:History  ?:Help  q:Quit",
-                app.main_filter.label()
+                app.view.main_filter.label()
             )
         }
         ActiveView::Log => {
@@ -61,19 +61,19 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     frame.render_widget(status, chunks[1]);
 
     // Branch-create input modal
-    if let Some(input) = &app.branch_create_input {
+    if let Some(input) = &app.overlays.branch_create_input {
         branch_create_input::draw(frame, input);
     }
 
     // Progress panel takes priority over notification while a delete batch runs.
     if app.progress.is_active() {
-        progress_panel::draw(frame, &app.progress, app.quit_pressed_during_progress);
-    } else if let Some(notif) = &app.notification {
+        progress_panel::draw(frame, &app.progress);
+    } else if let Some(notif) = &app.overlays.notification {
         notification::draw(frame, notif);
     }
 
     // Help overlay
-    if app.show_help {
+    if app.overlays.show_help {
         help_overlay::draw(frame);
     }
 }
