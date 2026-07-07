@@ -867,7 +867,7 @@ impl App {
         }
     }
 
-    pub(crate) fn execute_action(
+    fn execute_action(
         &mut self,
         action: ActionItem,
         repo_id: &crate::git::types::RepoId,
@@ -1035,7 +1035,7 @@ impl App {
     }
 }
 
-pub(crate) fn compose_bulk_delete_message(
+fn compose_bulk_delete_message(
     branches: usize,
     worktrees: usize,
     unmerged: usize,
