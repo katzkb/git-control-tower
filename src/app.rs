@@ -471,6 +471,16 @@ impl App {
         );
     }
 
+    /// Rebuild entries after a data change and clamp the sidebar selection
+    /// to the (possibly shorter) filtered list.
+    pub fn rebuild_entries_and_clamp(&mut self) {
+        self.rebuild_entries();
+        let filtered_len = self.filtered_entries().len();
+        if self.sidebar_scroll >= filtered_len && filtered_len > 0 {
+            self.sidebar_scroll = filtered_len - 1;
+        }
+    }
+
     pub fn filtered_entries(&self) -> Vec<&BranchEntry> {
         let search_query = if !self.search_query.is_empty() {
             Some(self.search_query.to_lowercase())

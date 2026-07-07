@@ -26,7 +26,6 @@ use tokio::task::JoinSet;
 use crate::app::App;
 use crate::app::MainFilter;
 use crate::app::{Command, OpProgress, OpStep};
-use crate::data::merge_entries;
 use crate::event::{Event, EventHandler};
 use crate::git::command::{run_gh, run_git, run_git_in};
 use crate::git::parser::{parse_branches, parse_log, parse_worktrees};
@@ -723,6 +722,78 @@ async fn run(
 ) -> (anyhow::Result<()>, Option<String>) {
     let mut app = App::new(config);
     app.verbose = verbose;
+    let mut events = EventHandler::new(Duration::from_millis(80));
+    let (tx, mut rx) = mpsc::unbounded_channel::<AsyncResult>();
+    let repo_info = startup(&mut app, config_warnings, &tx).await;
+    let mut tasks = RunState {
+        tx,
+        repo_info,
+        pr_inflight: HashSet::new(),
+        status_inflight: HashSet::new(),
+        branches_reload_inflight: false,
+        commits_reload_inflight: false,
+    };
+
+    loop {
+        if let Err(e) = terminal.draw(|frame| ui::draw(frame, &mut app)) {
+            return (Err(e.into()), None);
+        }
+
+        match events.next().await {
+            Some(Event::Key(key)) if key.kind == KeyEventKind::Press => {
+                app.handle_key(key);
+            }
+            Some(Event::Resize(_, _)) => {}
+            Some(Event::Tick) => {
+                app.tick();
+            }
+            Some(Event::Key(_)) => {}
+            None => break,
+        }
+
+        // Receive completed background results (non-blocking)
+        while let Ok(result) = rx.try_recv() {
+            handle_result(&mut app, result, &mut tasks);
+        }
+
+        // Dispatch commands staged by key handling above and by the
+        // async-result handling just before this point. Snapshot drain:
+        // commands pushed while dispatching (e.g. reload re-arms) land on
+        // the fresh queue and run next iteration — no busy re-loop.
+        let mut queued = app.take_commands();
+        while let Some(cmd) = queued.pop_front() {
+            dispatch_command(&mut app, cmd, &mut tasks);
+        }
+
+        if app.should_quit {
+            break;
+        }
+    }
+
+    let cd_path = app.cd_path.clone();
+    (Ok(()), cd_path)
+}
+
+/// Loop-local state of `run()`: the task-result channel sender, the active
+/// repo's identity, and inflight-dedup bookkeeping shared between result
+/// handling and command dispatch.
+struct RunState {
+    tx: mpsc::UnboundedSender<AsyncResult>,
+    repo_info: Option<crate::git::types::RepoId>,
+    pr_inflight: HashSet<(crate::git::types::RepoId, u64)>,
+    status_inflight: HashSet<String>,
+    branches_reload_inflight: bool,
+    commits_reload_inflight: bool,
+}
+
+/// One-time startup: surface config warnings, detect the active repo, run
+/// the fast local loads (blocking), and spawn the slow network loads.
+/// Returns the active repo's identity, if one could be detected.
+async fn startup(
+    app: &mut App,
+    config_warnings: Vec<String>,
+    tx: &mpsc::UnboundedSender<AsyncResult>,
+) -> Option<crate::git::types::RepoId> {
     // Config problems were already printed to stderr, but that's invisible
     // once the TUI takes over — surface them in-app too.
     if let Some(first) = config_warnings.first() {
@@ -741,12 +812,6 @@ async fn run(
     // Global (home-dir) config layers, used to resolve a per-target-repo
     // effective config for cross-repo worktree operations.
     app.global_layers = config::load_global_layers();
-    let mut events = EventHandler::new(Duration::from_millis(80));
-    let (tx, mut rx) = mpsc::unbounded_channel::<AsyncResult>();
-    let mut pr_inflight: HashSet<(crate::git::types::RepoId, u64)> = HashSet::new();
-    let mut status_inflight: HashSet<String> = HashSet::new();
-    let mut branches_reload_inflight = false;
-    let mut commits_reload_inflight = false;
 
     let active_root = run_git(&["rev-parse", "--show-toplevel"])
         .await
@@ -780,16 +845,9 @@ async fn run(
     if let Ok(output) = run_git(&["worktree", "list", "--porcelain"]).await {
         app.worktrees = parse_worktrees(&output);
     }
-    load_branches(&mut app).await;
+    load_branches(app).await;
     let repo_info = active_id;
-    let active = app.active_repo.clone().unwrap_or_default();
-    app.entries = merge_entries(
-        &active,
-        &app.branches,
-        &app.worktrees,
-        &[],
-        &app.wt_lists_per_repo,
-    );
+    app.rebuild_entries();
     app.entries_loaded = true;
     app.request_details_for_selection();
 
@@ -840,820 +898,749 @@ async fn run(
         app.local_prs_loaded = true;
     }
 
-    loop {
-        if let Err(e) = terminal.draw(|frame| ui::draw(frame, &mut app)) {
-            return (Err(e.into()), None);
-        }
+    repo_info
+}
 
-        match events.next().await {
-            Some(Event::Key(key)) if key.kind == KeyEventKind::Press => {
-                app.handle_key(key);
-            }
-            Some(Event::Resize(_, _)) => {}
-            Some(Event::Tick) => {
-                app.tick();
-            }
-            Some(Event::Key(_)) => {}
-            None => break,
+/// Store a fetched PR list for `filter` and, when that filter is the one
+/// currently displayed, rebuild the entry list around it.
+fn apply_pr_list(
+    app: &mut App,
+    filter: MainFilter,
+    mut prs: Vec<PullRequest>,
+    errors: Vec<String>,
+) {
+    if filter == MainFilter::ReviewRequested {
+        for pr in &mut prs {
+            pr.review_status = Some(compute_review_status(pr, &app.gh_user));
         }
+    }
+    report_fetch_errors(app, "PR fetch failed", errors);
+    seed_repos_from_prs(&mut app.repos, &prs);
+    match filter {
+        MainFilter::Local => {
+            app.local_prs = prs;
+            app.local_prs_loaded = true;
+        }
+        MainFilter::MyPr => {
+            app.my_prs = prs;
+            app.my_prs_loaded = true;
+        }
+        MainFilter::ReviewRequested => {
+            app.review_prs = prs;
+            app.review_prs_loaded = true;
+        }
+    }
+    if app.main_filter == filter {
+        app.rebuild_entries_and_clamp();
+        app.request_details_for_selection();
+    }
+}
 
-        // Receive completed background results (non-blocking)
-        while let Ok(result) = rx.try_recv() {
-            match result {
-                AsyncResult::PrDetail { repo_id, detail } => {
-                    let key = (repo_id.clone(), detail.number);
-                    pr_inflight.remove(&key);
-                    app.pr_detail_cache.insert(key, detail);
+/// Handle one completed background-task result.
+fn handle_result(app: &mut App, result: AsyncResult, tasks: &mut RunState) {
+    match result {
+        AsyncResult::PrDetail { repo_id, detail } => {
+            let key = (repo_id.clone(), detail.number);
+            tasks.pr_inflight.remove(&key);
+            app.pr_detail_cache.insert(key, detail);
+        }
+        AsyncResult::PrDetailError {
+            repo_id,
+            number,
+            error,
+        } => {
+            tasks.pr_inflight.remove(&(repo_id, number));
+            app.notification = Some(Notification::error(format!("Failed to load PR #{number}")));
+            app.record_error(error);
+        }
+        AsyncResult::GitStatus { wt_path, status } => {
+            tasks.status_inflight.remove(&wt_path);
+            if let Some(entry) = app
+                .entries
+                .iter_mut()
+                .find(|e| e.worktree_path() == Some(wt_path.as_str()))
+            {
+                entry.git_status = Some(status);
+            }
+        }
+        AsyncResult::GitStatusError(wt_path) => {
+            tasks.status_inflight.remove(&wt_path);
+            let msg = format!("git status failed for {wt_path}");
+            app.notification = Some(Notification::error(msg.clone()));
+            app.record_error(msg);
+        }
+        AsyncResult::UserLogin(user) => {
+            app.gh_user = user;
+            // Recompute review status now that we know the user
+            for pr in &mut app.review_prs {
+                pr.review_status = Some(compute_review_status(pr, &app.gh_user));
+            }
+            if app.main_filter == MainFilter::ReviewRequested {
+                app.rebuild_entries();
+            }
+        }
+        AsyncResult::UserLoginError(error_msg) => {
+            app.gh_user_load_failed = true;
+            app.notification = Some(Notification::error(
+                "Failed to load GitHub user — is `gh` authenticated?".to_string(),
+            ));
+            app.record_error(error_msg);
+        }
+        AsyncResult::LocalPrList(prs, errors) => {
+            apply_pr_list(app, MainFilter::Local, prs, errors);
+        }
+        AsyncResult::MyPrList(prs, errors) => {
+            apply_pr_list(app, MainFilter::MyPr, prs, errors);
+        }
+        AsyncResult::ReviewPrList(prs, errors) => {
+            apply_pr_list(app, MainFilter::ReviewRequested, prs, errors);
+        }
+        AsyncResult::WtCreated {
+            wt_path,
+            copy_errors,
+            target_repo,
+        } => {
+            app.wt_inflight.remove(&wt_path);
+            if copy_errors.is_empty() {
+                app.notification = Some(Notification::success(format!(
+                    "Worktree created: {wt_path}"
+                )));
+            } else {
+                app.notification = Some(Notification::success(format!(
+                    "Worktree created: {wt_path} (copy errors: {})",
+                    copy_errors.len()
+                )));
+                for e in copy_errors {
+                    app.record_error(e);
                 }
-                AsyncResult::PrDetailError {
-                    repo_id,
-                    number,
-                    error,
-                } => {
-                    pr_inflight.remove(&(repo_id, number));
-                    app.notification =
-                        Some(Notification::error(format!("Failed to load PR #{number}")));
-                    app.record_error(error);
-                }
-                AsyncResult::GitStatus { wt_path, status } => {
-                    status_inflight.remove(&wt_path);
-                    if let Some(entry) = app
-                        .entries
-                        .iter_mut()
-                        .find(|e| e.worktree_path() == Some(wt_path.as_str()))
-                    {
-                        entry.git_status = Some(status);
-                    }
-                }
-                AsyncResult::GitStatusError(wt_path) => {
-                    status_inflight.remove(&wt_path);
-                    let msg = format!("git status failed for {wt_path}");
-                    app.notification = Some(Notification::error(msg.clone()));
-                    app.record_error(msg);
-                }
-                AsyncResult::UserLogin(user) => {
-                    app.gh_user = user;
-                    // Recompute review status now that we know the user
-                    for pr in &mut app.review_prs {
-                        pr.review_status = Some(compute_review_status(pr, &app.gh_user));
-                    }
-                    if app.main_filter == MainFilter::ReviewRequested {
-                        app.rebuild_entries();
-                    }
-                }
-                AsyncResult::UserLoginError(error_msg) => {
-                    app.gh_user_load_failed = true;
-                    app.notification = Some(Notification::error(
-                        "Failed to load GitHub user — is `gh` authenticated?".to_string(),
-                    ));
-                    app.record_error(error_msg);
-                }
-                AsyncResult::LocalPrList(prs, errors) => {
-                    app.local_prs = prs;
-                    app.local_prs_loaded = true;
-                    report_fetch_errors(&mut app, "PR fetch failed", errors);
-                    seed_repos_from_prs(&mut app.repos, &app.local_prs);
-                    if app.main_filter == MainFilter::Local {
-                        let active = app.active_repo.clone().unwrap_or_default();
-                        app.entries = merge_entries(
-                            &active,
-                            &app.branches,
-                            &app.worktrees,
-                            app.current_prs(),
-                            &app.wt_lists_per_repo,
-                        );
-                        let filtered_len = app.filtered_entries().len();
-                        if app.sidebar_scroll >= filtered_len && filtered_len > 0 {
-                            app.sidebar_scroll = filtered_len - 1;
-                        }
-                        app.request_details_for_selection();
-                    }
-                }
-                AsyncResult::MyPrList(prs, errors) => {
-                    app.my_prs = prs;
-                    app.my_prs_loaded = true;
-                    report_fetch_errors(&mut app, "PR fetch failed", errors);
-                    seed_repos_from_prs(&mut app.repos, &app.my_prs);
-                    if app.main_filter == MainFilter::MyPr {
-                        let active = app.active_repo.clone().unwrap_or_default();
-                        app.entries = merge_entries(
-                            &active,
-                            &app.branches,
-                            &app.worktrees,
-                            app.current_prs(),
-                            &app.wt_lists_per_repo,
-                        );
-                        let filtered_len = app.filtered_entries().len();
-                        if app.sidebar_scroll >= filtered_len && filtered_len > 0 {
-                            app.sidebar_scroll = filtered_len - 1;
-                        }
-                        app.request_details_for_selection();
-                    }
-                }
-                AsyncResult::ReviewPrList(mut prs, errors) => {
-                    for pr in &mut prs {
-                        pr.review_status = Some(compute_review_status(pr, &app.gh_user));
-                    }
-                    app.review_prs = prs;
-                    app.review_prs_loaded = true;
-                    report_fetch_errors(&mut app, "PR fetch failed", errors);
-                    seed_repos_from_prs(&mut app.repos, &app.review_prs);
-                    if app.main_filter == MainFilter::ReviewRequested {
-                        let active = app.active_repo.clone().unwrap_or_default();
-                        app.entries = merge_entries(
-                            &active,
-                            &app.branches,
-                            &app.worktrees,
-                            app.current_prs(),
-                            &app.wt_lists_per_repo,
-                        );
-                        let filtered_len = app.filtered_entries().len();
-                        if app.sidebar_scroll >= filtered_len && filtered_len > 0 {
-                            app.sidebar_scroll = filtered_len - 1;
-                        }
-                        app.request_details_for_selection();
-                    }
-                }
-                AsyncResult::WtCreated {
-                    wt_path,
-                    copy_errors,
-                    target_repo,
-                } => {
-                    app.wt_inflight.remove(&wt_path);
-                    if copy_errors.is_empty() {
-                        app.notification = Some(Notification::success(format!(
-                            "Worktree created: {wt_path}"
-                        )));
-                    } else {
-                        app.notification = Some(Notification::success(format!(
-                            "Worktree created: {wt_path} (copy errors: {})",
-                            copy_errors.len()
-                        )));
-                        for e in copy_errors {
-                            app.record_error(e);
-                        }
-                    }
-                    app.push_command(Command::ReloadBranches);
-                    // Cross-repo: invalidate worktree-list cache for target so next selection re-fetches.
-                    if let Some(repo_id) = target_repo {
-                        app.wt_lists_per_repo.remove(&repo_id);
-                    }
-                    if app.confirm_dialog.is_none() {
-                        app.confirm_dialog = Some(crate::app::PendingConfirm {
-                            dialog: crate::ui::confirm_dialog::ConfirmDialog::new(
-                                "Move to Worktree",
-                                format!(
-                                    "Move into the new worktree?\n(Requires shell integration — see README.)\n{wt_path}"
-                                ),
-                            ),
-                            on_confirm: Command::CdAndQuit(wt_path),
-                        });
-                    }
-                }
-                AsyncResult::WtCreateError { wt_path, message } => {
-                    app.wt_inflight.remove(&wt_path);
-                    app.notification = Some(Notification::error(message));
-                }
-                AsyncResult::OpStarted { op_id, label } => {
-                    app.progress.insert(op_id, OpProgress::new(label));
-                }
-                AsyncResult::OpStepBegin {
-                    op_id,
-                    step,
-                    command,
-                } => {
-                    app.progress.update_step(op_id, step, command);
-                }
-                AsyncResult::OpFinished {
-                    op_id,
-                    success,
-                    error,
-                } => {
-                    app.progress.finish(op_id, success, error);
-                }
-                AsyncResult::OpAllDone {
-                    branches_deleted,
-                    worktrees_removed,
-                    failures,
-                    wt_paths_claimed,
-                } => {
-                    for path in &wt_paths_claimed {
-                        app.wt_inflight.remove(path);
-                    }
-                    app.progress.sweep_unfinished();
-                    let success_parts =
-                        bulk_success_parts(branches_deleted.len(), worktrees_removed.len());
-                    if failures.is_empty() {
-                        let msg = if success_parts.is_empty() {
-                            "Nothing to delete".to_string()
-                        } else {
-                            format!("Deleted {}", success_parts.join(", "))
-                        };
-                        app.notification = Some(Notification::success(msg));
-                    } else {
-                        let short: Vec<String> = failures
-                            .iter()
-                            .map(|e| e.lines().next().unwrap_or(e).to_string())
-                            .collect();
-                        let summary = if success_parts.is_empty() {
-                            format!("Bulk delete failed: {}", short.join("; "))
-                        } else {
-                            format!(
-                                "Bulk delete: {}; failed: {}",
-                                success_parts.join(", "),
-                                short.join("; ")
-                            )
-                        };
-                        app.notification = Some(Notification::error(summary));
-                        for err in failures {
-                            app.record_error(err);
-                        }
-                    }
-                    app.progress.clear();
-                    app.quit_pressed_during_progress = false;
-                    app.push_command(Command::ReloadBranches);
-                }
-                AsyncResult::WtForceDecisionRequested { path, reason } => {
-                    // Plain remove failed; ask the user whether to force.
-                    app.confirm_dialog = Some(crate::app::PendingConfirm {
-                        dialog: crate::ui::confirm_dialog::ConfirmDialog::new(
-                            "Force Delete Worktree",
-                            format!("{reason}\nForce remove {path}?"),
+            }
+            app.push_command(Command::ReloadBranches);
+            // Cross-repo: invalidate worktree-list cache for target so next selection re-fetches.
+            if let Some(repo_id) = target_repo {
+                app.wt_lists_per_repo.remove(&repo_id);
+            }
+            if app.confirm_dialog.is_none() {
+                app.confirm_dialog = Some(crate::app::PendingConfirm {
+                    dialog: crate::ui::confirm_dialog::ConfirmDialog::new(
+                        "Move to Worktree",
+                        format!(
+                            "Move into the new worktree?\n(Requires shell integration — see README.)\n{wt_path}"
                         ),
-                        on_confirm: Command::ForceDeleteWorktree(path),
-                    });
-                }
-                AsyncResult::WtListLoaded { repo_id, list } => {
-                    app.wt_list_inflight.remove(&repo_id);
-                    app.wt_lists_per_repo.insert(repo_id, list);
-                    app.rebuild_entries();
-                    app.snap_scroll_to_entry();
-                }
-                AsyncResult::BranchesReloaded(data) => {
-                    branches_reload_inflight = false;
-                    if let Some(branches) = data.branches {
-                        app.branches = branches;
-                    }
-                    if let Some(worktrees) = data.worktrees {
-                        app.worktrees = worktrees;
-                    }
-                    report_fetch_errors(&mut app, "Branch reload failed", data.errors);
-                    let active = app.active_repo.clone().unwrap_or_default();
-                    app.entries = merge_entries(
-                        &active,
-                        &app.branches,
-                        &app.worktrees,
-                        app.current_prs(),
-                        &app.wt_lists_per_repo,
-                    );
-                    let filtered_len = app.filtered_entries().len();
-                    if app.sidebar_scroll >= filtered_len && filtered_len > 0 {
-                        app.sidebar_scroll = filtered_len - 1;
-                    }
-                    app.snap_scroll_to_entry();
-                }
-                AsyncResult::CommitsReloaded(commits) => {
-                    commits_reload_inflight = false;
-                    if let Some(commits) = commits {
-                        app.commits = commits;
-                    }
-                }
-                AsyncResult::BranchCreated { name, source } => {
-                    app.notification = Some(Notification::success(format!(
-                        "Created branch '{name}' from '{source}'"
-                    )));
-                    app.push_command(Command::ReloadBranches);
-                }
-                AsyncResult::BranchCreateError(err_str) => {
-                    let short = err_str.lines().next().unwrap_or(&err_str).to_string();
-                    app.notification = Some(Notification::error(short));
-                    app.record_error(err_str);
-                }
+                    ),
+                    on_confirm: Command::CdAndQuit(wt_path),
+                });
             }
         }
-
-        // Dispatch commands staged by key handling above and by the
-        // async-result handling just before this point. Snapshot drain:
-        // commands pushed while dispatching (e.g. reload re-arms) land on
-        // the fresh queue and run next iteration — no busy re-loop.
-        let mut queued = app.take_commands();
-        while let Some(cmd) = queued.pop_front() {
-            match cmd {
-                // Delete worktree (single-item, no auto-force fallback).
-                Command::DeleteWorktree(path) => {
-                    app.wt_inflight.insert(path.clone());
-                    let op_id = app.progress.allocate_ids(1).start;
-                    let label = wt_label_for(&path);
-                    let claimed = vec![path.clone()];
-                    let tx_c = tx.clone();
-                    tokio::spawn(async move {
-                        let result = run_delete_op(
-                            op_id,
-                            label.clone(),
-                            Some(path.clone()),
-                            None,
-                            false,
-                            DeleteMode::PlainOnly,
-                            tx_c.clone(),
-                        )
-                        .await;
-
-                        if let Some(failure) = result.failure {
-                            // Plain failed — drain the progress panel without raising a
-                            // failure notification (it would flash before the force-confirm
-                            // dialog appears). The actual outcome is communicated by the
-                            // subsequent force attempt or by the user dismissing the dialog.
-                            let _ = tx_c.send(AsyncResult::OpAllDone {
-                                branches_deleted: vec![],
-                                worktrees_removed: vec![],
-                                failures: vec![],
-                                wt_paths_claimed: claimed,
-                            });
-                            let reason = failure
-                                .lines()
-                                .next()
-                                .unwrap_or("unknown error")
-                                .to_string();
-                            let _ =
-                                tx_c.send(AsyncResult::WtForceDecisionRequested { path, reason });
-                        } else {
-                            let mut wts = vec![];
-                            if result.worktree_removed
-                                && let Some(p) = result.wt_path
-                            {
-                                wts.push(p);
-                            }
-                            let _ = tx_c.send(AsyncResult::OpAllDone {
-                                branches_deleted: vec![],
-                                worktrees_removed: wts,
-                                failures: vec![],
-                                wt_paths_claimed: claimed,
-                            });
-                        }
-                    });
+        AsyncResult::WtCreateError { wt_path, message } => {
+            app.wt_inflight.remove(&wt_path);
+            app.notification = Some(Notification::error(message));
+        }
+        AsyncResult::OpStarted { op_id, label } => {
+            app.progress.insert(op_id, OpProgress::new(label));
+        }
+        AsyncResult::OpStepBegin {
+            op_id,
+            step,
+            command,
+        } => {
+            app.progress.update_step(op_id, step, command);
+        }
+        AsyncResult::OpFinished {
+            op_id,
+            success,
+            error,
+        } => {
+            app.progress.finish(op_id, success, error);
+        }
+        AsyncResult::OpAllDone {
+            branches_deleted,
+            worktrees_removed,
+            failures,
+            wt_paths_claimed,
+        } => {
+            for path in &wt_paths_claimed {
+                app.wt_inflight.remove(path);
+            }
+            app.progress.sweep_unfinished();
+            let success_parts = bulk_success_parts(branches_deleted.len(), worktrees_removed.len());
+            if failures.is_empty() {
+                let msg = if success_parts.is_empty() {
+                    "Nothing to delete".to_string()
+                } else {
+                    format!("Deleted {}", success_parts.join(", "))
+                };
+                app.notification = Some(Notification::success(msg));
+            } else {
+                let short: Vec<String> = failures
+                    .iter()
+                    .map(|e| e.lines().next().unwrap_or(e).to_string())
+                    .collect();
+                let summary = if success_parts.is_empty() {
+                    format!("Bulk delete failed: {}", short.join("; "))
+                } else {
+                    format!(
+                        "Bulk delete: {}; failed: {}",
+                        success_parts.join(", "),
+                        short.join("; ")
+                    )
+                };
+                app.notification = Some(Notification::error(summary));
+                for err in failures {
+                    app.record_error(err);
                 }
+            }
+            app.progress.clear();
+            app.quit_pressed_during_progress = false;
+            app.push_command(Command::ReloadBranches);
+        }
+        AsyncResult::WtForceDecisionRequested { path, reason } => {
+            // Plain remove failed; ask the user whether to force.
+            app.confirm_dialog = Some(crate::app::PendingConfirm {
+                dialog: crate::ui::confirm_dialog::ConfirmDialog::new(
+                    "Force Delete Worktree",
+                    format!("{reason}\nForce remove {path}?"),
+                ),
+                on_confirm: Command::ForceDeleteWorktree(path),
+            });
+        }
+        AsyncResult::WtListLoaded { repo_id, list } => {
+            app.wt_list_inflight.remove(&repo_id);
+            app.wt_lists_per_repo.insert(repo_id, list);
+            app.rebuild_entries();
+            app.snap_scroll_to_entry();
+        }
+        AsyncResult::BranchesReloaded(data) => {
+            tasks.branches_reload_inflight = false;
+            if let Some(branches) = data.branches {
+                app.branches = branches;
+            }
+            if let Some(worktrees) = data.worktrees {
+                app.worktrees = worktrees;
+            }
+            report_fetch_errors(app, "Branch reload failed", data.errors);
+            app.rebuild_entries_and_clamp();
+            app.snap_scroll_to_entry();
+        }
+        AsyncResult::CommitsReloaded(commits) => {
+            tasks.commits_reload_inflight = false;
+            if let Some(commits) = commits {
+                app.commits = commits;
+            }
+        }
+        AsyncResult::BranchCreated { name, source } => {
+            app.notification = Some(Notification::success(format!(
+                "Created branch '{name}' from '{source}'"
+            )));
+            app.push_command(Command::ReloadBranches);
+        }
+        AsyncResult::BranchCreateError(err_str) => {
+            let short = err_str.lines().next().unwrap_or(&err_str).to_string();
+            app.notification = Some(Notification::error(short));
+            app.record_error(err_str);
+        }
+    }
+}
 
-                // Force delete worktree after confirmation (single-item, force only).
-                Command::ForceDeleteWorktree(path) => {
-                    app.wt_inflight.insert(path.clone());
-                    let op_id = app.progress.allocate_ids(1).start;
-                    let label = wt_label_for(&path);
-                    let claimed = vec![path.clone()];
-                    let tx_c = tx.clone();
-                    tokio::spawn(async move {
-                        let result = run_delete_op(
-                            op_id,
-                            label,
-                            Some(path),
-                            None,
-                            false,
-                            DeleteMode::ForceOnly,
-                            tx_c.clone(),
-                        )
-                        .await;
-                        let mut wts = vec![];
-                        let mut failures = vec![];
-                        if let Some(f) = result.failure {
-                            failures.push(f);
-                        } else if let Some(p) = result.wt_path
-                            && result.worktree_removed
-                        {
-                            wts.push(p);
-                        }
-                        let _ = tx_c.send(AsyncResult::OpAllDone {
-                            branches_deleted: vec![],
-                            worktrees_removed: wts,
-                            failures,
-                            wt_paths_claimed: claimed,
-                        });
+/// Dispatch one queued `Command`: spawn the async task (or perform the
+/// synchronous action) it describes.
+fn dispatch_command(app: &mut App, cmd: Command, tasks: &mut RunState) {
+    match cmd {
+        // Delete worktree (single-item, no auto-force fallback).
+        Command::DeleteWorktree(path) => {
+            app.wt_inflight.insert(path.clone());
+            let op_id = app.progress.allocate_ids(1).start;
+            let label = wt_label_for(&path);
+            let claimed = vec![path.clone()];
+            let tx_c = tasks.tx.clone();
+            tokio::spawn(async move {
+                let result = run_delete_op(
+                    op_id,
+                    label.clone(),
+                    Some(path.clone()),
+                    None,
+                    false,
+                    DeleteMode::PlainOnly,
+                    tx_c.clone(),
+                )
+                .await;
+
+                if let Some(failure) = result.failure {
+                    // Plain failed — drain the progress panel without raising a
+                    // failure notification (it would flash before the force-confirm
+                    // dialog appears). The actual outcome is communicated by the
+                    // subsequent force attempt or by the user dismissing the dialog.
+                    let _ = tx_c.send(AsyncResult::OpAllDone {
+                        branches_deleted: vec![],
+                        worktrees_removed: vec![],
+                        failures: vec![],
+                        wt_paths_claimed: claimed,
                     });
-                }
-
-                // Create worktree (async, non-blocking)
-                Command::CreateWorktree(req_repo_id, branch_name) => {
-                    // Resolve target repo (active or cross-repo) and its root path.
-                    let entry = app
-                        .entries
-                        .iter()
-                        .find(|e| e.repo_id == req_repo_id && e.name == branch_name)
-                        .cloned();
-                    let Some(entry) = entry else {
-                        continue;
-                    };
-                    let target_repo = entry.repo_id.clone();
-                    let active_repo = app.active_repo.clone();
-                    let is_active = active_repo.as_ref() == Some(&target_repo);
-
-                    // The active repo's root is already cached in `app.repos` (seeded
-                    // at startup), so this never needs a blocking `rev-parse` call —
-                    // cross-repo targets rely on the same cached `local_path` too.
-                    let target_root: std::path::PathBuf = match app
-                        .repos
-                        .get(&target_repo)
-                        .and_then(|m| m.local_path.clone())
+                    let reason = failure
+                        .lines()
+                        .next()
+                        .unwrap_or("unknown error")
+                        .to_string();
+                    let _ = tx_c.send(AsyncResult::WtForceDecisionRequested { path, reason });
+                } else {
+                    let mut wts = vec![];
+                    if result.worktree_removed
+                        && let Some(p) = result.wt_path
                     {
-                        Some(p) => p,
-                        None if is_active => std::env::current_dir().unwrap_or_default(),
-                        None => {
-                            app.notification =
-                                Some(Notification::error(format!("{target_repo} not cloned")));
-                            continue;
-                        }
-                    };
-
-                    // Active repo uses the launch config; cross-repo resolves the
-                    // target repo's own config (global layers + <target_root>/.gct.toml).
-                    let cfg = if is_active {
-                        app.config.clone()
-                    } else {
-                        config::resolve_config(&app.global_layers, Some(&target_root))
-                    };
-
-                    let wt_path =
-                        cfg.worktree_path_for(&target_root, &entry.repo_id.name, &branch_name);
-                    app.wt_inflight.insert(wt_path.clone());
-                    if let Some(parent) = std::path::Path::new(&wt_path).parent() {
-                        let _ = std::fs::create_dir_all(parent);
+                        wts.push(p);
                     }
+                    let _ = tx_c.send(AsyncResult::OpAllDone {
+                        branches_deleted: vec![],
+                        worktrees_removed: wts,
+                        failures: vec![],
+                        wt_paths_claimed: claimed,
+                    });
+                }
+            });
+        }
 
-                    let is_active_with_local =
-                        is_active && app.branches.iter().any(|b| b.name == branch_name);
-                    let post_create = cfg.worktree.post_create.clone();
-                    let target_repo_for_send = if is_active {
-                        None
-                    } else {
-                        Some(target_repo.clone())
-                    };
-                    let tx = tx.clone();
-                    let wt_path_arg = wt_path.clone();
-                    let branch_arg = branch_name.clone();
-                    let target_root_arg = target_root.clone();
+        // Force delete worktree after confirmation (single-item, force only).
+        Command::ForceDeleteWorktree(path) => {
+            app.wt_inflight.insert(path.clone());
+            let op_id = app.progress.allocate_ids(1).start;
+            let label = wt_label_for(&path);
+            let claimed = vec![path.clone()];
+            let tx_c = tasks.tx.clone();
+            tokio::spawn(async move {
+                let result = run_delete_op(
+                    op_id,
+                    label,
+                    Some(path),
+                    None,
+                    false,
+                    DeleteMode::ForceOnly,
+                    tx_c.clone(),
+                )
+                .await;
+                let mut wts = vec![];
+                let mut failures = vec![];
+                if let Some(f) = result.failure {
+                    failures.push(f);
+                } else if let Some(p) = result.wt_path
+                    && result.worktree_removed
+                {
+                    wts.push(p);
+                }
+                let _ = tx_c.send(AsyncResult::OpAllDone {
+                    branches_deleted: vec![],
+                    worktrees_removed: wts,
+                    failures,
+                    wt_paths_claimed: claimed,
+                });
+            });
+        }
 
-                    tokio::spawn(async move {
-                        let result = if is_active_with_local {
+        // Create worktree (async, non-blocking)
+        Command::CreateWorktree(req_repo_id, branch_name) => {
+            // Resolve target repo (active or cross-repo) and its root path.
+            let entry = app
+                .entries
+                .iter()
+                .find(|e| e.repo_id == req_repo_id && e.name == branch_name)
+                .cloned();
+            let Some(entry) = entry else {
+                return;
+            };
+            let target_repo = entry.repo_id.clone();
+            let active_repo = app.active_repo.clone();
+            let is_active = active_repo.as_ref() == Some(&target_repo);
+
+            // The active repo's root is already cached in `app.repos` (seeded
+            // at startup), so this never needs a blocking `rev-parse` call —
+            // cross-repo targets rely on the same cached `local_path` too.
+            let target_root: std::path::PathBuf = match app
+                .repos
+                .get(&target_repo)
+                .and_then(|m| m.local_path.clone())
+            {
+                Some(p) => p,
+                None if is_active => std::env::current_dir().unwrap_or_default(),
+                None => {
+                    app.notification =
+                        Some(Notification::error(format!("{target_repo} not cloned")));
+                    return;
+                }
+            };
+
+            // Active repo uses the launch config; cross-repo resolves the
+            // target repo's own config (global layers + <target_root>/.gct.toml).
+            let cfg = if is_active {
+                app.config.clone()
+            } else {
+                config::resolve_config(&app.global_layers, Some(&target_root))
+            };
+
+            let wt_path = cfg.worktree_path_for(&target_root, &entry.repo_id.name, &branch_name);
+            app.wt_inflight.insert(wt_path.clone());
+            if let Some(parent) = std::path::Path::new(&wt_path).parent() {
+                let _ = std::fs::create_dir_all(parent);
+            }
+
+            let is_active_with_local =
+                is_active && app.branches.iter().any(|b| b.name == branch_name);
+            let post_create = cfg.worktree.post_create.clone();
+            let target_repo_for_send = if is_active {
+                None
+            } else {
+                Some(target_repo.clone())
+            };
+            let tx = tasks.tx.clone();
+            let wt_path_arg = wt_path.clone();
+            let branch_arg = branch_name.clone();
+            let target_root_arg = target_root.clone();
+
+            tokio::spawn(async move {
+                let result = if is_active_with_local {
+                    run_git_in(
+                        &target_root_arg,
+                        &["worktree", "add", &wt_path_arg, &branch_arg],
+                    )
+                    .await
+                } else {
+                    match run_git_in(&target_root_arg, &["fetch", "origin", &branch_arg]).await {
+                        Ok(_) => {
                             run_git_in(
                                 &target_root_arg,
                                 &["worktree", "add", &wt_path_arg, &branch_arg],
                             )
                             .await
-                        } else {
-                            match run_git_in(&target_root_arg, &["fetch", "origin", &branch_arg])
-                                .await
-                            {
-                                Ok(_) => {
-                                    run_git_in(
-                                        &target_root_arg,
-                                        &["worktree", "add", &wt_path_arg, &branch_arg],
-                                    )
-                                    .await
-                                }
-                                Err(e) => Err(e),
-                            }
-                        };
-                        match result {
-                            Ok(_) => {
-                                let copy_errors = config::run_post_create(
-                                    &post_create,
-                                    &target_root_arg,
-                                    std::path::Path::new(&wt_path_arg),
-                                );
-                                let _ = tx.send(AsyncResult::WtCreated {
-                                    wt_path: wt_path_arg,
-                                    copy_errors,
-                                    target_repo: target_repo_for_send,
-                                });
-                            }
-                            Err(e) => {
-                                let _ = tx.send(AsyncResult::WtCreateError {
-                                    wt_path: wt_path_arg,
-                                    message: format!("Failed to create worktree: {e}"),
-                                });
-                            }
                         }
-                    });
-                }
-
-                // Delete selected entries (branches + optional worktrees) in parallel.
-                Command::DeleteBranches(selected) => {
-                    // The op is starting — clear the sidebar checkboxes now
-                    // (a declined dialog keeps the selection intact).
-                    app.branch_selected.clear();
-                    struct Work {
-                        name: String,
-                        wt_path: Option<String>,
-                        has_local_branch: bool,
+                        Err(e) => Err(e),
                     }
-                    let mut work: Vec<Work> = Vec::with_capacity(selected.len());
-                    let mut wt_paths_claimed: Vec<String> = Vec::new();
-                    let active_repo = app.active_repo.clone();
-                    for name in selected {
-                        let Some(entry) = app
-                            .entries
-                            .iter()
-                            .find(|e| e.name == name && active_repo.as_ref() == Some(&e.repo_id))
-                        else {
-                            continue;
-                        };
-                        if entry.is_current() || app.is_protected_branch(&entry.name) {
-                            continue;
-                        }
-                        let wt_path = entry.worktree_path().map(str::to_string);
-                        if let Some(ref p) = wt_path
-                            && app.wt_inflight.contains(p)
-                        {
-                            continue;
-                        }
-                        if let Some(ref p) = wt_path {
-                            app.wt_inflight.insert(p.clone());
-                            wt_paths_claimed.push(p.clone());
-                        }
-                        work.push(Work {
-                            name: entry.name.clone(),
-                            wt_path,
-                            has_local_branch: entry.local_branch.is_some(),
+                };
+                match result {
+                    Ok(_) => {
+                        let copy_errors = config::run_post_create(
+                            &post_create,
+                            &target_root_arg,
+                            std::path::Path::new(&wt_path_arg),
+                        );
+                        let _ = tx.send(AsyncResult::WtCreated {
+                            wt_path: wt_path_arg,
+                            copy_errors,
+                            target_repo: target_repo_for_send,
                         });
                     }
+                    Err(e) => {
+                        let _ = tx.send(AsyncResult::WtCreateError {
+                            wt_path: wt_path_arg,
+                            message: format!("Failed to create worktree: {e}"),
+                        });
+                    }
+                }
+            });
+        }
 
-                    if work.is_empty() {
-                        app.notification =
-                            Some(Notification::error("Nothing to delete".to_string()));
-                    } else {
-                        let ids: Vec<u64> = app.progress.allocate_ids(work.len()).collect();
-                        let mut set: JoinSet<DeleteOpResult> = JoinSet::new();
-                        for (op_id, w) in ids.into_iter().zip(work) {
-                            let tx_c = tx.clone();
-                            set.spawn(run_delete_op(
-                                op_id,
-                                w.name.clone(),
-                                w.wt_path,
-                                Some(w.name),
-                                w.has_local_branch,
-                                DeleteMode::TryThenForce,
-                                tx_c,
-                            ));
+        // Delete selected entries (branches + optional worktrees) in parallel.
+        Command::DeleteBranches(selected) => {
+            // The op is starting — clear the sidebar checkboxes now
+            // (a declined dialog keeps the selection intact).
+            app.branch_selected.clear();
+            struct Work {
+                name: String,
+                wt_path: Option<String>,
+                has_local_branch: bool,
+            }
+            let mut work: Vec<Work> = Vec::with_capacity(selected.len());
+            let mut wt_paths_claimed: Vec<String> = Vec::new();
+            let active_repo = app.active_repo.clone();
+            for name in selected {
+                let Some(entry) = app
+                    .entries
+                    .iter()
+                    .find(|e| e.name == name && active_repo.as_ref() == Some(&e.repo_id))
+                else {
+                    continue;
+                };
+                if entry.is_current() || app.is_protected_branch(&entry.name) {
+                    continue;
+                }
+                let wt_path = entry.worktree_path().map(str::to_string);
+                if let Some(ref p) = wt_path
+                    && app.wt_inflight.contains(p)
+                {
+                    continue;
+                }
+                if let Some(ref p) = wt_path {
+                    app.wt_inflight.insert(p.clone());
+                    wt_paths_claimed.push(p.clone());
+                }
+                work.push(Work {
+                    name: entry.name.clone(),
+                    wt_path,
+                    has_local_branch: entry.local_branch.is_some(),
+                });
+            }
+
+            if work.is_empty() {
+                app.notification = Some(Notification::error("Nothing to delete".to_string()));
+            } else {
+                let ids: Vec<u64> = app.progress.allocate_ids(work.len()).collect();
+                let mut set: JoinSet<DeleteOpResult> = JoinSet::new();
+                for (op_id, w) in ids.into_iter().zip(work) {
+                    let tx_c = tasks.tx.clone();
+                    set.spawn(run_delete_op(
+                        op_id,
+                        w.name.clone(),
+                        w.wt_path,
+                        Some(w.name),
+                        w.has_local_branch,
+                        DeleteMode::TryThenForce,
+                        tx_c,
+                    ));
+                }
+
+                let tx_done = tasks.tx.clone();
+                let claimed = wt_paths_claimed;
+                tokio::spawn(async move {
+                    let mut branches: Vec<String> = Vec::new();
+                    let mut wts: Vec<String> = Vec::new();
+                    let mut failures: Vec<String> = Vec::new();
+                    while let Some(res) = set.join_next().await {
+                        match res {
+                            Ok(r) => r.collect_into(&mut branches, &mut wts, &mut failures),
+                            Err(e) => failures.push(format!("task panic: {e}")),
                         }
+                    }
+                    let _ = tx_done.send(AsyncResult::OpAllDone {
+                        branches_deleted: branches,
+                        worktrees_removed: wts,
+                        failures,
+                        wt_paths_claimed: claimed,
+                    });
+                });
+            }
+        }
 
-                        let tx_done = tx.clone();
-                        let claimed = wt_paths_claimed;
+        // Create a new branch from the selected branch (non-blocking)
+        Command::CreateBranch { source, name } => {
+            let tx = tasks.tx.clone();
+            tokio::spawn(async move {
+                match run_git(&["branch", "--", &name, &source]).await {
+                    Ok(_) => {
+                        let _ = tx.send(AsyncResult::BranchCreated { name, source });
+                    }
+                    Err(e) => {
+                        let _ = tx.send(AsyncResult::BranchCreateError(e.to_string()));
+                    }
+                }
+            });
+        }
+
+        // Open PR in browser (non-blocking; result is ignored either way)
+        Command::OpenPrInBrowser(repo_id, pr_number) => {
+            tokio::spawn(async move {
+                // `gh pr view --web` doesn't accept --hostname; embed host into --repo.
+                let repo_arg = repo_id.repo_arg();
+                let num = pr_number.to_string();
+                let args = vec!["pr", "view", &num, "--web", "--repo", repo_arg.as_str()];
+                let _ = run_gh(&args).await;
+            });
+        }
+
+        // Copy branch name to clipboard (synchronous)
+        Command::CopyBranchName(name) => {
+            copy_to_clipboard(&name);
+        }
+
+        // Quit and hand the path to the shell-integration `cd`
+        Command::CdAndQuit(path) => {
+            app.cd_path = Some(path);
+            app.should_quit = true;
+        }
+
+        // Spawn PR detail load in background (deduplicated)
+        Command::FetchPrDetail(repo_id, number) => {
+            if tasks.pr_inflight.contains(&(repo_id.clone(), number)) {
+                return;
+            }
+            tasks.pr_inflight.insert((repo_id.clone(), number));
+            let tx = tasks.tx.clone();
+            // `gh pr view` doesn't accept --hostname; the host (if any) is
+            // embedded into --repo as `[HOST/]OWNER/REPO`.
+            let repo_arg = repo_id.repo_arg();
+            tokio::spawn(async move {
+                let num_str = number.to_string();
+                let args = vec![
+                    "pr",
+                    "view",
+                    &num_str,
+                    "--repo",
+                    repo_arg.as_str(),
+                    "--json",
+                    "number,body,additions,deletions",
+                ];
+                let result = run_gh(&args).await;
+                match result {
+                    Ok(output) => match serde_json::from_str::<PrDetail>(&output) {
+                        Ok(detail) => {
+                            let _ = tx.send(AsyncResult::PrDetail { repo_id, detail });
+                        }
+                        Err(e) => {
+                            let _ = tx.send(AsyncResult::PrDetailError {
+                                repo_id,
+                                number,
+                                error: format!("PR #{number} parse error: {e}"),
+                            });
+                        }
+                    },
+                    Err(e) => {
+                        let _ = tx.send(AsyncResult::PrDetailError {
+                            repo_id,
+                            number,
+                            error: format!("PR #{number} fetch failed: {e}"),
+                        });
+                    }
+                }
+            });
+        }
+
+        // Spawn cross-repo worktree list load in background (deduplicated)
+        Command::LoadWorktreeList(repo_id) => {
+            if app.wt_list_inflight.contains(&repo_id) {
+                return;
+            }
+            let Some(path) = app.repos.get(&repo_id).and_then(|m| m.local_path.clone()) else {
+                return;
+            };
+            app.wt_list_inflight.insert(repo_id.clone());
+            let tx_c = tasks.tx.clone();
+            let repo_id_c = repo_id.clone();
+            tokio::spawn(async move {
+                match run_git_in(&path, &["worktree", "list", "--porcelain"]).await {
+                    Ok(out) => {
+                        let list = crate::git::parser::parse_worktrees(&out);
+                        let _ = tx_c.send(AsyncResult::WtListLoaded {
+                            repo_id: repo_id_c,
+                            list,
+                        });
+                    }
+                    Err(_) => {
+                        let _ = tx_c.send(AsyncResult::WtListLoaded {
+                            repo_id: repo_id_c,
+                            list: Vec::new(),
+                        });
+                    }
+                }
+            });
+        }
+
+        // Reload branches/worktrees in background (deduplicated).
+        // Triggered by `r` in Main view, and also re-armed after
+        // worktree/branch mutations that invalidate the cached entries.
+        Command::ReloadBranches => {
+            if tasks.branches_reload_inflight {
+                // A reload is already running — retry next iteration so a
+                // request issued mid-reload still yields a fresh fetch.
+                app.push_command(Command::ReloadBranches);
+                return;
+            }
+            tasks.branches_reload_inflight = true;
+            let tx = tasks.tx.clone();
+            tokio::spawn(async move {
+                let data = fetch_branches_and_worktrees().await;
+                let _ = tx.send(AsyncResult::BranchesReloaded(data));
+            });
+        }
+
+        // Reload commits on `r` refresh from Log view (deduplicated)
+        Command::ReloadCommits => {
+            if tasks.commits_reload_inflight {
+                app.push_command(Command::ReloadCommits);
+                return;
+            }
+            tasks.commits_reload_inflight = true;
+            let tx = tasks.tx.clone();
+            tokio::spawn(async move {
+                // Always send, even on failure, so `commits_reload_inflight`
+                // is reliably cleared instead of getting stuck forever.
+                let commits = run_git(LOG_ARGS)
+                    .await
+                    .ok()
+                    .map(|output| parse_log(&output));
+                let _ = tx.send(AsyncResult::CommitsReloaded(commits));
+            });
+        }
+
+        // Spawn git status load in background (deduplicated)
+        Command::LoadGitStatus(wt_path) => {
+            if tasks.status_inflight.contains(&wt_path) {
+                return;
+            }
+            tasks.status_inflight.insert(wt_path.clone());
+            let tx = tasks.tx.clone();
+            tokio::spawn(async move {
+                if let Some(status) = data::load_git_status(&wt_path).await {
+                    let _ = tx.send(AsyncResult::GitStatus { wt_path, status });
+                } else {
+                    let _ = tx.send(AsyncResult::GitStatusError(wt_path));
+                }
+            });
+        }
+
+        // Spawn PR fetch for view switch (non-blocking)
+        Command::FetchPrs(filter) => {
+            let tx = tasks.tx.clone();
+            match filter {
+                MainFilter::Local => {
+                    if let Some(ref info) = tasks.repo_info {
+                        let branch_names: Vec<String> =
+                            app.branches.iter().map(|b| b.name.clone()).collect();
+                        let owner = info.owner.clone();
+                        let repo = info.name.clone();
+                        let hostname = info.host.clone();
                         tokio::spawn(async move {
-                            let mut branches: Vec<String> = Vec::new();
-                            let mut wts: Vec<String> = Vec::new();
-                            let mut failures: Vec<String> = Vec::new();
-                            while let Some(res) = set.join_next().await {
-                                match res {
-                                    Ok(r) => r.collect_into(&mut branches, &mut wts, &mut failures),
-                                    Err(e) => failures.push(format!("task panic: {e}")),
-                                }
-                            }
-                            let _ = tx_done.send(AsyncResult::OpAllDone {
-                                branches_deleted: branches,
-                                worktrees_removed: wts,
-                                failures,
-                                wt_paths_claimed: claimed,
-                            });
+                            let (prs, errors) = data::fetch_local_prs(
+                                &branch_names,
+                                &owner,
+                                &repo,
+                                hostname.as_deref(),
+                            )
+                            .await;
+                            let _ = tx.send(AsyncResult::LocalPrList(prs, errors));
                         });
                     }
                 }
-
-                // Create a new branch from the selected branch (non-blocking)
-                Command::CreateBranch { source, name } => {
-                    let tx = tx.clone();
+                MainFilter::MyPr => {
+                    let show_merged = app.show_merged;
+                    let hosts = app.known_hosts();
                     tokio::spawn(async move {
-                        match run_git(&["branch", "--", &name, &source]).await {
-                            Ok(_) => {
-                                let _ = tx.send(AsyncResult::BranchCreated { name, source });
-                            }
-                            Err(e) => {
-                                let _ = tx.send(AsyncResult::BranchCreateError(e.to_string()));
-                            }
-                        }
+                        let (prs, errors) = data::fetch_my_prs(show_merged, &hosts).await;
+                        let _ = tx.send(AsyncResult::MyPrList(prs, errors));
                     });
                 }
-
-                // Open PR in browser (non-blocking; result is ignored either way)
-                Command::OpenPrInBrowser(repo_id, pr_number) => {
-                    tokio::spawn(async move {
-                        // `gh pr view --web` doesn't accept --hostname; embed host into --repo.
-                        let repo_arg = repo_id.repo_arg();
-                        let num = pr_number.to_string();
-                        let args = vec!["pr", "view", &num, "--web", "--repo", repo_arg.as_str()];
-                        let _ = run_gh(&args).await;
-                    });
-                }
-
-                // Copy branch name to clipboard (synchronous)
-                Command::CopyBranchName(name) => {
-                    copy_to_clipboard(&name);
-                }
-
-                // Quit and hand the path to the shell-integration `cd`
-                Command::CdAndQuit(path) => {
-                    app.cd_path = Some(path);
-                    app.should_quit = true;
-                }
-
-                // Spawn PR detail load in background (deduplicated)
-                Command::FetchPrDetail(repo_id, number) => {
-                    if pr_inflight.contains(&(repo_id.clone(), number)) {
-                        continue;
-                    }
-                    pr_inflight.insert((repo_id.clone(), number));
-                    let tx = tx.clone();
-                    // `gh pr view` doesn't accept --hostname; the host (if any) is
-                    // embedded into --repo as `[HOST/]OWNER/REPO`.
-                    let repo_arg = repo_id.repo_arg();
-                    tokio::spawn(async move {
-                        let num_str = number.to_string();
-                        let args = vec![
-                            "pr",
-                            "view",
-                            &num_str,
-                            "--repo",
-                            repo_arg.as_str(),
-                            "--json",
-                            "number,body,additions,deletions",
-                        ];
-                        let result = run_gh(&args).await;
-                        match result {
-                            Ok(output) => match serde_json::from_str::<PrDetail>(&output) {
-                                Ok(detail) => {
-                                    let _ = tx.send(AsyncResult::PrDetail { repo_id, detail });
-                                }
-                                Err(e) => {
-                                    let _ = tx.send(AsyncResult::PrDetailError {
-                                        repo_id,
-                                        number,
-                                        error: format!("PR #{number} parse error: {e}"),
-                                    });
-                                }
-                            },
-                            Err(e) => {
-                                let _ = tx.send(AsyncResult::PrDetailError {
-                                    repo_id,
-                                    number,
-                                    error: format!("PR #{number} fetch failed: {e}"),
-                                });
-                            }
-                        }
-                    });
-                }
-
-                // Spawn cross-repo worktree list load in background (deduplicated)
-                Command::LoadWorktreeList(repo_id) => {
-                    if app.wt_list_inflight.contains(&repo_id) {
-                        continue;
-                    }
-                    let Some(path) = app.repos.get(&repo_id).and_then(|m| m.local_path.clone())
-                    else {
-                        continue;
-                    };
-                    app.wt_list_inflight.insert(repo_id.clone());
-                    let tx_c = tx.clone();
-                    let repo_id_c = repo_id.clone();
-                    tokio::spawn(async move {
-                        match run_git_in(&path, &["worktree", "list", "--porcelain"]).await {
-                            Ok(out) => {
-                                let list = crate::git::parser::parse_worktrees(&out);
-                                let _ = tx_c.send(AsyncResult::WtListLoaded {
-                                    repo_id: repo_id_c,
-                                    list,
-                                });
-                            }
-                            Err(_) => {
-                                let _ = tx_c.send(AsyncResult::WtListLoaded {
-                                    repo_id: repo_id_c,
-                                    list: Vec::new(),
-                                });
-                            }
-                        }
-                    });
-                }
-
-                // Reload branches/worktrees in background (deduplicated).
-                // Triggered by `r` in Main view, and also re-armed after
-                // worktree/branch mutations that invalidate the cached entries.
-                Command::ReloadBranches => {
-                    if branches_reload_inflight {
-                        // A reload is already running — retry next iteration so a
-                        // request issued mid-reload still yields a fresh fetch.
-                        app.push_command(Command::ReloadBranches);
-                        continue;
-                    }
-                    branches_reload_inflight = true;
-                    let tx = tx.clone();
-                    tokio::spawn(async move {
-                        let data = fetch_branches_and_worktrees().await;
-                        let _ = tx.send(AsyncResult::BranchesReloaded(data));
-                    });
-                }
-
-                // Reload commits on `r` refresh from Log view (deduplicated)
-                Command::ReloadCommits => {
-                    if commits_reload_inflight {
-                        app.push_command(Command::ReloadCommits);
-                        continue;
-                    }
-                    commits_reload_inflight = true;
-                    let tx = tx.clone();
-                    tokio::spawn(async move {
-                        // Always send, even on failure, so `commits_reload_inflight`
-                        // is reliably cleared instead of getting stuck forever.
-                        let commits = run_git(LOG_ARGS)
-                            .await
-                            .ok()
-                            .map(|output| parse_log(&output));
-                        let _ = tx.send(AsyncResult::CommitsReloaded(commits));
-                    });
-                }
-
-                // Spawn git status load in background (deduplicated)
-                Command::LoadGitStatus(wt_path) => {
-                    if status_inflight.contains(&wt_path) {
-                        continue;
-                    }
-                    status_inflight.insert(wt_path.clone());
-                    let tx = tx.clone();
-                    tokio::spawn(async move {
-                        if let Some(status) = data::load_git_status(&wt_path).await {
-                            let _ = tx.send(AsyncResult::GitStatus { wt_path, status });
-                        } else {
-                            let _ = tx.send(AsyncResult::GitStatusError(wt_path));
-                        }
-                    });
-                }
-
-                // Spawn PR fetch for view switch (non-blocking)
-                Command::FetchPrs(filter) => {
-                    let tx = tx.clone();
-                    match filter {
-                        MainFilter::Local => {
-                            if let Some(ref info) = repo_info {
-                                let branch_names: Vec<String> =
-                                    app.branches.iter().map(|b| b.name.clone()).collect();
-                                let owner = info.owner.clone();
-                                let repo = info.name.clone();
-                                let hostname = info.host.clone();
-                                tokio::spawn(async move {
-                                    let (prs, errors) = data::fetch_local_prs(
-                                        &branch_names,
-                                        &owner,
-                                        &repo,
-                                        hostname.as_deref(),
-                                    )
+                MainFilter::ReviewRequested => {
+                    // Defer until gh_user is known — GitHub's `review-requested:@me`
+                    // search expands to team memberships, and the post-fetch filter
+                    // in fetch_review_prs only runs when gh_user is non-empty. Without
+                    // this guard, switching to Review right after startup can show
+                    // team PRs even in me-only mode. If the user-login fetch failed,
+                    // proceed anyway — no point in spinning forever.
+                    if app.gh_user.is_empty()
+                        && !app.include_team_reviews
+                        && !app.gh_user_load_failed
+                    {
+                        app.push_command(Command::FetchPrs(MainFilter::ReviewRequested));
+                    } else {
+                        let show_merged = app.show_merged;
+                        let include_team = app.include_team_reviews;
+                        let gh_user = app.gh_user.clone();
+                        let hosts = app.known_hosts();
+                        tokio::spawn(async move {
+                            let (prs, errors) =
+                                data::fetch_review_prs(show_merged, include_team, &gh_user, &hosts)
                                     .await;
-                                    let _ = tx.send(AsyncResult::LocalPrList(prs, errors));
-                                });
-                            }
-                        }
-                        MainFilter::MyPr => {
-                            let show_merged = app.show_merged;
-                            let hosts = app.known_hosts();
-                            tokio::spawn(async move {
-                                let (prs, errors) = data::fetch_my_prs(show_merged, &hosts).await;
-                                let _ = tx.send(AsyncResult::MyPrList(prs, errors));
-                            });
-                        }
-                        MainFilter::ReviewRequested => {
-                            // Defer until gh_user is known — GitHub's `review-requested:@me`
-                            // search expands to team memberships, and the post-fetch filter
-                            // in fetch_review_prs only runs when gh_user is non-empty. Without
-                            // this guard, switching to Review right after startup can show
-                            // team PRs even in me-only mode. If the user-login fetch failed,
-                            // proceed anyway — no point in spinning forever.
-                            if app.gh_user.is_empty()
-                                && !app.include_team_reviews
-                                && !app.gh_user_load_failed
-                            {
-                                app.push_command(Command::FetchPrs(MainFilter::ReviewRequested));
-                            } else {
-                                let show_merged = app.show_merged;
-                                let include_team = app.include_team_reviews;
-                                let gh_user = app.gh_user.clone();
-                                let hosts = app.known_hosts();
-                                tokio::spawn(async move {
-                                    let (prs, errors) = data::fetch_review_prs(
-                                        show_merged,
-                                        include_team,
-                                        &gh_user,
-                                        &hosts,
-                                    )
-                                    .await;
-                                    let _ = tx.send(AsyncResult::ReviewPrList(prs, errors));
-                                });
-                            }
-                        }
+                            let _ = tx.send(AsyncResult::ReviewPrList(prs, errors));
+                        });
                     }
                 }
             }
         }
-
-        if app.should_quit {
-            break;
-        }
     }
-
-    let cd_path = app.cd_path.clone();
-    (Ok(()), cd_path)
 }
 
 /// Surface background fetch failures: a short error toast (first line of the
