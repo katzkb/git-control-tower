@@ -1,6 +1,6 @@
 use crossterm::event::{KeyCode, KeyEvent};
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::time::Instant;
 
 use crate::git::types::{Branch, BranchEntry, Commit, PrDetail, PullRequest, Worktree};
@@ -73,6 +73,46 @@ impl ActionItem {
             Self::CreateBranch | Self::DeleteBranch => Some("Branch"),
         }
     }
+}
+
+/// A unit of work requested by the UI and executed by the main loop.
+///
+/// `handle_key` (and async-result handling in `run()`) pushes commands onto
+/// `App::commands` via [`App::push_command`]; `run()` drains the queue once
+/// per loop iteration and dispatches each variant.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Command {
+    // Read/fetch intents
+    FetchPrs(MainFilter),
+    FetchPrDetail(crate::git::types::RepoId, u64),
+    /// Load `git status` for the worktree at this path.
+    LoadGitStatus(String),
+    LoadWorktreeList(crate::git::types::RepoId),
+    ReloadBranches,
+    ReloadCommits,
+    // Mutating intents
+    DeleteWorktree(String),
+    ForceDeleteWorktree(String),
+    /// `(repo_id, branch_name)` — carries `RepoId` so the main-loop lookup
+    /// matches the correct repo when branch names collide.
+    CreateWorktree(crate::git::types::RepoId, String),
+    DeleteBranches(Vec<String>),
+    CreateBranch {
+        source: String,
+        name: String,
+    },
+    OpenPrInBrowser(crate::git::types::RepoId, u64),
+    CopyBranchName(String),
+    /// Quit the TUI and emit this path for the shell-integration `cd`.
+    CdAndQuit(String),
+}
+
+/// A confirm dialog plus the command to run when the user accepts it.
+/// Carrying the consequence with the dialog means `handle_confirm_key`
+/// needs no out-of-band staging state to know what `y` applies to.
+pub struct PendingConfirm {
+    pub dialog: ConfirmDialog,
+    pub on_confirm: Command,
 }
 
 pub struct ActionMenu {
@@ -232,22 +272,17 @@ pub struct App {
     pub review_prs_loaded: bool,
     pub show_merged: bool,
     pub include_team_reviews: bool,
-    pub pr_fetch_requested: Option<MainFilter>,
 
     // PR Detail (for detail pane, cached by (RepoId, PR number))
     pub pr_detail_cache: HashMap<(crate::git::types::RepoId, u64), PrDetail>,
     pub pr_detail_scroll: usize,
-    pub pr_detail_requested: Option<(crate::git::types::RepoId, u64)>,
-
-    // Git status loading
-    pub git_status_requested: Option<String>, // worktree path
 
     // Verbose mode
     pub verbose: bool,
     pub verbose_errors: Vec<String>,
 
     // Overlays
-    pub confirm_dialog: Option<ConfirmDialog>,
+    pub confirm_dialog: Option<PendingConfirm>,
     pub action_menu: Option<ActionMenu>,
     pub branch_create_input: Option<BranchCreateInput>,
     pub notification: Option<Notification>,
@@ -256,27 +291,16 @@ pub struct App {
     // Exit with cd path
     pub cd_path: Option<String>,
 
-    // Action requests
-    pub wt_delete_requested: Option<String>,
-    pub wt_delete_pending_path: Option<String>, // path stored when confirm dialog shown
-    pub wt_force_delete_requested: Option<String>,
-    pub wt_force_delete_pending_path: Option<String>,
-    pub wt_cd_pending_path: Option<String>,
-    /// `(repo_id, branch_name)` for the worktree to create. Carries `RepoId` so
-    /// the main-loop lookup matches the correct repo when branch names collide.
-    pub wt_create_requested: Option<(crate::git::types::RepoId, String)>,
+    // Command queue: intents staged by key handling (and async-result
+    // handling in `run()`), drained once per loop iteration in `run()`.
+    pub commands: VecDeque<Command>,
+
     /// Worktree paths with an in-flight create/delete, gated per-path so unrelated
     /// worktrees stay actionable in the UI while one is still running.
     pub wt_inflight: HashSet<String>,
     pub progress: ProgressTracker,
     pub quit_pressed_during_progress: bool,
     pub branch_selected: HashSet<String>,
-    pub branch_delete_requested: bool,
-    pub open_pr_requested: Option<(crate::git::types::RepoId, u64)>,
-    pub copy_branch_requested: Option<String>,
-    pub branch_create_requested: Option<(String, String)>, // (source, name)
-    pub branches_reload_requested: bool,
-    pub commits_reload_requested: bool,
 
     // Spinner animation
     spinner_tick: usize,
@@ -301,7 +325,6 @@ pub struct App {
 
     // Cross-repo worktree list lazy-load state
     pub wt_list_inflight: HashSet<crate::git::types::RepoId>,
-    pub wt_list_requested: Option<crate::git::types::RepoId>,
 }
 
 impl App {
@@ -332,11 +355,8 @@ impl App {
             review_prs_loaded: false,
             show_merged: false,
             include_team_reviews: false,
-            pr_fetch_requested: None,
             pr_detail_cache: HashMap::new(),
             pr_detail_scroll: 0,
-            pr_detail_requested: None,
-            git_status_requested: None,
             verbose: false,
             verbose_errors: Vec::new(),
             confirm_dialog: None,
@@ -345,22 +365,11 @@ impl App {
             notification: None,
             show_help: false,
             cd_path: None,
-            wt_delete_requested: None,
-            wt_delete_pending_path: None,
-            wt_force_delete_requested: None,
-            wt_force_delete_pending_path: None,
-            wt_cd_pending_path: None,
-            wt_create_requested: None,
+            commands: VecDeque::new(),
             wt_inflight: HashSet::new(),
             progress: ProgressTracker::default(),
             quit_pressed_during_progress: false,
             branch_selected: HashSet::new(),
-            branch_delete_requested: false,
-            open_pr_requested: None,
-            copy_branch_requested: None,
-            branch_create_requested: None,
-            branches_reload_requested: false,
-            commits_reload_requested: false,
             spinner_tick: 0,
             config,
             global_layers: toml::Table::new(),
@@ -369,8 +378,23 @@ impl App {
             repos: HashMap::new(),
             wt_lists_per_repo: HashMap::new(),
             wt_list_inflight: HashSet::new(),
-            wt_list_requested: None,
         }
+    }
+
+    /// Queue a command for the main loop, coalescing exact duplicates —
+    /// pushing an intent that is already pending is a no-op, matching the
+    /// one-slot semantics of the request flags this queue replaced.
+    pub fn push_command(&mut self, cmd: Command) {
+        if !self.commands.contains(&cmd) {
+            self.commands.push_back(cmd);
+        }
+    }
+
+    /// Take a snapshot of the queued commands, leaving the queue empty.
+    /// `run()` dispatches the snapshot; commands pushed during dispatch land
+    /// on the fresh queue and are serviced next iteration (no busy re-loop).
+    pub fn take_commands(&mut self) -> VecDeque<Command> {
+        std::mem::take(&mut self.commands)
     }
 
     pub fn current_prs(&self) -> &[PullRequest] {
@@ -578,14 +602,14 @@ impl App {
                     .pr_detail_cache
                     .contains_key(&(entry.repo_id.clone(), pr_num))
             {
-                self.pr_detail_requested = Some((entry.repo_id.clone(), pr_num));
+                self.push_command(Command::FetchPrDetail(entry.repo_id.clone(), pr_num));
             }
 
             // Request git status if entry has a worktree and status not yet loaded
             if let Some(wt_path) = entry.worktree_path()
                 && entry.git_status.is_none()
             {
-                self.git_status_requested = Some(wt_path.to_string());
+                self.push_command(Command::LoadGitStatus(wt_path.to_string()));
             }
         }
 
@@ -602,7 +626,7 @@ impl App {
                 .and_then(|m| m.local_path.as_ref())
                 .is_some()
             {
-                self.wt_list_requested = Some(entry.repo_id.clone());
+                self.push_command(Command::LoadWorktreeList(entry.repo_id.clone()));
             }
         }
     }
@@ -684,7 +708,7 @@ impl App {
                 self.rebuild_entries();
                 self.snap_scroll_to_entry();
                 if !self.local_prs_loaded {
-                    self.pr_fetch_requested = Some(MainFilter::Local);
+                    self.push_command(Command::FetchPrs(MainFilter::Local));
                 }
                 self.request_details_for_selection();
             }
@@ -697,7 +721,7 @@ impl App {
                 self.rebuild_entries();
                 self.snap_scroll_to_entry();
                 if !self.my_prs_loaded {
-                    self.pr_fetch_requested = Some(MainFilter::MyPr);
+                    self.push_command(Command::FetchPrs(MainFilter::MyPr));
                 }
                 self.request_details_for_selection();
             }
@@ -710,7 +734,7 @@ impl App {
                 self.rebuild_entries();
                 self.snap_scroll_to_entry();
                 if !self.review_prs_loaded {
-                    self.pr_fetch_requested = Some(MainFilter::ReviewRequested);
+                    self.push_command(Command::FetchPrs(MainFilter::ReviewRequested));
                 }
                 self.request_details_for_selection();
             }
@@ -739,12 +763,12 @@ impl App {
                     self.wt_lists_per_repo.clear();
                     self.wt_list_inflight.clear();
                     // Signal branches/worktrees reload + PR fetch
-                    self.branches_reload_requested = true;
-                    self.pr_fetch_requested = Some(self.main_filter);
+                    self.push_command(Command::ReloadBranches);
+                    self.push_command(Command::FetchPrs(self.main_filter));
                     self.notification = Some(Notification::success("Refreshing…"));
                 }
                 ActiveView::Log => {
-                    self.commits_reload_requested = true;
+                    self.push_command(Command::ReloadCommits);
                     self.notification = Some(Notification::success("Refreshing…"));
                 }
                 ActiveView::History => {
@@ -851,7 +875,13 @@ impl App {
                     } else {
                         "Delete Branches + Worktrees"
                     };
-                    self.confirm_dialog = Some(ConfirmDialog::new(title, msg));
+                    // Snapshot the whole selection — the dispatcher re-filters
+                    // (current/protected/inflight) at execution time.
+                    let names: Vec<String> = self.branch_selected.iter().cloned().collect();
+                    self.confirm_dialog = Some(PendingConfirm {
+                        dialog: ConfirmDialog::new(title, msg),
+                        on_confirm: Command::DeleteBranches(names),
+                    });
                 } else if !self.branch_selected.is_empty() {
                     // Non-empty selection but nothing deletable (e.g. PR-only entries
                     // with no local branch and no worktree). Tell the user rather
@@ -865,11 +895,13 @@ impl App {
                     && !self.wt_inflight.contains(wt_path)
                 {
                     let path = wt_path.to_string();
-                    self.confirm_dialog = Some(ConfirmDialog::new(
-                        "Delete Worktree",
-                        format!("Remove worktree at {path}?"),
-                    ));
-                    self.wt_delete_pending_path = Some(path);
+                    self.confirm_dialog = Some(PendingConfirm {
+                        dialog: ConfirmDialog::new(
+                            "Delete Worktree",
+                            format!("Remove worktree at {path}?"),
+                        ),
+                        on_confirm: Command::DeleteWorktree(path),
+                    });
                 }
             }
             KeyCode::Char('w') => {
@@ -915,7 +947,10 @@ impl App {
                 if self.wt_inflight.contains(&wt_path) {
                     return;
                 }
-                self.wt_create_requested = Some((entry.repo_id.clone(), entry.name.clone()));
+                self.push_command(Command::CreateWorktree(
+                    entry.repo_id.clone(),
+                    entry.name.clone(),
+                ));
                 self.notification = Some(Notification::success("Creating worktree...".to_string()));
             }
             KeyCode::Enter => {
@@ -933,7 +968,7 @@ impl App {
                     self.review_prs.clear();
                     self.review_prs_loaded = false;
                     self.rebuild_entries();
-                    self.pr_fetch_requested = Some(self.main_filter);
+                    self.push_command(Command::FetchPrs(self.main_filter));
                     self.sidebar_scroll = 0;
                     self.sidebar_offset = 0;
                     self.snap_scroll_to_entry();
@@ -944,7 +979,7 @@ impl App {
                 self.review_prs.clear();
                 self.review_prs_loaded = false;
                 self.rebuild_entries();
-                self.pr_fetch_requested = Some(MainFilter::ReviewRequested);
+                self.push_command(Command::FetchPrs(MainFilter::ReviewRequested));
                 self.sidebar_scroll = 0;
                 self.sidebar_offset = 0;
                 self.snap_scroll_to_entry();
@@ -1167,7 +1202,10 @@ impl App {
         };
         match action {
             ActionItem::CreateWorktree => {
-                self.wt_create_requested = Some((entry.repo_id.clone(), entry.name.clone()));
+                self.push_command(Command::CreateWorktree(
+                    entry.repo_id.clone(),
+                    entry.name.clone(),
+                ));
                 self.notification = Some(Notification::success("Creating worktree...".to_string()));
             }
             ActionItem::CdIntoWorktree => {
@@ -1179,13 +1217,16 @@ impl App {
             ActionItem::DeleteWorktree => {
                 if let Some(wt_path) = entry.worktree_path() {
                     let path = wt_path.to_string();
-                    // Clear branch_selected to avoid confirm_key misrouting
+                    // Deleting via the action menu targets one worktree only —
+                    // drop any checkbox selection so the sidebar reflects that.
                     self.branch_selected.clear();
-                    self.confirm_dialog = Some(ConfirmDialog::new(
-                        "Delete Worktree",
-                        format!("Remove worktree at {path}?"),
-                    ));
-                    self.wt_delete_pending_path = Some(path);
+                    self.confirm_dialog = Some(PendingConfirm {
+                        dialog: ConfirmDialog::new(
+                            "Delete Worktree",
+                            format!("Remove worktree at {path}?"),
+                        ),
+                        on_confirm: Command::DeleteWorktree(path),
+                    });
                 }
             }
             ActionItem::CreateBranch => {
@@ -1198,22 +1239,23 @@ impl App {
             ActionItem::DeleteBranch => {
                 let name = entry.name.clone();
                 let is_unmerged = !entry.is_merged() && !entry.pr_is_merged();
-                self.branch_selected.clear();
-                self.branch_selected.insert(name.clone());
                 let msg = if is_unmerged {
                     format!("Delete branch {name}? (unmerged — will force delete)")
                 } else {
                     format!("Delete branch {name}?")
                 };
-                self.confirm_dialog = Some(ConfirmDialog::new("Delete Branch", msg));
+                self.confirm_dialog = Some(PendingConfirm {
+                    dialog: ConfirmDialog::new("Delete Branch", msg),
+                    on_confirm: Command::DeleteBranches(vec![name]),
+                });
             }
             ActionItem::OpenPrInBrowser => {
                 if let Some(pr) = &entry.pull_request {
-                    self.open_pr_requested = Some((entry.repo_id.clone(), pr.number));
+                    self.push_command(Command::OpenPrInBrowser(entry.repo_id.clone(), pr.number));
                 }
             }
             ActionItem::CopyBranchName => {
-                self.copy_branch_requested = Some(entry.name.clone());
+                self.push_command(Command::CopyBranchName(entry.name.clone()));
                 self.notification = Some(Notification::success(format!("Copied: {}", entry.name)));
             }
         }
@@ -1234,7 +1276,7 @@ impl App {
                 let source = input.source.clone();
                 let name = input.name.clone();
                 self.branch_create_input = None;
-                self.branch_create_requested = Some((source, name));
+                self.push_command(Command::CreateBranch { source, name });
             }
             KeyCode::Left => {
                 input.cursor = input.cursor.saturating_sub(1);
@@ -1266,29 +1308,18 @@ impl App {
     fn handle_confirm_key(&mut self, code: KeyCode) {
         match code {
             KeyCode::Char('y') => {
-                // Move-to-worktree takes precedence — it can race with a
-                // stale `branch_selected` from before the create finished.
-                if let Some(path) = self.wt_cd_pending_path.take() {
-                    self.cd_path = Some(path);
-                    self.should_quit = true;
-                } else if !self.branch_selected.is_empty() {
-                    self.branch_delete_requested = true;
-                } else if let Some(path) = self.wt_force_delete_pending_path.take() {
-                    self.wt_force_delete_requested = Some(path);
-                } else if let Some(path) = self.wt_delete_pending_path.take() {
-                    self.wt_delete_requested = Some(path);
+                if let Some(pending) = self.confirm_dialog.take() {
+                    self.push_command(pending.on_confirm);
                 }
-                self.confirm_dialog = None;
             }
             KeyCode::Char('n') | KeyCode::Esc => {
-                self.wt_delete_pending_path = None;
-                self.wt_cd_pending_path = None;
-                // Declining force-delete ends the op — release the path so its
-                // action items reappear.
-                if let Some(path) = self.wt_force_delete_pending_path.take() {
+                if let Some(pending) = self.confirm_dialog.take()
+                    && let Command::ForceDeleteWorktree(path) = pending.on_confirm
+                {
+                    // Declining force-delete ends the op — release the path so
+                    // its action items reappear.
                     self.wt_inflight.remove(&path);
                 }
-                self.confirm_dialog = None;
             }
             _ => {}
         }
@@ -2334,7 +2365,10 @@ mod wt_list_lazy_load_tests {
         }];
         app.snap_scroll_to_entry();
         app.request_details_for_selection();
-        assert_eq!(app.wt_list_requested.as_ref(), Some(&other));
+        assert!(
+            app.commands
+                .contains(&Command::LoadWorktreeList(other.clone()))
+        );
     }
 
     #[test]
@@ -2364,6 +2398,105 @@ mod wt_list_lazy_load_tests {
         }];
         app.snap_scroll_to_entry();
         app.request_details_for_selection();
-        assert!(app.wt_list_requested.is_none());
+        assert!(
+            !app.commands
+                .iter()
+                .any(|c| matches!(c, Command::LoadWorktreeList(_)))
+        );
+    }
+}
+
+#[cfg(test)]
+mod command_queue_tests {
+    use super::*;
+    use crate::config::Config;
+    use crossterm::event::KeyModifiers;
+
+    fn key(code: KeyCode) -> KeyEvent {
+        KeyEvent::new(code, KeyModifiers::NONE)
+    }
+
+    #[test]
+    fn push_command_coalesces_duplicates_and_keeps_fifo_order() {
+        let mut app = App::new(Config::default());
+        app.push_command(Command::ReloadBranches);
+        app.push_command(Command::ReloadCommits);
+        app.push_command(Command::ReloadBranches); // duplicate — coalesced
+        assert_eq!(app.commands.len(), 2);
+        let drained: Vec<Command> = app.take_commands().into_iter().collect();
+        assert_eq!(
+            drained,
+            vec![Command::ReloadBranches, Command::ReloadCommits]
+        );
+        assert!(app.commands.is_empty());
+    }
+
+    #[test]
+    fn refresh_key_queues_branch_reload_and_pr_fetch() {
+        let mut app = App::new(Config::default());
+        app.handle_key(key(KeyCode::Char('r')));
+        let drained: Vec<Command> = app.take_commands().into_iter().collect();
+        assert_eq!(
+            drained,
+            vec![
+                Command::ReloadBranches,
+                Command::FetchPrs(MainFilter::Local)
+            ]
+        );
+    }
+
+    #[test]
+    fn filter_switch_queues_pr_fetch_only_when_not_loaded() {
+        let mut app = App::new(Config::default());
+        app.handle_key(key(KeyCode::Char('2')));
+        assert!(app.commands.contains(&Command::FetchPrs(MainFilter::MyPr)));
+
+        let mut loaded = App::new(Config::default());
+        loaded.my_prs_loaded = true;
+        loaded.handle_key(key(KeyCode::Char('2')));
+        assert!(
+            !loaded
+                .commands
+                .contains(&Command::FetchPrs(MainFilter::MyPr))
+        );
+    }
+
+    fn pending(on_confirm: Command) -> PendingConfirm {
+        PendingConfirm {
+            dialog: ConfirmDialog::new("title", "message"),
+            on_confirm,
+        }
+    }
+
+    #[test]
+    fn confirm_y_pushes_on_confirm_and_closes_dialog() {
+        let mut app = App::new(Config::default());
+        app.confirm_dialog = Some(pending(Command::DeleteWorktree("/wt/p".into())));
+        app.handle_key(key(KeyCode::Char('y')));
+        assert!(app.confirm_dialog.is_none());
+        assert!(
+            app.commands
+                .contains(&Command::DeleteWorktree("/wt/p".into()))
+        );
+    }
+
+    #[test]
+    fn confirm_decline_pushes_nothing() {
+        let mut app = App::new(Config::default());
+        app.confirm_dialog = Some(pending(Command::DeleteWorktree("/wt/p".into())));
+        app.handle_key(key(KeyCode::Esc));
+        assert!(app.confirm_dialog.is_none());
+        assert!(app.commands.is_empty());
+    }
+
+    #[test]
+    fn confirm_decline_force_delete_releases_inflight_path() {
+        let mut app = App::new(Config::default());
+        app.wt_inflight.insert("/wt/p".to_string());
+        app.confirm_dialog = Some(pending(Command::ForceDeleteWorktree("/wt/p".into())));
+        app.handle_key(key(KeyCode::Char('n')));
+        assert!(app.confirm_dialog.is_none());
+        assert!(app.commands.is_empty());
+        assert!(!app.wt_inflight.contains("/wt/p"));
     }
 }
