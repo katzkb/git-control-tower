@@ -2,13 +2,15 @@ use crossterm::event::{KeyCode, KeyEvent};
 
 use std::collections::{HashMap, HashSet, VecDeque};
 
-use crate::git::types::{Branch, BranchEntry, Commit, PrDetail, PullRequest, Worktree};
+use crate::git::types::{BranchEntry, PrDetail, PullRequest};
 use crate::ui::confirm_dialog::ConfirmDialog;
 use crate::ui::notification::Notification;
 
 mod progress;
+mod raw;
 
 pub use progress::{OpProgress, OpStep, ProgressTracker};
+pub use raw::RawData;
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub enum ActiveView {
@@ -414,17 +416,6 @@ impl PrCaches {
             }
         }
     }
-}
-
-/// Raw data fetched from `git`/`gh`: inputs to `rebuild_entries` and the Log
-/// view, plus the gh identity used for review-status computation (issue #220).
-#[derive(Default)]
-pub struct RawData {
-    pub branches: Vec<Branch>,
-    pub worktrees: Vec<Worktree>,
-    pub commits: Vec<Commit>,
-    pub gh_user: String,
-    pub gh_user_load_failed: bool,
 }
 
 /// Cross-repo context: active repo, clone root, lazily-populated per-repo
