@@ -225,9 +225,9 @@ fn draw_pr_section(
 
     // Author + State
     let (state_str, state_color) = if pr.is_draft {
-        ("DRAFT".to_string(), theme::TEXT_DIM)
+        ("DRAFT", theme::TEXT_DIM)
     } else {
-        (pr.state.clone(), theme::pr_state_color(&pr.state))
+        theme::pr_state(pr.state)
     };
     lines.push(Line::from(vec![
         Span::styled("  Author: ", Style::default().fg(theme::TEXT_DIM)),

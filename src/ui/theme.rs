@@ -5,7 +5,7 @@
 
 use ratatui::style::Color;
 
-use crate::git::types::ReviewStatus;
+use crate::git::types::{PrState, ReviewStatus};
 
 /// Highlight color: titles, selection, key hints, worktree markers.
 pub const ACCENT: Color = Color::Cyan;
@@ -36,12 +36,11 @@ pub fn review_status(status: &ReviewStatus) -> (&'static str, Color) {
     }
 }
 
-/// Color for a PR state string as reported by `gh` (`OPEN`/`CLOSED`/`MERGED`).
-pub fn pr_state_color(state: &str) -> Color {
+/// Display label and color for a PR state.
+pub fn pr_state(state: PrState) -> (&'static str, Color) {
     match state {
-        "OPEN" => SUCCESS,
-        "CLOSED" => ERROR,
-        "MERGED" => PR_MERGED,
-        _ => TEXT,
+        PrState::Open => ("OPEN", SUCCESS),
+        PrState::Closed => ("CLOSED", ERROR),
+        PrState::Merged => ("MERGED", PR_MERGED),
     }
 }

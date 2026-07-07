@@ -1,7 +1,9 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::git::command::{debug_log, run_gh, run_git};
-use crate::git::types::{Branch, BranchEntry, GitStatus, PullRequest, ReviewRequest, Worktree};
+use crate::git::types::{
+    Branch, BranchEntry, GitStatus, PrState, PullRequest, ReviewRequest, Worktree,
+};
 
 /// Merge local branches, worktrees, and PRs into unified BranchEntry list.
 pub fn merge_entries(
@@ -60,8 +62,8 @@ pub fn merge_entries(
             pull_request: None,
             git_status: None,
         });
-        match (&entry.pull_request, pr.state.as_str()) {
-            (Some(existing), "MERGED") if existing.state == "OPEN" => {
+        match (&entry.pull_request, pr.state) {
+            (Some(existing), PrState::Merged) if existing.state == PrState::Open => {
                 // Don't overwrite an OPEN PR with a MERGED one
             }
             _ => {
@@ -263,7 +265,7 @@ pub async fn fetch_local_prs(
 fn parse_graphql_pr(node: &serde_json::Value) -> Option<PullRequest> {
     let number = node["number"].as_u64()?;
     let title = node["title"].as_str()?.to_string();
-    let state = node["state"].as_str()?.to_string();
+    let state = PrState::from_graphql(node["state"].as_str()?)?;
     let head_ref = node["headRefName"].as_str()?.to_string();
     let updated_at = node["updatedAt"].as_str().unwrap_or_default().to_string();
     let author = node["author"]["login"]
@@ -319,7 +321,7 @@ fn parse_graphql_search_pr(node: &serde_json::Value) -> Option<PullRequest> {
             .filter_map(|r| {
                 Some(crate::git::types::LatestReview {
                     author: r["author"]["login"].as_str()?.to_string(),
-                    state: r["state"].as_str()?.to_string(),
+                    state: crate::git::types::ReviewState::from_graphql(r["state"].as_str()?),
                 })
             })
             .collect();
@@ -655,7 +657,7 @@ mod tests {
             number: 42,
             title: "Add feature A".to_string(),
             author: "alice".to_string(),
-            state: "OPEN".to_string(),
+            state: PrState::Open,
             head_ref: "feature-a".to_string(),
             updated_at: "2024-01-15".to_string(),
             review_requests: vec![],
@@ -682,7 +684,7 @@ mod tests {
             number: 99,
             title: "Remote only PR".to_string(),
             author: "bob".to_string(),
-            state: "OPEN".to_string(),
+            state: PrState::Open,
             head_ref: "remote-branch".to_string(),
             updated_at: "2024-01-15".to_string(),
             review_requests: vec![],
@@ -712,7 +714,7 @@ mod tests {
             number: 10,
             title: "Feature A".to_string(),
             author: "alice".to_string(),
-            state: "MERGED".to_string(),
+            state: PrState::Merged,
             head_ref: "feature-a".to_string(),
             updated_at: "2024-01-15".to_string(),
             review_requests: vec![],
@@ -744,7 +746,7 @@ mod tests {
                 number: 5,
                 title: "Old merged PR".to_string(),
                 author: "alice".to_string(),
-                state: "MERGED".to_string(),
+                state: PrState::Merged,
                 head_ref: "feature-a".to_string(),
                 updated_at: "2024-01-01".to_string(),
                 review_requests: vec![],
@@ -757,7 +759,7 @@ mod tests {
                 number: 10,
                 title: "New open PR".to_string(),
                 author: "alice".to_string(),
-                state: "OPEN".to_string(),
+                state: PrState::Open,
                 head_ref: "feature-a".to_string(),
                 updated_at: "2024-01-15".to_string(),
                 review_requests: vec![],
@@ -809,7 +811,7 @@ mod tests {
         let pr = parse_graphql_pr(&node).unwrap();
         assert_eq!(pr.number, 42);
         assert_eq!(pr.title, "Add feature");
-        assert_eq!(pr.state, "OPEN");
+        assert_eq!(pr.state, PrState::Open);
         assert_eq!(pr.head_ref, "feature-branch");
         assert_eq!(pr.author, "alice");
         assert_eq!(pr.review_requests.len(), 1);
@@ -941,7 +943,7 @@ mod tests {
                 number: 1,
                 title: "active PR".into(),
                 author: "a".into(),
-                state: "OPEN".into(),
+                state: PrState::Open,
                 head_ref: "feature/auth".into(),
                 updated_at: "2024".into(),
                 is_draft: false,
@@ -954,7 +956,7 @@ mod tests {
                 number: 99,
                 title: "other PR".into(),
                 author: "b".into(),
-                state: "OPEN".into(),
+                state: PrState::Open,
                 head_ref: "feature/auth".into(),
                 updated_at: "2024".into(),
                 is_draft: false,
@@ -992,7 +994,7 @@ mod tests {
             number: 7,
             title: "x".into(),
             author: "u".into(),
-            state: "OPEN".into(),
+            state: PrState::Open,
             head_ref: "feat/x".into(),
             updated_at: "2024".into(),
             is_draft: false,
@@ -1117,7 +1119,7 @@ mod tests {
             number,
             title: format!("PR {number}"),
             author: "alice".into(),
-            state: "OPEN".into(),
+            state: PrState::Open,
             head_ref: format!("feature-{number}"),
             updated_at: "2024-01-15T00:00:00Z".into(),
             is_draft: false,

@@ -29,7 +29,7 @@ use crate::app::{Command, OpProgress, OpStep};
 use crate::event::{Event, EventHandler};
 use crate::git::command::{run_gh, run_git, run_git_in};
 use crate::git::parser::{parse_branches, parse_log, parse_worktrees};
-use crate::git::types::{GitStatus, PrDetail, PullRequest, RepoId, ReviewStatus};
+use crate::git::types::{GitStatus, PrDetail, PullRequest, RepoId, ReviewState, ReviewStatus};
 use crate::ui::notification::Notification;
 
 /// Args used for fetching commits in the Log view (startup + `r` refresh).
@@ -1963,11 +1963,12 @@ fn compute_review_status(pr: &PullRequest, gh_user: &str) -> ReviewStatus {
     }
     for review in &pr.latest_reviews {
         if review.author == gh_user {
-            return match review.state.as_str() {
-                "APPROVED" => ReviewStatus::Approved,
-                "CHANGES_REQUESTED" => ReviewStatus::ChangesRequested,
-                "COMMENTED" => ReviewStatus::Commented,
-                _ => ReviewStatus::Commented,
+            return match review.state {
+                ReviewState::Approved => ReviewStatus::Approved,
+                ReviewState::ChangesRequested => ReviewStatus::ChangesRequested,
+                ReviewState::Commented | ReviewState::Dismissed | ReviewState::Pending => {
+                    ReviewStatus::Commented
+                }
             };
         }
     }
@@ -2273,12 +2274,12 @@ mod tests {
 
     #[test]
     fn test_compute_review_status_no_user() {
-        use crate::git::types::RepoId;
+        use crate::git::types::{PrState, RepoId};
         let pr = PullRequest {
             number: 1,
             title: String::new(),
             author: String::new(),
-            state: "OPEN".to_string(),
+            state: PrState::Open,
             head_ref: String::new(),
             updated_at: String::new(),
             review_requests: vec![],
@@ -2292,19 +2293,19 @@ mod tests {
 
     #[test]
     fn test_compute_review_status_no_matching_review() {
-        use crate::git::types::{LatestReview, RepoId};
+        use crate::git::types::{LatestReview, PrState, RepoId};
         let pr = PullRequest {
             number: 1,
             title: String::new(),
             author: String::new(),
-            state: "OPEN".to_string(),
+            state: PrState::Open,
             head_ref: String::new(),
             updated_at: String::new(),
             review_requests: vec![],
             is_draft: false,
             latest_reviews: vec![LatestReview {
                 author: "other-user".to_string(),
-                state: "APPROVED".to_string(),
+                state: ReviewState::Approved,
             }],
             review_status: None,
             repo_id: RepoId::default(),
@@ -2317,19 +2318,19 @@ mod tests {
 
     #[test]
     fn test_compute_review_status_approved() {
-        use crate::git::types::{LatestReview, RepoId};
+        use crate::git::types::{LatestReview, PrState, RepoId};
         let pr = PullRequest {
             number: 1,
             title: String::new(),
             author: String::new(),
-            state: "OPEN".to_string(),
+            state: PrState::Open,
             head_ref: String::new(),
             updated_at: String::new(),
             review_requests: vec![],
             is_draft: false,
             latest_reviews: vec![LatestReview {
                 author: "katzkb".to_string(),
-                state: "APPROVED".to_string(),
+                state: ReviewState::Approved,
             }],
             review_status: None,
             repo_id: RepoId::default(),
@@ -2339,19 +2340,19 @@ mod tests {
 
     #[test]
     fn test_compute_review_status_changes_requested() {
-        use crate::git::types::{LatestReview, RepoId};
+        use crate::git::types::{LatestReview, PrState, RepoId};
         let pr = PullRequest {
             number: 1,
             title: String::new(),
             author: String::new(),
-            state: "OPEN".to_string(),
+            state: PrState::Open,
             head_ref: String::new(),
             updated_at: String::new(),
             review_requests: vec![],
             is_draft: false,
             latest_reviews: vec![LatestReview {
                 author: "katzkb".to_string(),
-                state: "CHANGES_REQUESTED".to_string(),
+                state: ReviewState::ChangesRequested,
             }],
             review_status: None,
             repo_id: RepoId::default(),
