@@ -685,6 +685,16 @@ impl App {
         Self::SPINNER_FRAMES[self.spinner_tick % Self::SPINNER_FRAMES.len()]
     }
 
+    /// Show a success toast (~3s). Replaces any toast currently shown.
+    pub fn notify_success(&mut self, message: impl Into<String>) {
+        self.overlays.notification = Some(Notification::success(message));
+    }
+
+    /// Show an error toast (~5s). Replaces any toast currently shown.
+    pub fn notify_error(&mut self, message: impl Into<String>) {
+        self.overlays.notification = Some(Notification::error(message));
+    }
+
     pub fn adjust_sidebar_offset(&mut self, visible_height: usize, item_count: usize) {
         self.view.adjust_sidebar_offset(visible_height, item_count)
     }
@@ -920,11 +930,11 @@ impl App {
                     // Signal branches/worktrees reload + PR fetch
                     self.push_command(Command::ReloadBranches);
                     self.push_command(Command::FetchPrs(self.view.main_filter));
-                    self.overlays.notification = Some(Notification::success("Refreshing…"));
+                    self.notify_success("Refreshing…");
                 }
                 ActiveView::Log => {
                     self.push_command(Command::ReloadCommits);
-                    self.overlays.notification = Some(Notification::success("Refreshing…"));
+                    self.notify_success("Refreshing…");
                 }
                 ActiveView::History => {
                     // History updates live as commands run — no manual refresh needed.
@@ -1042,9 +1052,7 @@ impl App {
                     // Non-empty selection but nothing deletable (e.g. PR-only entries
                     // with no local branch and no worktree). Tell the user rather
                     // than silently no-op.
-                    self.overlays.notification = Some(Notification::error(
-                        "Nothing to delete in selection".to_string(),
-                    ));
+                    self.notify_error("Nothing to delete in selection");
                 } else if let Some(entry) = self.selected_entry().cloned()
                     && let Some(wt_path) = entry.worktree_path()
                     && !entry.is_current()
@@ -1082,10 +1090,10 @@ impl App {
                 };
                 let cross_repo_no_clone = !is_active && clone_path.is_none();
                 if cross_repo_no_clone {
-                    self.overlays.notification = Some(Notification::error(format!(
+                    self.notify_error(format!(
                         "{} not cloned. Set [workspace] clone_root.",
                         entry.repo_id
-                    )));
+                    ));
                     return;
                 }
                 let wt_path = if is_active {
@@ -1108,8 +1116,7 @@ impl App {
                     entry.repo_id.clone(),
                     entry.name.clone(),
                 ));
-                self.overlays.notification =
-                    Some(Notification::success("Creating worktree...".to_string()));
+                self.notify_success("Creating worktree...");
             }
             KeyCode::Enter => {
                 self.open_action_menu();
@@ -1366,8 +1373,7 @@ impl App {
                     entry.repo_id.clone(),
                     entry.name.clone(),
                 ));
-                self.overlays.notification =
-                    Some(Notification::success("Creating worktree...".to_string()));
+                self.notify_success("Creating worktree...");
             }
             ActionItem::CdIntoWorktree => {
                 if let Some(path) = entry.worktree_path() {
@@ -1417,8 +1423,7 @@ impl App {
             }
             ActionItem::CopyBranchName => {
                 self.push_command(Command::CopyBranchName(entry.name.clone()));
-                self.overlays.notification =
-                    Some(Notification::success(format!("Copied: {}", entry.name)));
+                self.notify_success(format!("Copied: {}", entry.name));
             }
         }
     }
@@ -2729,5 +2734,39 @@ mod command_queue_tests {
         assert!(app.overlays.confirm_dialog.is_none());
         assert!(app.commands.is_empty());
         assert!(!app.inflight.worktrees.contains("/wt/p"));
+    }
+}
+
+#[cfg(test)]
+mod notify_tests {
+    use super::*;
+    use crate::config::Config;
+
+    #[test]
+    fn notify_error_sets_error_toast() {
+        let mut app = App::new(Config::default());
+        app.notify_error("boom");
+        let n = app.overlays.notification.as_ref().unwrap();
+        assert!(n.is_error);
+        assert_eq!(n.message, "boom");
+    }
+
+    #[test]
+    fn notify_success_sets_success_toast() {
+        let mut app = App::new(Config::default());
+        app.notify_success(format!("done {}", 1));
+        let n = app.overlays.notification.as_ref().unwrap();
+        assert!(!n.is_error);
+        assert_eq!(n.message, "done 1");
+    }
+
+    #[test]
+    fn second_notify_replaces_first() {
+        let mut app = App::new(Config::default());
+        app.notify_success("first");
+        app.notify_error("second");
+        let n = app.overlays.notification.as_ref().unwrap();
+        assert!(n.is_error);
+        assert_eq!(n.message, "second");
     }
 }
