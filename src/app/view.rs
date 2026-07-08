@@ -191,8 +191,10 @@ mod view_state_tests {
 
     #[test]
     fn clamp_pr_detail_scroll_bounds() {
-        let mut view = ViewState::default();
-        view.pr_detail_scroll = 100;
+        let mut view = ViewState {
+            pr_detail_scroll: 100,
+            ..ViewState::default()
+        };
         view.clamp_pr_detail_scroll(10, 50);
         assert_eq!(view.pr_detail_scroll, 40);
 
