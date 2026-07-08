@@ -43,3 +43,17 @@ Key design principles:
 
 - Comments and code should be in English.
 - All PR titles, descriptions, commit messages, and issue content must be written in English.
+
+## AI Collaboration Rules
+
+- When an implementation approach has user-facing alternatives (e.g. adding a
+  dependency vs extending in-house code), do NOT start implementing until the
+  user's explicit answer is received. Plan approval does not substitute for
+  answering the question, and a "recommended" option is not a default.
+- If a question tool fails or errors out, assume the user's answer may have
+  been sent but lost: say so first, then re-ask in plain text before doing
+  anything else.
+- Any assumption made in place of a user decision must be declared prominently
+  in the chat message itself — never only inside a plan file or commit message.
+- Before starting implementation (creating branches, editing code), confirm
+  there are no unresolved user decisions pending for the task.
