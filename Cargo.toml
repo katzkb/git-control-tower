@@ -28,4 +28,4 @@ schemars = "1.0"
 [dev-dependencies]
 tempfile = "3.27.0"
 portable-pty = "0.9"
-vt100 = "0.15"
+vt100 = "0.16"
