@@ -1,0 +1,8 @@
+{
+  "name": "gct",
+  "description": "Teaches coding agents to use the gct CLI for git worktree workflows",
+  "author": { "name": "katzkb" },
+  "homepage": "https://github.com/katzkb/git-control-tower",
+  "license": "MIT OR Apache-2.0",
+  "keywords": ["git", "worktree", "gct"]
+}
