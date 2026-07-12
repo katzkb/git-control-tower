@@ -191,13 +191,19 @@ separately with `claude mcp add gct -- gct mcp` if you want it (see
 [MCP server](#mcp-server)).
 
 **Other SKILL.md-compatible agents** (or manual installs): copy the skill
-file into your agent's skills directory, e.g. for Claude Code:
+file into your agent's skills directory, either personally or per project.
+The commands below show the two scopes for Claude Code; other agents follow
+the same pattern with their own skills directories:
 
 ```bash
+# personal scope (available in all projects)
 mkdir -p ~/.claude/skills/using-gct
 curl -fsSL https://raw.githubusercontent.com/katzkb/git-control-tower/main/plugins/gct/skills/using-gct/SKILL.md \
   -o ~/.claude/skills/using-gct/SKILL.md
 ```
+
+For a project-scoped install, put the same file at
+`.claude/skills/using-gct/SKILL.md` inside the repository.
 
 ## Keybindings
 
