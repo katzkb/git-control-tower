@@ -39,6 +39,13 @@ Key design principles:
 - GitHub API calls run async (tokio) so the UI stays responsive during network I/O
 - Navigation is keyboard-only
 
+## Docs to Keep in Sync
+
+- `skills/using-gct/SKILL.md` documents the CLI subcommands' exact behavior
+  (stdout contracts, exit codes, failure modes) for coding agents. Update it —
+  along with the README Usage and Agent Skill sections — whenever subcommand
+  behavior or output formats change.
+
 ## Language
 
 - Comments and code should be in English.

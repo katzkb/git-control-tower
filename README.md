@@ -164,6 +164,31 @@ Or in `.mcp.json`:
 The server operates on the repository at its working directory (MCP clients
 spawn it in the project root). Clients invoke the installed `gct` binary
 directly, so the shell-init wrapper from [Setup](#setup) is not involved.
+For CLI-driven agents without MCP configured, see [Agent Skill](#agent-skill)
+below.
+
+## Agent Skill
+
+This repo also ships an [Agent Skill](https://agentskills.io) —
+[`skills/using-gct/`](skills/using-gct/SKILL.md) — that teaches coding agents
+to reach for `gct wt` / `gct ls` / `gct prune` instead of raw `git worktree`
+commands, so agent-created worktrees follow the same configured path layout
+and post-create hooks as yours. It complements the MCP server: the skill is
+CLI-first, needs no MCP configuration, and works with any agent that reads
+`SKILL.md` files.
+
+Install for Claude Code (personal, available in all projects):
+
+```bash
+mkdir -p ~/.claude/skills/using-gct
+curl -fsSL https://raw.githubusercontent.com/katzkb/git-control-tower/main/skills/using-gct/SKILL.md \
+  -o ~/.claude/skills/using-gct/SKILL.md
+```
+
+Or install per project by copying the same file to
+`.claude/skills/using-gct/SKILL.md` inside the repository. Other
+SKILL.md-compatible agents can consume the same file from their respective
+skills directories.
 
 ## Keybindings
 
