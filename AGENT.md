@@ -41,10 +41,13 @@ Key design principles:
 
 ## Docs to Keep in Sync
 
-- `skills/using-gct/SKILL.md` documents the CLI subcommands' exact behavior
-  (stdout contracts, exit codes, failure modes) for coding agents. Update it —
-  along with the README Usage and Agent Skill sections — whenever subcommand
-  behavior or output formats change.
+- `plugins/gct/skills/using-gct/SKILL.md` documents the CLI subcommands'
+  exact behavior (stdout contracts, exit codes, failure modes) for coding
+  agents. Update it — along with the README Usage and Agent Skill sections —
+  whenever subcommand behavior or output formats change. The plugin manifests
+  (`.claude-plugin/marketplace.json`, `plugins/gct/.claude-plugin/plugin.json`)
+  are version-less on purpose (releases track commit SHAs) and need no routine
+  updates.
 
 ## Language
 

@@ -1,0 +1,12 @@
+{
+  "name": "git-control-tower",
+  "owner": { "name": "katzkb" },
+  "description": "Official plugins for the gct CLI tool",
+  "plugins": [
+    {
+      "name": "gct",
+      "source": "./plugins/gct",
+      "description": "Teaches coding agents to use the gct CLI for git worktree workflows"
+    }
+  ]
+}
