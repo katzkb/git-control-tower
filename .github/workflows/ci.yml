@@ -36,6 +36,13 @@ jobs:
       checks: write
     steps:
       - uses: actions/checkout@v7
+      - name: Install Rust toolchain
+        run: rustup show
+      # audit-check installs cargo-audit without `--locked` when it is missing,
+      # which pulls dependencies newer than the pinned toolchain supports.
+      # Pre-installing with cargo-audit's own lockfile makes it skip that step.
+      - name: Install cargo-audit
+        run: cargo install cargo-audit --locked
       - uses: rustsec/audit-check@69366f33c96575abad1ee0dba8212993eecbe998 # v2.0.0
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
