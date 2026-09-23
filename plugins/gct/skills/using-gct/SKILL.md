@@ -91,12 +91,12 @@ destructive and confirm it separately.
 Squash- and rebase-merged branches are detected through `gh` (the
 branch's PR is merged on GitHub), so they do not need `--force`:
 
-- Listed as `<branch> (squash-merged PR #N)` and deleted with
+- Listed as `<branch> (merged PR #N)` and deleted with
   `git branch -D`, but only when the local tip equals the merged PR head.
 - `Skipped <branch>: local commits not in merged PR #N` means the
   branch has commits after the merge; it is kept. Tell the user rather
   than deleting it yourself.
-- `Note: squash-merged branches were not checked (<reason>)` on stderr
+- `Note: squash/rebase-merged branches were not checked (<reason>)` on stderr
   means `gh` is missing, unauthenticated, or origin is not a GitHub
   remote. Exit code stays 0 and only branches merged into the default
   branch are pruned.

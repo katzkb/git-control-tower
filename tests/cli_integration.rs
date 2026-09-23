@@ -379,7 +379,7 @@ fn prune_deletes_squash_merged_branch_and_worktree() {
     assert!(dry.status.success());
     let stdout = String::from_utf8_lossy(&dry.stdout);
     assert!(
-        stdout.contains("feat/sq (squash-merged PR #12, worktree: "),
+        stdout.contains("feat/sq (merged PR #12, worktree: "),
         "dry run should list the squash-merged branch: {stdout:?}"
     );
 
@@ -440,7 +440,7 @@ fn prune_falls_back_to_git_only_when_gh_fails() {
     );
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(
-        stderr.contains("Note: squash-merged branches were not checked"),
+        stderr.contains("Note: squash/rebase-merged branches were not checked"),
         "{stderr:?}"
     );
 }

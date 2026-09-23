@@ -656,11 +656,11 @@ fn prune_candidates(
     (candidates, skipped)
 }
 
-/// Dry-run line for one candidate, e.g. `  feat/x (squash-merged PR #12, worktree: /p)`.
+/// Dry-run line for one candidate, e.g. `  feat/x (merged PR #12, worktree: /p)`.
 fn format_prune_candidate(c: &PruneCandidate) -> String {
     let mut notes = Vec::new();
     if let Some(n) = c.merged_pr {
-        notes.push(format!("squash-merged PR #{n}"));
+        notes.push(format!("merged PR #{n}"));
     }
     if let Some(p) = &c.wt_path {
         notes.push(format!("worktree: {p}"));
@@ -692,7 +692,7 @@ async fn detect_squash_merged(
     let merged_prs = match ops::find_merged_prs(&unmerged).await {
         Ok(m) => m,
         Err(reason) => {
-            eprintln!("Note: squash-merged branches were not checked ({reason}).");
+            eprintln!("Note: squash/rebase-merged branches were not checked ({reason}).");
             return Default::default();
         }
     };
@@ -703,7 +703,7 @@ async fn detect_squash_merged(
         Ok(tips) => (merged_prs, tips),
         Err(e) => {
             eprintln!(
-                "Note: squash-merged branches were not checked ({}).",
+                "Note: squash/rebase-merged branches were not checked ({}).",
                 first_line(&e.to_string())
             );
             Default::default()
@@ -2299,7 +2299,7 @@ mod tests {
         );
         assert_eq!(
             format_prune_candidate(&c(Some(12), Some("/p"))),
-            "  feat/x (squash-merged PR #12, worktree: /p)"
+            "  feat/x (merged PR #12, worktree: /p)"
         );
     }
 

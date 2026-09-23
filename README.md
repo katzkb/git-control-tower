@@ -132,6 +132,7 @@ These subcommands run without launching the TUI:
   rebase-merged are included too, as long as the local branch tip still matches
   the merged PR head (otherwise they are listed as skipped); they are deleted with
   `branch -D`. Without `gh`, only branches merged into the default branch count.
+  This lookup is a GitHub API call, made whenever an unmerged local branch exists.
 
 > `cd` and `wt` emit a bare worktree path that the shell wrapper cd's into; `ls`
 > and `prune` print informational output and never change your directory.
