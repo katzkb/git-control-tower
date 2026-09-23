@@ -7,7 +7,7 @@ A terminal UI tool that acts as a "control tower" for Git/GitHub workflows. Over
 ## Features
 
 - **Branch-centric 2-pane view** — Left sidebar lists branches with PR status, review indicators, and worktree info. Right pane shows git status, PR details with markdown rendering.
-- **Filter modes** — Switch between Local branches (`1`), your PRs (`2`), and review-requested PRs (`3`). Toggle merged PRs with `m` and team reviews with `t`.
+- **Filter modes** — Switch between Local branches (`1`), your PRs (`2`), and review-requested PRs (`3`). Toggle merged PRs with `m` and cycle the review scope (Custom / Only me / All) with `t`.
 - **Search** — Press `/` to filter branches by name. Matches are highlighted. Press `Enter` to keep the filter active.
 - **Review status** — Color-coded review indicators: needs review (red), approved (green), changes requested (yellow).
 - **Action menu** — Press `Enter` to open a context-sensitive menu: copy branch name and open PR in browser, plus actions grouped into Worktree (go to / create / delete) and Branch (create from this / delete) sections.
@@ -230,7 +230,7 @@ For a project-scoped install, put the same file at
 | `w` | Create worktree |
 | `d` | Delete selected branches / worktree |
 | `m` | Toggle merged PRs (My PR / Review) |
-| `t` | Toggle team reviews (Review only) |
+| `t` | Cycle review scope: Custom → Only me → All (Review only) |
 
 ### Log View
 
@@ -324,6 +324,30 @@ If neither path resolves, cross-repo entries remain visible but `Create Worktree
 **Cross-host coverage:** My PR / My Review fan out across every host present in the repos gct has discovered locally (origin remotes), so a workspace mixing github.com clones with GitHub Enterprise clones surfaces PRs from both. Hosts you are authenticated to but have never cloned from are skipped — clone any one repo from that host (or `cd` into one) so gct can pick it up.
 
 **Limitations (v1):** Bulk delete (`d` after Space-selection) still operates on active-repo branches only.
+
+### Review Scope
+
+The Review view (`3`) has three scopes, cycled with `t` and shown in the
+sidebar title:
+
+| Scope | Shows | Label |
+|---|---|---|
+| Custom | Requests to you personally, PRs you reviewed, and requests to the teams in `review.teams` | `[custom]` |
+| Only me | Requests to you personally and PRs you reviewed | `[me]` |
+| All | Everything above plus requests to any team you belong to | `[all]` |
+
+Custom is useful when your organization assigns reviews to teams rather
+than individuals but you only care about some of your teams. List them as
+`org/team-slug`:
+
+```toml
+[review]
+teams = ["my-org/backend", "my-org/platform"]
+```
+
+When `review.teams` is set, gct starts in Custom; otherwise it starts in
+Only me and `t` skips Custom. Entries not in `org/team-slug` form are
+ignored with a warning.
 
 ### Worktree Settings
 

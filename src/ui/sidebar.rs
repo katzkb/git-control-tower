@@ -19,8 +19,8 @@ pub struct SidebarContext<'a> {
     pub spinner: &'static str,
     /// Whether merged PRs are included (`[+merged]` indicator).
     pub show_merged: bool,
-    /// Whether team review requests are included (`[+team]` / `[me]`).
-    pub include_team_reviews: bool,
+    /// Review scope shown as `[custom]` / `[me]` / `[all]`.
+    pub review_scope: crate::app::ReviewScope,
     /// Branches that never get merged/deletable styling.
     pub protected_branches: &'a [String],
 }
@@ -73,14 +73,12 @@ fn draw_filter_bar(frame: &mut Frame, area: Rect, view: &ViewState, ctx: &Sideba
                 Style::default().fg(theme::ACCENT),
             ));
         }
-        // Show team toggle indicator for Review view
+        // Show review scope indicator for Review view
         if view.main_filter == MainFilter::ReviewRequested {
-            let team_label = if ctx.include_team_reviews {
-                " [+team]"
-            } else {
-                " [me]"
-            };
-            spans.push(Span::styled(team_label, Style::default().fg(theme::ACCENT)));
+            spans.push(Span::styled(
+                format!(" [{}]", ctx.review_scope.label()),
+                Style::default().fg(theme::ACCENT),
+            ));
         }
         // Show repo/PR counter when multiple repos are present
         if matches!(

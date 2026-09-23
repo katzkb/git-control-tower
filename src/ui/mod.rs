@@ -42,7 +42,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
                 ""
             };
             let team_hint = if app.view.main_filter == MainFilter::ReviewRequested {
-                "  t:Team"
+                "  t:Scope"
             } else {
                 ""
             };
