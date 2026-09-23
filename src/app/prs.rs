@@ -4,6 +4,49 @@ use crate::git::types::{BranchEntry, PrDetail, PullRequest};
 
 use super::MainFilter;
 
+/// Which review requests the Review view includes. Cycled with `t`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ReviewScope {
+    /// Personal requests, PRs reviewed by me, and requests to the teams
+    /// listed in `review.teams`.
+    Custom,
+    /// Personal requests and PRs reviewed by me.
+    #[default]
+    OnlyMe,
+    /// Personal requests, PRs reviewed by me, and requests to any team I
+    /// belong to.
+    All,
+}
+
+impl ReviewScope {
+    /// Startup scope: Custom when teams are configured, otherwise OnlyMe.
+    pub fn initial(has_teams: bool) -> Self {
+        if has_teams {
+            Self::Custom
+        } else {
+            Self::OnlyMe
+        }
+    }
+
+    /// Next scope in the `t` cycle (Custom → OnlyMe → All → Custom).
+    /// Custom is skipped when no teams are configured.
+    pub fn next(self, has_teams: bool) -> Self {
+        match self {
+            Self::Custom => Self::OnlyMe,
+            Self::OnlyMe => Self::All,
+            Self::All => Self::initial(has_teams),
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Custom => "custom",
+            Self::OnlyMe => "me",
+            Self::All => "all",
+        }
+    }
+}
+
 /// Per-filter PR list caches keyed by `MainFilter`, their fetch parameters,
 /// and the PR-detail cache (issue #220).
 #[derive(Default)]
@@ -15,7 +58,7 @@ pub struct PrCaches {
     pub my_loaded: bool,
     pub review_loaded: bool,
     pub show_merged: bool,
-    pub include_team_reviews: bool,
+    pub review_scope: ReviewScope,
     /// PR detail bodies for the detail pane, cached by `(RepoId, PR number)`.
     pub detail: HashMap<(crate::git::types::RepoId, u64), PrDetail>,
 }
@@ -78,5 +121,33 @@ impl PrCaches {
                 self.review_loaded = false;
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn initial_scope_follows_team_config() {
+        assert_eq!(ReviewScope::initial(true), ReviewScope::Custom);
+        assert_eq!(ReviewScope::initial(false), ReviewScope::OnlyMe);
+    }
+
+    #[test]
+    fn cycle_with_teams_visits_all_three() {
+        let s = ReviewScope::Custom;
+        let s = s.next(true);
+        assert_eq!(s, ReviewScope::OnlyMe);
+        let s = s.next(true);
+        assert_eq!(s, ReviewScope::All);
+        assert_eq!(s.next(true), ReviewScope::Custom);
+    }
+
+    #[test]
+    fn cycle_without_teams_skips_custom() {
+        let s = ReviewScope::OnlyMe.next(false);
+        assert_eq!(s, ReviewScope::All);
+        assert_eq!(s.next(false), ReviewScope::OnlyMe);
     }
 }

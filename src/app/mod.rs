@@ -19,7 +19,7 @@ pub use cross_repo::CrossRepoState;
 pub use overlays::{ActionItem, ActionMenu, BranchCreateInput, Overlays, PendingConfirm};
 use overlays::{insert_char_at, remove_char_at};
 pub use progress::{OpProgress, OpStep, ProgressTracker};
-pub use prs::PrCaches;
+pub use prs::{PrCaches, ReviewScope};
 pub use raw::RawData;
 pub use view::{PaneFocus, SidebarRow, ViewState};
 
@@ -117,12 +117,16 @@ pub struct App {
 
 impl App {
     pub fn new(config: crate::config::Config) -> Self {
+        let prs = PrCaches {
+            review_scope: ReviewScope::initial(!config.review.teams.is_empty()),
+            ..PrCaches::default()
+        };
         Self {
             active_view: ActiveView::default(),
             should_quit: false,
             view: ViewState::default(),
             raw: RawData::default(),
-            prs: PrCaches::default(),
+            prs,
             verbose: false,
             verbose_errors: Vec::new(),
             overlays: Overlays::default(),
@@ -654,7 +658,10 @@ impl App {
                 }
             }
             KeyCode::Char('t') if self.view.main_filter == MainFilter::ReviewRequested => {
-                self.prs.include_team_reviews = !self.prs.include_team_reviews;
+                self.prs.review_scope = self
+                    .prs
+                    .review_scope
+                    .next(!self.config.review.teams.is_empty());
                 self.prs.invalidate(MainFilter::ReviewRequested);
                 self.rebuild_entries();
                 self.push_command(Command::FetchPrs(MainFilter::ReviewRequested));
@@ -1946,6 +1953,56 @@ mod command_queue_tests {
                 Command::FetchPrs(MainFilter::Local)
             ]
         );
+    }
+
+    fn config_with_teams(teams: &[&str]) -> Config {
+        Config {
+            review: crate::config::ReviewConfig {
+                teams: teams.iter().map(|t| (*t).to_string()).collect(),
+            },
+            ..Config::default()
+        }
+    }
+
+    #[test]
+    fn review_scope_starts_custom_only_when_teams_configured() {
+        let app = App::new(config_with_teams(&["my-org/backend"]));
+        assert_eq!(app.prs.review_scope, ReviewScope::Custom);
+        let app = App::new(Config::default());
+        assert_eq!(app.prs.review_scope, ReviewScope::OnlyMe);
+    }
+
+    #[test]
+    fn t_cycles_review_scope_and_refetches() {
+        let mut app = App::new(config_with_teams(&["my-org/backend"]));
+        app.handle_key(key(KeyCode::Char('3')));
+        app.take_commands();
+        app.prs.review_loaded = true;
+
+        let mut seen = Vec::new();
+        for _ in 0..3 {
+            app.handle_key(key(KeyCode::Char('t')));
+            seen.push(app.prs.review_scope);
+            assert!(!app.prs.review_loaded);
+            assert!(
+                app.take_commands()
+                    .contains(&Command::FetchPrs(MainFilter::ReviewRequested))
+            );
+        }
+        assert_eq!(
+            seen,
+            vec![ReviewScope::OnlyMe, ReviewScope::All, ReviewScope::Custom]
+        );
+    }
+
+    #[test]
+    fn t_skips_custom_without_teams() {
+        let mut app = App::new(Config::default());
+        app.handle_key(key(KeyCode::Char('3')));
+        app.handle_key(key(KeyCode::Char('t')));
+        assert_eq!(app.prs.review_scope, ReviewScope::All);
+        app.handle_key(key(KeyCode::Char('t')));
+        assert_eq!(app.prs.review_scope, ReviewScope::OnlyMe);
     }
 
     #[test]

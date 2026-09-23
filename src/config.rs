@@ -21,6 +21,15 @@ impl WorkspaceConfig {
     }
 }
 
+/// Review view settings.
+#[derive(Debug, Deserialize, Clone, Default)]
+pub struct ReviewConfig {
+    /// Teams (`org/team-slug`) whose review requests the Review view's
+    /// Custom scope includes. Non-empty makes Custom the startup scope.
+    #[serde(default)]
+    pub teams: Vec<String>,
+}
+
 #[derive(Debug, Deserialize, Clone)]
 pub struct Config {
     #[serde(default)]
@@ -29,6 +38,8 @@ pub struct Config {
     pub protected_branches: Vec<String>,
     #[serde(default)]
     pub workspace: WorkspaceConfig,
+    #[serde(default)]
+    pub review: ReviewConfig,
 }
 
 fn default_protected_branches() -> Vec<String> {
@@ -41,6 +52,7 @@ impl Default for Config {
             worktree: WorktreeConfig::default(),
             protected_branches: default_protected_branches(),
             workspace: WorkspaceConfig::default(),
+            review: ReviewConfig::default(),
         }
     }
 }
@@ -331,9 +343,17 @@ fn resolve_config_into(
 /// (plus merge-layer directives like `disable_post_create` that are consumed
 /// by [`merge_tables`] rather than deserialized). Anything else is a likely
 /// typo and gets a warning instead of being silently ignored.
-const KNOWN_TOP_KEYS: &[&str] = &["worktree", "protected_branches", "workspace"];
+const KNOWN_TOP_KEYS: &[&str] = &["worktree", "protected_branches", "workspace", "review"];
 const KNOWN_WORKTREE_KEYS: &[&str] = &["dir", "post_create", "disable_post_create"];
 const KNOWN_WORKSPACE_KEYS: &[&str] = &["clone_root"];
+const KNOWN_REVIEW_KEYS: &[&str] = &["teams"];
+
+/// A team reference must be `org/team-slug`: exactly one `/` with non-empty
+/// parts, which is the form GitHub's `team-review-requested:` qualifier takes.
+fn is_valid_team(team: &str) -> bool {
+    matches!(team.split_once('/'), Some((org, slug))
+        if !org.is_empty() && !slug.is_empty() && !slug.contains('/'))
+}
 
 fn warn_unknown_keys(
     table: &toml::Table,
@@ -378,6 +398,26 @@ fn config_from_table(mut merged: toml::Table, warnings: &mut Vec<String>) -> Con
         match value.try_into::<WorkspaceConfig>() {
             Ok(ws) => config.workspace = ws,
             Err(e) => warnings.push(format!("invalid [workspace] config (section ignored): {e}")),
+        }
+    }
+    if let Some(value) = merged.remove("review") {
+        if let Some(table) = value.as_table() {
+            warn_unknown_keys(table, KNOWN_REVIEW_KEYS, "review.", warnings);
+        }
+        match value.try_into::<ReviewConfig>() {
+            Ok(mut review) => {
+                review.teams.retain(|team| {
+                    let ok = is_valid_team(team);
+                    if !ok {
+                        warnings.push(format!(
+                            "invalid review.teams entry \"{team}\" (expected \"org/team-slug\"; ignored)"
+                        ));
+                    }
+                    ok
+                });
+                config.review = review;
+            }
+            Err(e) => warnings.push(format!("invalid [review] config (section ignored): {e}")),
         }
     }
 
@@ -1275,6 +1315,57 @@ to = ".env"
             warnings
                 .iter()
                 .any(|w| w.contains("invalid protected_branches")),
+            "warnings: {warnings:?}"
+        );
+    }
+
+    #[test]
+    fn review_teams_parsed() {
+        let (config, warnings) =
+            from_table_str("[review]\nteams = [\"my-org/backend\", \"my-org/platform\"]\n");
+        assert!(warnings.is_empty(), "warnings: {warnings:?}");
+        assert_eq!(
+            config.review.teams,
+            vec!["my-org/backend".to_string(), "my-org/platform".to_string()]
+        );
+    }
+
+    #[test]
+    fn review_teams_default_empty() {
+        let (config, warnings) = from_table_str("");
+        assert!(warnings.is_empty(), "warnings: {warnings:?}");
+        assert!(config.review.teams.is_empty());
+    }
+
+    #[test]
+    fn review_bad_type_falls_back_with_warning() {
+        let (config, warnings) = from_table_str("[review]\nteams = \"my-org/backend\"\n");
+        assert!(config.review.teams.is_empty());
+        assert!(
+            warnings.iter().any(|w| w.contains("invalid [review]")),
+            "warnings: {warnings:?}"
+        );
+    }
+
+    #[test]
+    fn review_malformed_team_is_dropped_with_warning() {
+        let (config, warnings) = from_table_str(
+            "[review]\nteams = [\"backend\", \"my-org/platform\", \"/x\", \"a/b/c\"]\n",
+        );
+        assert_eq!(config.review.teams, vec!["my-org/platform".to_string()]);
+        for bad in ["backend", "/x", "a/b/c"] {
+            assert!(
+                warnings.iter().any(|w| w.contains(&format!("\"{bad}\""))),
+                "missing warning for {bad}: {warnings:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn review_unknown_key_warns() {
+        let (_, warnings) = from_table_str("[review]\nteam = [\"my-org/backend\"]\n");
+        assert!(
+            warnings.contains(&"unknown config key: review.team (ignored)".to_string()),
             "warnings: {warnings:?}"
         );
     }

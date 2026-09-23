@@ -20,7 +20,7 @@ pub fn draw(frame: &mut Frame, area: Rect, app: &mut App) {
         is_loading: app.is_current_view_loading(),
         spinner: app.spinner_frame(),
         show_merged: app.prs.show_merged,
-        include_team_reviews: app.prs.include_team_reviews,
+        review_scope: app.prs.review_scope,
         protected_branches: &app.config.protected_branches,
     };
     sidebar::draw(frame, chunks[0], &mut app.view, &sidebar_ctx);

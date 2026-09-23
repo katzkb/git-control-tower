@@ -24,6 +24,7 @@ use tokio::task::JoinSet;
 
 use crate::app::App;
 use crate::app::MainFilter;
+use crate::app::ReviewScope;
 use crate::app::{Command, OpProgress, OpStep};
 use crate::event::{Event, EventHandler};
 use crate::git::command::{run_gh, run_git, run_git_in};
@@ -1596,22 +1597,33 @@ fn dispatch_command(app: &mut App, cmd: Command, tasks: &mut RunState) {
                     // search expands to team memberships, and the post-fetch filter
                     // in fetch_review_prs only runs when gh_user is non-empty. Without
                     // this guard, switching to Review right after startup can show
-                    // team PRs even in me-only mode. If the user-login fetch failed,
+                    // team PRs outside the All scope. If the user-login fetch failed,
                     // proceed anyway — no point in spinning forever.
+                    let scope = app.prs.review_scope;
                     if app.raw.gh_user.is_empty()
-                        && !app.prs.include_team_reviews
+                        && scope != ReviewScope::All
                         && !app.raw.gh_user_load_failed
                     {
                         app.push_command(Command::FetchPrs(MainFilter::ReviewRequested));
                     } else {
                         let show_merged = app.prs.show_merged;
-                        let include_team = app.prs.include_team_reviews;
+                        let include_all_teams = scope == ReviewScope::All;
+                        let teams = if scope == ReviewScope::Custom {
+                            app.config.review.teams.clone()
+                        } else {
+                            Vec::new()
+                        };
                         let gh_user = app.raw.gh_user.clone();
                         let hosts = app.known_hosts();
                         tokio::spawn(async move {
-                            let (prs, errors) =
-                                data::fetch_review_prs(show_merged, include_team, &gh_user, &hosts)
-                                    .await;
+                            let (prs, errors) = data::fetch_review_prs(
+                                show_merged,
+                                include_all_teams,
+                                &teams,
+                                &gh_user,
+                                &hosts,
+                            )
+                            .await;
                             let _ = tx.send(AsyncResult::ReviewPrList(prs, errors));
                         });
                     }

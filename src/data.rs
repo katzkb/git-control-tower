@@ -540,22 +540,41 @@ pub async fn fetch_my_prs(
 
 /// Fetch PRs with review requested from the current user via cross-repo GraphQL search.
 /// Runs separate queries and merges results to avoid GHE `OR` incompatibility.
-/// When `include_team` is true, also includes team review requests.
+///
+/// Personal requests and PRs reviewed by the user are always included. On top
+/// of that, `include_all_teams` adds requests to any team the user belongs to,
+/// and `teams` (`org/team-slug`) adds requests to just those teams.
 pub async fn fetch_review_prs(
     show_merged: bool,
-    include_team: bool,
+    include_all_teams: bool,
+    teams: &[String],
     gh_user: &str,
     hosts: &[Option<String>],
 ) -> (Vec<PullRequest>, Vec<String>) {
-    let mut queries: Vec<String> = vec![
-        "is:pr review-requested:@me".into(),
-        "is:pr reviewed-by:@me".into(),
+    /// What a query's hits mean for the post-fetch filter.
+    #[derive(PartialEq)]
+    enum Kind {
+        /// `review-requested:@me` — also expands to team requests, so hits
+        /// must be re-checked against the personal reviewer list.
+        Requested,
+        /// `reviewed-by:@me` — always kept.
+        Reviewed,
+        /// Team queries — always kept.
+        Team,
+    }
+
+    let mut queries: Vec<(Kind, String)> = vec![
+        (Kind::Requested, "is:pr review-requested:@me".into()),
+        (Kind::Reviewed, "is:pr reviewed-by:@me".into()),
     ];
-    if include_team {
-        queries.push("is:pr team-review-requested:@me".into());
+    if include_all_teams {
+        queries.push((Kind::Team, "is:pr team-review-requested:@me".into()));
+    }
+    for team in teams {
+        queries.push((Kind::Team, format!("is:pr team-review-requested:{team}")));
     }
     if !show_merged {
-        for q in &mut queries {
+        for (_, q) in &mut queries {
             q.push_str(" is:open");
         }
     }
@@ -563,22 +582,20 @@ pub async fn fetch_review_prs(
     let mut all_prs = Vec::new();
     let mut all_errors = Vec::new();
     let mut seen: HashSet<(crate::git::types::RepoId, u64)> = HashSet::new();
-    let mut reviewed_keys: HashSet<(crate::git::types::RepoId, u64)> = HashSet::new();
+    let mut kept_keys: HashSet<(crate::git::types::RepoId, u64)> = HashSet::new();
 
     // Two separate sets:
     // - `seen` deduplicates PRs across queries (keyed by RepoId+number).
-    // - `reviewed_keys` records every PR returned by the reviewed-by query, even
-    //   if `seen` rejects it as a duplicate. This is intentional: the me-only
-    //   filter below uses `reviewed_keys` as a predicate, not as a display list.
-    const REVIEWED_BY_INDEX: usize = 1;
-    for (idx, query) in queries.iter().enumerate() {
-        let is_reviewed = idx == REVIEWED_BY_INDEX;
+    // - `kept_keys` records every PR returned by a reviewed-by or team query,
+    //   even if `seen` rejects it as a duplicate. The filter below uses it as
+    //   a predicate, not as a display list.
+    for (kind, query) in &queries {
         let (prs, errors) = fetch_search_prs(query, hosts).await;
         all_errors.extend(errors);
         for pr in prs {
             let key = (pr.repo_id.clone(), pr.number);
-            if is_reviewed {
-                reviewed_keys.insert(key.clone());
+            if *kind != Kind::Requested {
+                kept_keys.insert(key.clone());
             }
             if seen.insert(key) {
                 all_prs.push(pr);
@@ -586,27 +603,39 @@ pub async fn fetch_review_prs(
         }
     }
 
-    // Exclude PRs authored by the current user. `reviewed-by:@me` matches PRs
-    // where the user submitted any review, including COMMENT-type reviews the
-    // user added on their own PR — those would otherwise leak into the Review tab.
-    if !gh_user.is_empty() {
-        all_prs.retain(|pr| pr.author != gh_user);
-    }
-
-    // When me-only, exclude PRs that only have team review requests
-    if !include_team && !gh_user.is_empty() {
-        all_prs.retain(|pr| {
-            let key = (pr.repo_id.clone(), pr.number);
-            reviewed_keys.contains(&key)
-                || pr
-                    .review_requests
-                    .iter()
-                    .any(|r| r.login.as_deref() == Some(gh_user))
-        });
-    }
-
+    retain_review_prs(&mut all_prs, gh_user, &kept_keys);
     all_prs.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
     (all_prs, all_errors)
+}
+
+/// Post-fetch filter for [`fetch_review_prs`].
+///
+/// Drops PRs authored by `gh_user`: `reviewed-by:@me` matches PRs where the
+/// user submitted any review, including COMMENT-type reviews on their own PR.
+///
+/// `review-requested:@me` also matches requests to any of the user's teams,
+/// so a PR is kept only if it was requested from `gh_user` personally or was
+/// returned by a query in `kept_keys` (reviewed-by or an included team).
+/// Skipped when `gh_user` is unknown, since personal requests can't be told
+/// apart then.
+fn retain_review_prs(
+    prs: &mut Vec<PullRequest>,
+    gh_user: &str,
+    kept_keys: &HashSet<(crate::git::types::RepoId, u64)>,
+) {
+    if gh_user.is_empty() {
+        return;
+    }
+    prs.retain(|pr| {
+        if pr.author == gh_user {
+            return false;
+        }
+        kept_keys.contains(&(pr.repo_id.clone(), pr.number))
+            || pr
+                .review_requests
+                .iter()
+                .any(|r| r.login.as_deref() == Some(gh_user))
+    });
 }
 
 #[cfg(test)]
@@ -1113,6 +1142,43 @@ mod tests {
     }
 
     // ----- merge_search_results -----
+
+    fn review_pr(number: u64, author: &str, personal: &[&str]) -> PullRequest {
+        let mut pr = pr_with_id(number, None, "o", "r");
+        pr.author = author.into();
+        pr.review_requests = personal
+            .iter()
+            .map(|l| crate::git::types::ReviewRequest {
+                login: Some((*l).into()),
+            })
+            .collect();
+        pr
+    }
+
+    fn key(number: u64) -> (crate::git::types::RepoId, u64) {
+        (pr_with_id(number, None, "o", "r").repo_id, number)
+    }
+
+    #[test]
+    fn retain_review_prs_keeps_personal_and_kept_keys_only() {
+        let mut prs = vec![
+            review_pr(1, "alice", &["me"]), // personal request
+            review_pr(2, "alice", &[]),     // team-only, team included
+            review_pr(3, "alice", &[]),     // team-only, team not included
+            review_pr(4, "me", &["me"]),    // own PR
+        ];
+        let kept: HashSet<_> = [key(2), key(4)].into_iter().collect();
+        retain_review_prs(&mut prs, "me", &kept);
+        let numbers: Vec<u64> = prs.iter().map(|p| p.number).collect();
+        assert_eq!(numbers, vec![1, 2]);
+    }
+
+    #[test]
+    fn retain_review_prs_skips_filter_when_user_unknown() {
+        let mut prs = vec![review_pr(1, "alice", &[]), review_pr(2, "", &[])];
+        retain_review_prs(&mut prs, "", &HashSet::new());
+        assert_eq!(prs.len(), 2);
+    }
 
     fn pr_with_id(number: u64, host: Option<&str>, owner: &str, name: &str) -> PullRequest {
         PullRequest {
