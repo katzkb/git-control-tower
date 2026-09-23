@@ -599,27 +599,122 @@ fn format_worktree_list(worktrees: &[crate::git::types::Worktree]) -> Vec<String
 struct PruneCandidate {
     branch: String,
     wt_path: Option<String>,
+    /// Set when the branch is merged only via a (squash/rebase-)merged PR,
+    /// i.e. it is not an ancestor of the default branch and needs `branch -D`.
+    merged_pr: Option<u64>,
 }
 
-/// Select prunable branches: merged, not current, not protected. Pure helper.
+/// A branch with a merged PR whose local tip differs from the merged PR head
+/// (e.g. commits added after the merge), so deleting it could lose work.
+struct PruneSkip {
+    branch: String,
+    pr: u64,
+}
+
+/// Branches prune may consider at all: not current, not protected.
+fn prune_eligible<'a>(
+    branches: &'a [crate::git::types::Branch],
+    protected: &'a [String],
+) -> impl Iterator<Item = &'a crate::git::types::Branch> {
+    branches
+        .iter()
+        .filter(|b| !b.is_current && !protected.iter().any(|p| p == &b.name))
+}
+
+/// Select prunable branches: eligible and either merged into the default
+/// branch or with a merged PR whose head matches the local tip. Pure helper.
 fn prune_candidates(
     branches: &[crate::git::types::Branch],
     worktrees: &[crate::git::types::Worktree],
     protected: &[String],
-) -> Vec<PruneCandidate> {
-    branches
-        .iter()
-        .filter(|b| b.is_merged && !b.is_current && !protected.iter().any(|p| p == &b.name))
-        .map(|b| PruneCandidate {
+    merged_prs: &std::collections::HashMap<String, ops::MergedPr>,
+    tips: &std::collections::HashMap<String, String>,
+) -> (Vec<PruneCandidate>, Vec<PruneSkip>) {
+    let mut candidates = Vec::new();
+    let mut skipped = Vec::new();
+    for b in prune_eligible(branches, protected) {
+        let merged_pr = if b.is_merged {
+            None
+        } else if let Some(pr) = merged_prs.get(&b.name) {
+            if tips.get(&b.name) != Some(&pr.head_oid) {
+                skipped.push(PruneSkip {
+                    branch: b.name.clone(),
+                    pr: pr.number,
+                });
+                continue;
+            }
+            Some(pr.number)
+        } else {
+            continue;
+        };
+        candidates.push(PruneCandidate {
             branch: b.name.clone(),
             wt_path: ops::worktree_path_for_branch(worktrees, &b.name),
-        })
-        .collect()
+            merged_pr,
+        });
+    }
+    (candidates, skipped)
+}
+
+/// Dry-run line for one candidate, e.g. `  feat/x (merged PR #12, worktree: /p)`.
+fn format_prune_candidate(c: &PruneCandidate) -> String {
+    let mut notes = Vec::new();
+    if let Some(n) = c.merged_pr {
+        notes.push(format!("merged PR #{n}"));
+    }
+    if let Some(p) = &c.wt_path {
+        notes.push(format!("worktree: {p}"));
+    }
+    if notes.is_empty() {
+        format!("  {}", c.branch)
+    } else {
+        format!("  {} ({})", c.branch, notes.join(", "))
+    }
+}
+
+/// Look up merged PRs (via gh) for eligible branches that git does not
+/// consider merged. Falls back to git-only detection with a stderr note when
+/// gh or a GitHub origin is unavailable.
+async fn detect_squash_merged(
+    branches: &[crate::git::types::Branch],
+    protected: &[String],
+) -> (
+    std::collections::HashMap<String, ops::MergedPr>,
+    std::collections::HashMap<String, String>,
+) {
+    let unmerged: Vec<String> = prune_eligible(branches, protected)
+        .filter(|b| !b.is_merged)
+        .map(|b| b.name.clone())
+        .collect();
+    if unmerged.is_empty() {
+        return Default::default();
+    }
+    let merged_prs = match ops::find_merged_prs(&unmerged).await {
+        Ok(m) => m,
+        Err(reason) => {
+            eprintln!("Note: squash/rebase-merged branches were not checked ({reason}).");
+            return Default::default();
+        }
+    };
+    if merged_prs.is_empty() {
+        return Default::default();
+    }
+    match ops::local_branch_tips().await {
+        Ok(tips) => (merged_prs, tips),
+        Err(e) => {
+            eprintln!(
+                "Note: squash/rebase-merged branches were not checked ({}).",
+                first_line(&e.to_string())
+            );
+            Default::default()
+        }
+    }
 }
 
 /// Implements `gct prune [--dry-run] [--yes] [--force]`: delete merged branches (and
-/// their worktrees), mirroring the TUI `a`+`d` cleanup. Safe by default — without
-/// `--yes` it only lists what would be deleted. Never prints a lone directory path.
+/// their worktrees), mirroring the TUI `a`+`d` cleanup. Squash-merged branches are
+/// detected via `gh` when available. Safe by default — without `--yes` it only
+/// lists what would be deleted. Never prints a lone directory path.
 async fn run_prune(flags: &[String]) -> i32 {
     let yes = flags.iter().any(|f| f == "--yes" || f == "-y");
     let force = flags.iter().any(|f| f == "--force" || f == "-f");
@@ -649,24 +744,39 @@ async fn run_prune(flags: &[String]) -> i32 {
         .map(|o| parse_worktrees(&o))
         .unwrap_or_default();
     let cfg = config::load_config();
-    let candidates = prune_candidates(&branches, &worktrees, &cfg.protected_branches);
+    let (merged_prs, tips) = detect_squash_merged(&branches, &cfg.protected_branches).await;
+    let (candidates, skipped) = prune_candidates(
+        &branches,
+        &worktrees,
+        &cfg.protected_branches,
+        &merged_prs,
+        &tips,
+    );
+    let print_skipped = || {
+        for s in &skipped {
+            println!(
+                "Skipped {}: local commits not in merged PR #{}",
+                s.branch, s.pr
+            );
+        }
+    };
 
     if candidates.is_empty() {
         println!("No merged branches to prune.");
+        print_skipped();
         return 0;
     }
 
     if dry_run {
         println!("Would delete {} merged branch(es):", candidates.len());
         for c in &candidates {
-            match &c.wt_path {
-                Some(p) => println!("  {} (worktree: {p})", c.branch),
-                None => println!("  {}", c.branch),
-            }
+            println!("{}", format_prune_candidate(c));
         }
+        print_skipped();
         println!("Re-run with --yes to delete.");
         return 0;
     }
+    print_skipped();
 
     let mut deleted_branches = 0usize;
     let mut removed_worktrees = 0usize;
@@ -688,7 +798,13 @@ async fn run_prune(flags: &[String]) -> i32 {
                 }
             }
         }
-        let del_flag = if force { "-D" } else { "-d" };
+        // Squash-merged branches are never ancestors of the default branch, so
+        // `-d` would refuse them; their tip was verified against the PR head.
+        let del_flag = if force || c.merged_pr.is_some() {
+            "-D"
+        } else {
+            "-d"
+        };
         match run_git(&["branch", del_flag, &c.branch]).await {
             Ok(_) => deleted_branches += 1,
             Err(e) => failures.push(format!("{}: {}", c.branch, first_line(&e.to_string()))),
@@ -1744,8 +1860,10 @@ SUBCOMMANDS:
 
     prune [--dry-run] [--yes] [--force]
         Delete merged branches and their worktrees (protected/current branches
-        are skipped). Lists candidates only unless --yes is given. --force uses
-        `worktree remove --force` and `branch -D`.
+        are skipped). Lists candidates only unless --yes is given. When gh is
+        available, branches whose PR was squash/rebase-merged are included if
+        the local tip matches the merged PR head (deleted with `branch -D`).
+        --force uses `worktree remove --force` and `branch -D`.
 
     mcp
         Run a Model Context Protocol server over stdio, exposing worktree
@@ -2120,10 +2238,69 @@ mod tests {
         ];
         let wts = vec![wt("/wt/done", Some("feature/done"), false)];
         let protected = vec!["main".to_string(), "develop".to_string()];
-        let picked = prune_candidates(&branches, &wts, &protected);
+        let (picked, skipped) = prune_candidates(
+            &branches,
+            &wts,
+            &protected,
+            &Default::default(),
+            &Default::default(),
+        );
         assert_eq!(picked.len(), 1);
         assert_eq!(picked[0].branch, "feature/done");
         assert_eq!(picked[0].wt_path.as_deref(), Some("/wt/done"));
+        assert_eq!(picked[0].merged_pr, None);
+        assert!(skipped.is_empty());
+    }
+
+    #[test]
+    fn prune_candidates_squash_merged_requires_matching_tip() {
+        let pr = |number, oid: &str| ops::MergedPr {
+            number,
+            head_oid: oid.to_string(),
+        };
+        let branches = vec![
+            branch("main", true, true),
+            branch("feat/squashed", false, false), // PR head == tip → keep
+            branch("feat/moved", false, false),    // tip moved after merge → skip
+            branch("feat/wip", false, false),      // no merged PR → ignore
+            branch("develop", false, false),       // protected → ignore
+        ];
+        let merged_prs = std::collections::HashMap::from([
+            ("feat/squashed".to_string(), pr(12, "aaa")),
+            ("feat/moved".to_string(), pr(13, "bbb")),
+            ("develop".to_string(), pr(14, "ddd")),
+        ]);
+        let tips = std::collections::HashMap::from([
+            ("feat/squashed".to_string(), "aaa".to_string()),
+            ("feat/moved".to_string(), "b2b".to_string()),
+            ("develop".to_string(), "ddd".to_string()),
+        ]);
+        let protected = vec!["develop".to_string()];
+        let (picked, skipped) = prune_candidates(&branches, &[], &protected, &merged_prs, &tips);
+        assert_eq!(picked.len(), 1);
+        assert_eq!(picked[0].branch, "feat/squashed");
+        assert_eq!(picked[0].merged_pr, Some(12));
+        assert_eq!(skipped.len(), 1);
+        assert_eq!(skipped[0].branch, "feat/moved");
+        assert_eq!(skipped[0].pr, 13);
+    }
+
+    #[test]
+    fn format_prune_candidate_variants() {
+        let c = |merged_pr, wt: Option<&str>| PruneCandidate {
+            branch: "feat/x".into(),
+            wt_path: wt.map(String::from),
+            merged_pr,
+        };
+        assert_eq!(format_prune_candidate(&c(None, None)), "  feat/x");
+        assert_eq!(
+            format_prune_candidate(&c(None, Some("/p"))),
+            "  feat/x (worktree: /p)"
+        );
+        assert_eq!(
+            format_prune_candidate(&c(Some(12), Some("/p"))),
+            "  feat/x (merged PR #12, worktree: /p)"
+        );
     }
 
     #[test]

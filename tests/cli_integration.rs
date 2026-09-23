@@ -298,3 +298,149 @@ exit 1
         "expected the stub's canned worktree, not the real repo's: {stdout:?}"
     );
 }
+
+/// Writes an executable `gh` stub that prints `stdout` and exits with `code`.
+#[cfg(unix)]
+fn write_gh_stub(dir: &Path, stdout: &str, code: i32) -> std::path::PathBuf {
+    let path = dir.join("fake-gh");
+    std::fs::write(
+        &path,
+        format!("#!/bin/sh\ncat <<'JSON'\n{stdout}\nJSON\nexit {code}\n"),
+    )
+    .expect("write gh stub");
+    let mut perms = std::fs::metadata(&path).unwrap().permissions();
+    std::os::unix::fs::PermissionsExt::set_mode(&mut perms, 0o755);
+    std::fs::set_permissions(&path, perms).expect("chmod gh stub");
+    path
+}
+
+fn run_gct_with_gh_bin(dir: &Path, args: &[&str], gh_bin: &Path) -> Output {
+    Command::new(gct_bin())
+        .args(args)
+        .current_dir(dir)
+        .env_remove("GCT_GIT_BIN")
+        .env("GCT_GH_BIN", gh_bin)
+        .output()
+        .expect("failed to run gct binary")
+}
+
+fn git_stdout(dir: &Path, args: &[&str]) -> String {
+    let out = Command::new("git")
+        .args(args)
+        .current_dir(dir)
+        .output()
+        .expect("git should be installed and on PATH");
+    assert!(out.status.success(), "git {args:?} failed in {dir:?}");
+    String::from_utf8_lossy(&out.stdout).trim().to_string()
+}
+
+/// Repo with a GitHub-looking origin and a branch `feat/sq` whose changes were
+/// squash-merged into `main` (so `git branch --merged` does not report it).
+/// Returns the repo and `feat/sq`'s tip.
+fn init_squash_merged_repo() -> (tempfile::TempDir, String) {
+    let repo = init_repo();
+    let dir = repo.path();
+    run_git(
+        dir,
+        &["remote", "add", "origin", "https://github.com/o/r.git"],
+    );
+    // Ignore hooks copied from a user-level git template: they are outside
+    // this test's control and may reject commits on `feat/*` branches.
+    run_git(dir, &["config", "core.hooksPath", "/dev/null"]);
+    run_git(dir, &["checkout", "-q", "-b", "feat/sq"]);
+    std::fs::write(dir.join("feature.txt"), "feature\n").expect("write feature");
+    run_git(dir, &["add", "feature.txt"]);
+    run_git(dir, &["commit", "-q", "-m", "feature"]);
+    let tip = git_stdout(dir, &["rev-parse", "feat/sq"]);
+    run_git(dir, &["checkout", "-q", "main"]);
+    run_git(dir, &["merge", "-q", "--squash", "feat/sq"]);
+    run_git(dir, &["commit", "-q", "-m", "feature (#12)"]);
+    (repo, tip)
+}
+
+fn merged_pr_json(head_oid: &str) -> String {
+    format!(
+        r#"{{"data":{{"repository":{{"b0":{{"nodes":[{{"number":12,"headRefOid":"{head_oid}"}}]}}}}}}}}"#
+    )
+}
+
+#[test]
+#[cfg(unix)]
+fn prune_deletes_squash_merged_branch_and_worktree() {
+    let (repo, tip) = init_squash_merged_repo();
+    let dir = repo.path();
+    let wt_out = run_gct(dir, &["wt", "feat/sq"]);
+    assert!(wt_out.status.success());
+    let wt_path = String::from_utf8_lossy(&wt_out.stdout).trim().to_string();
+    let stub_dir = tempfile::tempdir().expect("stub dir");
+    let gh = write_gh_stub(stub_dir.path(), &merged_pr_json(&tip), 0);
+
+    let dry = run_gct_with_gh_bin(dir, &["prune"], &gh);
+    assert!(dry.status.success());
+    let stdout = String::from_utf8_lossy(&dry.stdout);
+    assert!(
+        stdout.contains("feat/sq (merged PR #12, worktree: "),
+        "dry run should list the squash-merged branch: {stdout:?}"
+    );
+
+    let out = run_gct_with_gh_bin(dir, &["prune", "--yes"], &gh);
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout).trim(),
+        "Deleted 1 branch, 1 worktree"
+    );
+    assert!(git_stdout(dir, &["branch", "--list", "feat/sq"]).is_empty());
+    assert!(!Path::new(&wt_path).exists());
+}
+
+#[test]
+#[cfg(unix)]
+fn prune_skips_squash_merged_branch_with_new_commits() {
+    let (repo, _tip) = init_squash_merged_repo();
+    let dir = repo.path();
+    let stub_dir = tempfile::tempdir().expect("stub dir");
+    // The PR was merged at a different commit than the local tip.
+    let gh = write_gh_stub(
+        stub_dir.path(),
+        &merged_pr_json("0000000000000000000000000000000000000000"),
+        0,
+    );
+
+    let out = run_gct_with_gh_bin(dir, &["prune", "--yes"], &gh);
+    assert!(out.status.success());
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("No merged branches to prune."),
+        "{stdout:?}"
+    );
+    assert!(
+        stdout.contains("Skipped feat/sq: local commits not in merged PR #12"),
+        "{stdout:?}"
+    );
+    assert_eq!(git_stdout(dir, &["branch", "--list", "feat/sq"]), "feat/sq");
+}
+
+#[test]
+#[cfg(unix)]
+fn prune_falls_back_to_git_only_when_gh_fails() {
+    let (repo, _tip) = init_squash_merged_repo();
+    let dir = repo.path();
+    let stub_dir = tempfile::tempdir().expect("stub dir");
+    let gh = write_gh_stub(stub_dir.path(), "not logged in", 1);
+
+    let out = run_gct_with_gh_bin(dir, &["prune"], &gh);
+    assert!(out.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout).trim(),
+        "No merged branches to prune."
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("Note: squash/rebase-merged branches were not checked"),
+        "{stderr:?}"
+    );
+}

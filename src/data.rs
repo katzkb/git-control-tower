@@ -169,7 +169,7 @@ pub async fn load_git_status(worktree_path: &str) -> Option<GitStatus> {
 }
 
 /// Generate a deterministic, index-based GraphQL alias for a branch query.
-fn graphql_alias(index: usize) -> String {
+pub(crate) fn graphql_alias(index: usize) -> String {
     format!("b{index}")
 }
 
@@ -386,7 +386,7 @@ const SEARCH_PAGE_SIZE: u32 = 100;
 const SEARCH_MAX_RESULTS: usize = 1000;
 
 /// Escape a string for embedding in a double-quoted GraphQL string literal.
-fn escape_graphql_string(s: &str) -> String {
+pub(crate) fn escape_graphql_string(s: &str) -> String {
     s.replace('\\', "\\\\").replace('"', "\\\"")
 }
 

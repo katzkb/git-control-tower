@@ -4,7 +4,8 @@
 //! and errors are returned as data and rendered by the caller.
 
 use crate::config;
-use crate::git::command::run_git;
+use crate::data::{escape_graphql_string, graphql_alias};
+use crate::git::command::{run_gh, run_git};
 use crate::git::parser::{parse_branches, parse_worktrees};
 use crate::git::types::{Branch, Worktree};
 
@@ -161,6 +162,111 @@ pub async fn list_branches() -> anyhow::Result<Vec<Branch>> {
     ))
 }
 
+/// The merged PR found for a branch whose commits are not ancestors of the
+/// default branch (squash or rebase merge).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MergedPr {
+    pub number: u64,
+    /// Commit the PR head pointed at when it was merged.
+    pub head_oid: String,
+}
+
+/// Look up merged PRs for `branch_names` via `gh` (GraphQL, exact match on
+/// `headRefName`). Returns branch name → most recently updated merged PR.
+/// `Err` carries a one-line reason (no GitHub origin, gh missing or
+/// unauthenticated, API failure) so the caller can fall back to git-only
+/// detection.
+pub async fn find_merged_prs(
+    branch_names: &[String],
+) -> Result<std::collections::HashMap<String, MergedPr>, String> {
+    let mut found = std::collections::HashMap::new();
+    if branch_names.is_empty() {
+        return Ok(found);
+    }
+    let url = run_git(&["remote", "get-url", "origin"])
+        .await
+        .map_err(|_| "no origin remote".to_string())?;
+    let repo = crate::extract_repo_info(url.trim())
+        .ok_or_else(|| "origin is not a GitHub remote".to_string())?;
+
+    for chunk in branch_names.chunks(200) {
+        let query = merged_prs_query(&repo.owner, &repo.name, chunk);
+        let query_arg = format!("query={query}");
+        let mut args = vec!["api", "graphql", "-f", &query_arg];
+        if let Some(h) = repo.host.as_deref() {
+            args.push("--hostname");
+            args.push(h);
+        }
+        let output = run_gh(&args)
+            .await
+            .map_err(|e| first_line(&e.to_string()))?;
+        let json: serde_json::Value =
+            serde_json::from_str(&output).map_err(|e| format!("unexpected gh output: {e}"))?;
+        found.extend(parse_merged_prs(&json, chunk));
+    }
+    Ok(found)
+}
+
+/// Build the GraphQL query asking for each branch's latest merged PR.
+fn merged_prs_query(owner: &str, name: &str, branches: &[String]) -> String {
+    let mut aliases = String::new();
+    for (i, branch) in branches.iter().enumerate() {
+        aliases.push_str(&format!(
+            r#"{}: pullRequests(first: 1, headRefName: "{}", states: [MERGED], orderBy: {{field: UPDATED_AT, direction: DESC}}) {{ nodes {{ number headRefOid }} }}
+"#,
+            graphql_alias(i),
+            escape_graphql_string(branch)
+        ));
+    }
+    format!(
+        r#"{{ repository(owner: "{}", name: "{}") {{ {aliases} }} }}"#,
+        escape_graphql_string(owner),
+        escape_graphql_string(name)
+    )
+}
+
+/// Map a `merged_prs_query` response back to branch names (each alias is the
+/// branch's index within `branches`). Pure, so it can be unit-tested.
+fn parse_merged_prs(
+    json: &serde_json::Value,
+    branches: &[String],
+) -> std::collections::HashMap<String, MergedPr> {
+    let repo = &json["data"]["repository"];
+    branches
+        .iter()
+        .enumerate()
+        .filter_map(|(i, branch)| {
+            let node = &repo[graphql_alias(i)]["nodes"][0];
+            let number = node["number"].as_u64()?;
+            let head_oid = node["headRefOid"].as_str()?.to_string();
+            Some((branch.clone(), MergedPr { number, head_oid }))
+        })
+        .collect()
+}
+
+/// Map each local branch to its tip commit.
+pub async fn local_branch_tips() -> anyhow::Result<std::collections::HashMap<String, String>> {
+    let output = run_git(&[
+        "for-each-ref",
+        "--format=%(refname) %(objectname)",
+        "refs/heads",
+    ])
+    .await?;
+    Ok(output
+        .lines()
+        .filter_map(|line| {
+            let (refname, oid) = line.rsplit_once(' ')?;
+            let name = refname.strip_prefix("refs/heads/")?;
+            Some((name.to_string(), oid.to_string()))
+        })
+        .collect())
+}
+
+/// First line of a (possibly multi-line) error string.
+fn first_line(s: &str) -> String {
+    s.lines().next().unwrap_or(s).to_string()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -200,6 +306,40 @@ mod tests {
             wt("/repo-detached", None, false),
         ];
         assert!(worktree_path_for_branch(&wts, "feature/x").is_none());
+    }
+
+    #[test]
+    fn parse_merged_prs_maps_aliases_to_branches() {
+        let branches = vec![
+            "feat/a".to_string(),
+            "feat/b".to_string(),
+            "feat/c".to_string(),
+        ];
+        let json = serde_json::json!({"data": {"repository": {
+            "b0": {"nodes": [{"number": 12, "headRefOid": "aaa"}]},
+            "b1": {"nodes": []},
+            "b2": {"nodes": [{"number": 7, "headRefOid": "ccc"}]}
+        }}});
+        let got = parse_merged_prs(&json, &branches);
+        assert_eq!(got.len(), 2);
+        assert_eq!(
+            got["feat/a"],
+            MergedPr {
+                number: 12,
+                head_oid: "aaa".into()
+            }
+        );
+        assert_eq!(got["feat/c"].number, 7);
+        assert!(!got.contains_key("feat/b"));
+    }
+
+    #[test]
+    fn merged_prs_query_escapes_and_aliases() {
+        let q = merged_prs_query("o", "r", &["a\"b".to_string(), "c".to_string()]);
+        assert!(q.contains(r#"repository(owner: "o", name: "r")"#));
+        assert!(q.contains(r#"b0: pullRequests(first: 1, headRefName: "a\"b", states: [MERGED]"#));
+        assert!(q.contains(r#"b1: pullRequests(first: 1, headRefName: "c""#));
+        assert!(q.contains("headRefOid"));
     }
 
     // Lock the exact error text the CLI prints (after its "Error: " prefix)

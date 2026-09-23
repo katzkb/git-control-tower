@@ -85,12 +85,24 @@ gct prune --yes    # actually delete
 Show the user the dry-run output and get their confirmation before
 running `--yes`. `--force` (combined with `--yes`) uses
 `git worktree remove --force` and `git branch -D` — needed for
-squash-merged branches or worktrees with untracked files; treat it as
-more destructive and confirm it separately.
+worktrees with untracked or modified files; treat it as more
+destructive and confirm it separately.
 
-`gct prune` is local-only. Deleting remote branches
-(`git push --delete`) is outside its scope — do not do that unless the
-user explicitly asks for it.
+Squash- and rebase-merged branches are detected through `gh` (the
+branch's PR is merged on GitHub), so they do not need `--force`:
+
+- Listed as `<branch> (merged PR #N)` and deleted with
+  `git branch -D`, but only when the local tip equals the merged PR head.
+- `Skipped <branch>: local commits not in merged PR #N` means the
+  branch has commits after the merge; it is kept. Tell the user rather
+  than deleting it yourself.
+- `Note: squash/rebase-merged branches were not checked (<reason>)` on stderr
+  means `gh` is missing, unauthenticated, or origin is not a GitHub
+  remote. Exit code stays 0 and only branches merged into the default
+  branch are pruned.
+
+`gct prune` never deletes remote branches (`git push --delete`) — do
+not do that unless the user explicitly asks for it.
 
 ## MCP alternative
 
