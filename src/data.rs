@@ -551,33 +551,7 @@ pub async fn fetch_review_prs(
     gh_user: &str,
     hosts: &[Option<String>],
 ) -> (Vec<PullRequest>, Vec<String>) {
-    /// What a query's hits mean for the post-fetch filter.
-    #[derive(PartialEq)]
-    enum Kind {
-        /// `review-requested:@me` — also expands to team requests, so hits
-        /// must be re-checked against the personal reviewer list.
-        Requested,
-        /// `reviewed-by:@me` — always kept.
-        Reviewed,
-        /// Team queries — always kept.
-        Team,
-    }
-
-    let mut queries: Vec<(Kind, String)> = vec![
-        (Kind::Requested, "is:pr review-requested:@me".into()),
-        (Kind::Reviewed, "is:pr reviewed-by:@me".into()),
-    ];
-    if include_all_teams {
-        queries.push((Kind::Team, "is:pr team-review-requested:@me".into()));
-    }
-    for team in teams {
-        queries.push((Kind::Team, format!("is:pr team-review-requested:{team}")));
-    }
-    if !show_merged {
-        for (_, q) in &mut queries {
-            q.push_str(" is:open");
-        }
-    }
+    let queries = review_queries(show_merged, include_all_teams, teams);
 
     let mut all_prs = Vec::new();
     let mut all_errors = Vec::new();
@@ -586,15 +560,15 @@ pub async fn fetch_review_prs(
 
     // Two separate sets:
     // - `seen` deduplicates PRs across queries (keyed by RepoId+number).
-    // - `kept_keys` records every PR returned by a reviewed-by or team query,
-    //   even if `seen` rejects it as a duplicate. The filter below uses it as
-    //   a predicate, not as a display list.
+    // - `kept_keys` records every PR returned by a `Kept` query, even if
+    //   `seen` rejects it as a duplicate. The filter below uses it as a
+    //   predicate, not as a display list.
     for (kind, query) in &queries {
         let (prs, errors) = fetch_search_prs(query, hosts).await;
         all_errors.extend(errors);
         for pr in prs {
             let key = (pr.repo_id.clone(), pr.number);
-            if *kind != Kind::Requested {
+            if *kind == ReviewQueryKind::Kept {
                 kept_keys.insert(key.clone());
             }
             if seen.insert(key) {
@@ -606,6 +580,50 @@ pub async fn fetch_review_prs(
     retain_review_prs(&mut all_prs, gh_user, &kept_keys);
     all_prs.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
     (all_prs, all_errors)
+}
+
+/// What a review query's hits mean for the post-fetch filter.
+#[derive(Debug, PartialEq)]
+enum ReviewQueryKind {
+    /// Hits are kept only if requested from the user personally.
+    PersonalOnly,
+    /// Hits are always kept.
+    Kept,
+}
+
+/// Search queries for [`fetch_review_prs`].
+///
+/// `review-requested:@me` also matches requests to any team the user belongs
+/// to, so its hits are narrowed to personal requests unless
+/// `include_all_teams` is set. There is no `@me` form of
+/// `team-review-requested:` (it takes `org/team-slug`), so the All scope
+/// relies on `review-requested:@me` alone for team requests (#321).
+fn review_queries(
+    show_merged: bool,
+    include_all_teams: bool,
+    teams: &[String],
+) -> Vec<(ReviewQueryKind, String)> {
+    let requested_kind = if include_all_teams {
+        ReviewQueryKind::Kept
+    } else {
+        ReviewQueryKind::PersonalOnly
+    };
+    let mut queries = vec![
+        (requested_kind, "is:pr review-requested:@me".to_string()),
+        (ReviewQueryKind::Kept, "is:pr reviewed-by:@me".to_string()),
+    ];
+    for team in teams {
+        queries.push((
+            ReviewQueryKind::Kept,
+            format!("is:pr team-review-requested:{team}"),
+        ));
+    }
+    if !show_merged {
+        for (_, q) in &mut queries {
+            q.push_str(" is:open");
+        }
+    }
+    queries
 }
 
 /// Post-fetch filter for [`fetch_review_prs`].
@@ -1178,6 +1196,62 @@ mod tests {
         let mut prs = vec![review_pr(1, "alice", &[]), review_pr(2, "", &[])];
         retain_review_prs(&mut prs, "", &HashSet::new());
         assert_eq!(prs.len(), 2);
+    }
+
+    #[test]
+    fn review_queries_all_keeps_requested_hits() {
+        // Regression for #321: `team-review-requested:@me` matches nothing,
+        // so All must keep team requests from `review-requested:@me` itself.
+        let queries = review_queries(true, true, &[]);
+        assert_eq!(
+            queries,
+            vec![
+                (ReviewQueryKind::Kept, "is:pr review-requested:@me".into()),
+                (ReviewQueryKind::Kept, "is:pr reviewed-by:@me".into()),
+            ]
+        );
+    }
+
+    #[test]
+    fn review_queries_only_me_filters_requested_hits() {
+        let queries = review_queries(false, false, &[]);
+        assert_eq!(
+            queries,
+            vec![
+                (
+                    ReviewQueryKind::PersonalOnly,
+                    "is:pr review-requested:@me is:open".into()
+                ),
+                (
+                    ReviewQueryKind::Kept,
+                    "is:pr reviewed-by:@me is:open".into()
+                ),
+            ]
+        );
+    }
+
+    #[test]
+    fn review_queries_custom_adds_one_query_per_team() {
+        let teams = vec!["acme/web".to_string(), "acme/api".to_string()];
+        let queries = review_queries(true, false, &teams);
+        assert_eq!(
+            queries,
+            vec![
+                (
+                    ReviewQueryKind::PersonalOnly,
+                    "is:pr review-requested:@me".into()
+                ),
+                (ReviewQueryKind::Kept, "is:pr reviewed-by:@me".into()),
+                (
+                    ReviewQueryKind::Kept,
+                    "is:pr team-review-requested:acme/web".into()
+                ),
+                (
+                    ReviewQueryKind::Kept,
+                    "is:pr team-review-requested:acme/api".into()
+                ),
+            ]
+        );
     }
 
     fn pr_with_id(number: u64, host: Option<&str>, owner: &str, name: &str) -> PullRequest {
