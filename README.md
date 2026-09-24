@@ -363,7 +363,8 @@ dropped from every scope, including PRs you already reviewed:
 exclude_labels = ["dependencies", "wip"]
 ```
 
-Empty entries and entries containing `"` are ignored with a warning.
+Surrounding whitespace is trimmed; empty entries and entries containing `"`
+or control characters are ignored with a warning.
 
 ### Worktree Settings
 

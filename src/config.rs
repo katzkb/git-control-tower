@@ -358,10 +358,11 @@ fn is_valid_team(team: &str) -> bool {
         if !org.is_empty() && !slug.is_empty() && !slug.contains('/'))
 }
 
-/// A label must be non-blank and free of `"`, since it is embedded in a
-/// quoted `-label:"..."` search qualifier.
+/// A label must be non-blank and free of `"` and control characters, since
+/// it is embedded in a quoted `-label:"..."` search qualifier inside a
+/// GraphQL string literal. Callers trim surrounding whitespace first.
 fn is_valid_label(label: &str) -> bool {
-    !label.trim().is_empty() && !label.contains('"')
+    !label.is_empty() && !label.chars().any(|c| c == '"' || c.is_control())
 }
 
 fn warn_unknown_keys(
@@ -424,15 +425,20 @@ fn config_from_table(mut merged: toml::Table, warnings: &mut Vec<String>) -> Con
                     }
                     ok
                 });
-                review.exclude_labels.retain(|label| {
-                    let ok = is_valid_label(label);
-                    if !ok {
-                        warnings.push(format!(
-                            "invalid review.exclude_labels entry \"{label}\" (empty or contains '\"'; ignored)"
-                        ));
-                    }
-                    ok
-                });
+                review.exclude_labels = std::mem::take(&mut review.exclude_labels)
+                    .into_iter()
+                    .filter_map(|label| {
+                        let trimmed = label.trim();
+                        if is_valid_label(trimmed) {
+                            Some(trimmed.to_string())
+                        } else {
+                            warnings.push(format!(
+                                "invalid review.exclude_labels entry {label:?} (empty or contains '\"' or a control character; ignored)"
+                            ));
+                            None
+                        }
+                    })
+                    .collect();
                 config.review = review;
             }
             Err(e) => warnings.push(format!("invalid [review] config (section ignored): {e}")),
@@ -1391,6 +1397,13 @@ to = ".env"
     }
 
     #[test]
+    fn review_exclude_labels_are_trimmed() {
+        let (config, warnings) = from_table_str("[review]\nexclude_labels = [\"  wip  \"]\n");
+        assert!(warnings.is_empty(), "warnings: {warnings:?}");
+        assert_eq!(config.review.exclude_labels, vec!["wip".to_string()]);
+    }
+
+    #[test]
     fn review_exclude_labels_default_empty() {
         let (config, _) = from_table_str("[review]\nteams = [\"my-org/backend\"]\n");
         assert!(config.review.exclude_labels.is_empty());
@@ -1398,15 +1411,16 @@ to = ".env"
 
     #[test]
     fn review_invalid_exclude_label_is_dropped_with_warning() {
-        let (config, warnings) =
-            from_table_str("[review]\nexclude_labels = [\"\", \"wip\", \"  \", 'a\"b']\n");
+        let (config, warnings) = from_table_str(
+            "[review]\nexclude_labels = [\"\", \"wip\", \"  \", 'a\"b', \"a\\nb\"]\n",
+        );
         assert_eq!(config.review.exclude_labels, vec!["wip".to_string()]);
         assert_eq!(
             warnings
                 .iter()
                 .filter(|w| w.contains("invalid review.exclude_labels"))
                 .count(),
-            3,
+            4,
             "warnings: {warnings:?}"
         );
     }
