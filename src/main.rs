@@ -1729,6 +1729,7 @@ fn dispatch_command(app: &mut App, cmd: Command, tasks: &mut RunState) {
                         } else {
                             Vec::new()
                         };
+                        let exclude_labels = app.config.review.exclude_labels.clone();
                         let gh_user = app.raw.gh_user.clone();
                         let hosts = app.known_hosts();
                         tokio::spawn(async move {
@@ -1736,6 +1737,7 @@ fn dispatch_command(app: &mut App, cmd: Command, tasks: &mut RunState) {
                                 show_merged,
                                 include_all_teams,
                                 &teams,
+                                &exclude_labels,
                                 &gh_user,
                                 &hosts,
                             )
