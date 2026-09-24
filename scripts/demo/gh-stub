@@ -96,8 +96,6 @@ case "${1:-}" in
 JSON
     elif [[ "$query" == *"search(query:"*"reviewed-by:@me"* ]]; then
       echo '{"data":{"search":{"nodes":[]}}}'
-    elif [[ "$query" == *"search(query:"*"team-review-requested:@me"* ]]; then
-      echo '{"data":{"search":{"nodes":[]}}}'
     elif [[ "$query" == *"search(query:"*"author:@me"* ]]; then
       echo '{"data":{"search":{"nodes":[]}}}'
     else
