@@ -543,15 +543,17 @@ pub async fn fetch_my_prs(
 ///
 /// Personal requests and PRs reviewed by the user are always included. On top
 /// of that, `include_all_teams` adds requests to any team the user belongs to,
-/// and `teams` (`org/team-slug`) adds requests to just those teams.
+/// and `teams` (`org/team-slug`) adds requests to just those teams. PRs
+/// carrying any of `exclude_labels` are dropped from every query.
 pub async fn fetch_review_prs(
     show_merged: bool,
     include_all_teams: bool,
     teams: &[String],
+    exclude_labels: &[String],
     gh_user: &str,
     hosts: &[Option<String>],
 ) -> (Vec<PullRequest>, Vec<String>) {
-    let queries = review_queries(show_merged, include_all_teams, teams);
+    let queries = review_queries(show_merged, include_all_teams, teams, exclude_labels);
 
     let mut all_prs = Vec::new();
     let mut all_errors = Vec::new();
@@ -598,10 +600,15 @@ enum ReviewQueryKind {
 /// `include_all_teams` is set. There is no `@me` form of
 /// `team-review-requested:` (it takes `org/team-slug`), so the All scope
 /// relies on `review-requested:@me` alone for team requests (#321).
+///
+/// Every query gets a `-label:"..."` qualifier per `exclude_labels` entry, so
+/// excluded PRs never surface in any scope. Labels must be free of `"`
+/// (enforced at config load).
 fn review_queries(
     show_merged: bool,
     include_all_teams: bool,
     teams: &[String],
+    exclude_labels: &[String],
 ) -> Vec<(ReviewQueryKind, String)> {
     let requested_kind = if include_all_teams {
         ReviewQueryKind::Kept
@@ -618,10 +625,15 @@ fn review_queries(
             format!("is:pr team-review-requested:{team}"),
         ));
     }
+    let mut suffix = String::new();
     if !show_merged {
-        for (_, q) in &mut queries {
-            q.push_str(" is:open");
-        }
+        suffix.push_str(" is:open");
+    }
+    for label in exclude_labels {
+        suffix.push_str(&format!(" -label:\"{label}\""));
+    }
+    for (_, q) in &mut queries {
+        q.push_str(&suffix);
     }
     queries
 }
@@ -1202,7 +1214,7 @@ mod tests {
     fn review_queries_all_keeps_requested_hits() {
         // Regression for #321: `team-review-requested:@me` matches nothing,
         // so All must keep team requests from `review-requested:@me` itself.
-        let queries = review_queries(true, true, &[]);
+        let queries = review_queries(true, true, &[], &[]);
         assert_eq!(
             queries,
             vec![
@@ -1214,7 +1226,7 @@ mod tests {
 
     #[test]
     fn review_queries_only_me_filters_requested_hits() {
-        let queries = review_queries(false, false, &[]);
+        let queries = review_queries(false, false, &[], &[]);
         assert_eq!(
             queries,
             vec![
@@ -1233,7 +1245,7 @@ mod tests {
     #[test]
     fn review_queries_custom_adds_one_query_per_team() {
         let teams = vec!["acme/web".to_string(), "acme/api".to_string()];
-        let queries = review_queries(true, false, &teams);
+        let queries = review_queries(true, false, &teams, &[]);
         assert_eq!(
             queries,
             vec![
@@ -1249,6 +1261,31 @@ mod tests {
                 (
                     ReviewQueryKind::Kept,
                     "is:pr team-review-requested:acme/api".into()
+                ),
+            ]
+        );
+    }
+
+    #[test]
+    fn review_queries_exclude_labels_on_every_query() {
+        let teams = vec!["acme/web".to_string()];
+        let labels = vec!["dependencies".to_string(), "do not review".to_string()];
+        let queries = review_queries(false, false, &teams, &labels);
+        let suffix = r#" is:open -label:"dependencies" -label:"do not review""#;
+        assert_eq!(
+            queries,
+            vec![
+                (
+                    ReviewQueryKind::PersonalOnly,
+                    format!("is:pr review-requested:@me{suffix}")
+                ),
+                (
+                    ReviewQueryKind::Kept,
+                    format!("is:pr reviewed-by:@me{suffix}")
+                ),
+                (
+                    ReviewQueryKind::Kept,
+                    format!("is:pr team-review-requested:acme/web{suffix}")
                 ),
             ]
         );

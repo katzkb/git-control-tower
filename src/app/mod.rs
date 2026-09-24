@@ -1959,6 +1959,7 @@ mod command_queue_tests {
         Config {
             review: crate::config::ReviewConfig {
                 teams: teams.iter().map(|t| (*t).to_string()).collect(),
+                ..Default::default()
             },
             ..Config::default()
         }

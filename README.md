@@ -354,6 +354,17 @@ When `review.teams` is set, gct starts in Custom; otherwise it starts in
 Only me and `t` skips Custom. Entries not in `org/team-slug` form are
 ignored with a warning.
 
+To hide PRs you never need to review (bot dependency bumps, WIP PRs),
+list their labels in `review.exclude_labels`. PRs carrying any of them are
+dropped from every scope, including PRs you already reviewed:
+
+```toml
+[review]
+exclude_labels = ["dependencies", "wip"]
+```
+
+Empty entries and entries containing `"` are ignored with a warning.
+
 ### Worktree Settings
 
 ```toml
