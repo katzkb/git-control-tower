@@ -75,6 +75,15 @@ branch, together with their worktrees (worktree first, so deletion never
 fails on a checked-out branch). The current branch and protected branches
 (the configured `protected_branches`) are always kept.
 
+"Merged" means joined into the default branch through a merge commit. A
+branch whose tip lies on the default branch's own first-parent history is
+not a git-merged candidate: for example one created from it and never
+committed to, or one whose commits reached it by fast-forward (any
+`git merge` / `git pull` that made no merge commit). Such a branch is
+still listed as `(merged PR #N)` when its PR was merged on GitHub (see
+below); otherwise remove it with `git branch -d <branch>` if the user
+asks.
+
 It is safe by default — without `--yes` it is a dry run:
 
 ```bash

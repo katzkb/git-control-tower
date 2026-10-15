@@ -66,7 +66,9 @@ pub struct BranchInfo {
     pub is_current: bool,
     /// Upstream tracking ref (e.g. "origin/main"); null when none.
     pub upstream: Option<String>,
-    /// True when the branch is merged into the default branch.
+    /// True when the branch was merged into the default branch through a merge
+    /// commit. False for a tip on the default branch's first-parent history
+    /// (e.g. a branch never committed to, or one merged by fast-forward).
     pub is_merged: bool,
 }
 
@@ -136,7 +138,7 @@ impl GctMcpServer {
     }
 
     #[tool(
-        description = "List local git branches of the current repository as structured JSON (name, is_current, upstream, is_merged into the default branch). Local-only; requires no network or GitHub access."
+        description = "List local git branches of the current repository as structured JSON (name, is_current, upstream, is_merged into the default branch through a merge commit). Local-only; requires no network or GitHub access."
     )]
     async fn list_branches(&self) -> Result<Json<ListBranchesResult>, McpError> {
         let branches = ops::list_branches().await.map_err(tool_error)?;

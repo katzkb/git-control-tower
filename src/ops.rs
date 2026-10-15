@@ -147,18 +147,19 @@ pub async fn list_worktrees() -> anyhow::Result<Vec<Worktree>> {
 /// Load the active repo's branches (no App state). Mirrors the git calls in
 /// the TUI's `load_branches` but returns a plain `Vec<Branch>` or an error.
 pub async fn list_branches() -> anyhow::Result<Vec<Branch>> {
-    let branch_output = run_git(&["branch", "-vv"]).await?;
+    let branch_output = run_git(&["branch", "-vv", "--no-abbrev"]).await?;
     let default_branch = crate::detect_default_branch().await;
     let merged_output = run_git(&["branch", "--merged", &default_branch])
         .await
         .unwrap_or_default();
-    let base_hash = run_git(&["rev-parse", &default_branch])
+    // `--` keeps a path named like the default branch from making it ambiguous.
+    let first_parent_output = run_git(&["rev-list", "--first-parent", &default_branch, "--"])
         .await
         .unwrap_or_default();
     Ok(parse_branches(
         &branch_output,
         &merged_output,
-        base_hash.trim(),
+        &first_parent_output,
     ))
 }
 
