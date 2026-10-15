@@ -117,7 +117,7 @@ struct BranchesReloadData {
 
 /// Fetches branches + worktrees without touching `App`, so it can run inside
 /// `tokio::spawn` without blocking the event loop. Reuses `ops::list_branches`,
-/// which already performs the same branch/default-branch/merged/rev-parse
+/// which already performs the same branch/default-branch/merged/rev-list
 /// sequence for the `gct ls` command.
 async fn fetch_branches_and_worktrees() -> BranchesReloadData {
     let mut errors = Vec::new();
@@ -1795,15 +1795,18 @@ async fn load_branches(app: &mut App) {
             String::new()
         }
     };
-    let base_hash = match run_git(&["rev-parse", &default_branch]).await {
+    let first_parent_output = match run_git(&["rev-list", "--first-parent", &default_branch]).await
+    {
         Ok(output) => output,
         Err(e) => {
             // Non-fatal: only the merged-marker annotations are lost.
-            app.record_error(format!("git rev-parse {default_branch} failed: {e}"));
+            app.record_error(format!(
+                "git rev-list --first-parent {default_branch} failed: {e}"
+            ));
             String::new()
         }
     };
-    app.raw.branches = parse_branches(&branch_output, &merged_output, base_hash.trim());
+    app.raw.branches = parse_branches(&branch_output, &merged_output, &first_parent_output);
 }
 
 async fn detect_default_branch() -> String {

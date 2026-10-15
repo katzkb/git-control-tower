@@ -75,6 +75,12 @@ branch, together with their worktrees (worktree first, so deletion never
 fails on a checked-out branch). The current branch and protected branches
 (the configured `protected_branches`) are always kept.
 
+"Merged" means joined into the default branch through a merge commit. A
+branch that only points at an older commit of the default branch (created
+but never committed to) is not a candidate, and neither is a branch
+fast-forward merged locally (`git merge --ff-only`) — if the user wants
+the latter removed, use `git branch -d <branch>`.
+
 It is safe by default — without `--yes` it is a dry run:
 
 ```bash

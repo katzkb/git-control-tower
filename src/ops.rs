@@ -152,13 +152,13 @@ pub async fn list_branches() -> anyhow::Result<Vec<Branch>> {
     let merged_output = run_git(&["branch", "--merged", &default_branch])
         .await
         .unwrap_or_default();
-    let base_hash = run_git(&["rev-parse", &default_branch])
+    let first_parent_output = run_git(&["rev-list", "--first-parent", &default_branch])
         .await
         .unwrap_or_default();
     Ok(parse_branches(
         &branch_output,
         &merged_output,
-        base_hash.trim(),
+        &first_parent_output,
     ))
 }
 

@@ -128,6 +128,9 @@ These subcommands run without launching the TUI:
 - **`gct prune [--dry-run] [--yes] [--force]`** — delete merged branches and their
   worktrees (protected and current branches are skipped). Lists candidates only
   unless `--yes` is given; `--force` uses `worktree remove --force` and `branch -D`.
+  A branch counts as merged when the default branch merged it in through a merge
+  commit; a branch merely left behind on the default branch (created but never
+  committed to) or fast-forward merged locally does not.
   When `gh` is installed and authenticated, branches whose PR was squash- or
   rebase-merged are included too, as long as the local branch tip still matches
   the merged PR head (otherwise they are listed as skipped); they are deleted with

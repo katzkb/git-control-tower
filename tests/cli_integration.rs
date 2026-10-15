@@ -444,3 +444,39 @@ fn prune_falls_back_to_git_only_when_gh_fails() {
         "{stderr:?}"
     );
 }
+
+#[test]
+#[cfg(unix)]
+fn prune_ignores_branch_left_behind_on_default_branch() {
+    let repo = init_repo();
+    let dir = repo.path();
+    run_git(dir, &["config", "core.hooksPath", "/dev/null"]);
+    // `idle` is created from main and never committed to.
+    run_git(dir, &["branch", "idle"]);
+    // `feat/m` is joined into main through a merge commit.
+    run_git(dir, &["checkout", "-q", "-b", "feat/m"]);
+    std::fs::write(dir.join("feature.txt"), "feature\n").expect("write feature");
+    run_git(dir, &["add", "feature.txt"]);
+    run_git(dir, &["commit", "-q", "-m", "feature"]);
+    run_git(dir, &["checkout", "-q", "main"]);
+    run_git(
+        dir,
+        &["merge", "-q", "--no-ff", "-m", "merge feat/m", "feat/m"],
+    );
+    // main advances past the commit `idle` points at.
+    std::fs::write(dir.join("later.txt"), "later\n").expect("write later");
+    run_git(dir, &["add", "later.txt"]);
+    run_git(dir, &["commit", "-q", "-m", "later"]);
+    let stub_dir = tempfile::tempdir().expect("stub dir");
+    let gh = write_gh_stub(stub_dir.path(), "not logged in", 1);
+
+    let out = run_gct_with_gh_bin(dir, &["prune"], &gh);
+    assert!(out.status.success());
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("Would delete 1 merged branch(es):"),
+        "{stdout:?}"
+    );
+    assert!(stdout.contains("  feat/m\n"), "{stdout:?}");
+    assert!(!stdout.contains("idle"), "{stdout:?}");
+}
