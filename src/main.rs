@@ -1775,7 +1775,7 @@ fn report_fetch_errors(app: &mut App, context: &str, errors: Vec<String>) {
 }
 
 async fn load_branches(app: &mut App) {
-    let branch_output = match run_git(&["branch", "-vv"]).await {
+    let branch_output = match run_git(&["branch", "-vv", "--no-abbrev"]).await {
         Ok(output) => output,
         Err(e) => {
             report_fetch_errors(
@@ -1795,17 +1795,17 @@ async fn load_branches(app: &mut App) {
             String::new()
         }
     };
-    let first_parent_output = match run_git(&["rev-list", "--first-parent", &default_branch]).await
-    {
-        Ok(output) => output,
-        Err(e) => {
-            // Non-fatal: only the merged-marker annotations are lost.
-            app.record_error(format!(
-                "git rev-list --first-parent {default_branch} failed: {e}"
-            ));
-            String::new()
-        }
-    };
+    // `--` keeps a path named like the default branch from making it ambiguous.
+    let first_parent_output =
+        match run_git(&["rev-list", "--first-parent", &default_branch, "--"]).await {
+            Ok(output) => output,
+            Err(e) => {
+                // Non-fatal: only the merged-marker annotations are lost. The
+                // error already names the failed command.
+                app.record_error(e.to_string());
+                String::new()
+            }
+        };
     app.raw.branches = parse_branches(&branch_output, &merged_output, &first_parent_output);
 }
 

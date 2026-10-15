@@ -1,3 +1,5 @@
+use std::collections::HashSet;
+
 use crate::git::types::{Branch, Commit, Worktree};
 
 /// Parse output of `git log --format="%h%x00%s%x00%an%x00%ad" --date=short`
@@ -35,7 +37,7 @@ pub fn parse_log(output: &str) -> Vec<Commit> {
         .collect()
 }
 
-/// Parse output of `git branch -vv`
+/// Parse output of `git branch -vv --no-abbrev`
 /// `first_parent_output` is the output of `git rev-list --first-parent <default>`:
 /// the full hashes on the default branch's first-parent chain, newest first.
 pub fn parse_branches(output: &str, merged_output: &str, first_parent_output: &str) -> Vec<Branch> {
@@ -52,7 +54,7 @@ pub fn parse_branches(output: &str, merged_output: &str, first_parent_output: &s
             (!name.is_empty()).then_some(name)
         })
         .collect();
-    let first_parent: Vec<&str> = first_parent_output
+    let first_parent: HashSet<&str> = first_parent_output
         .lines()
         .map(str::trim)
         .filter(|l| !l.is_empty())
@@ -90,12 +92,12 @@ pub fn parse_branches(output: &str, merged_output: &str, first_parent_output: &s
             // on the default branch's first-parent chain. A tip on that chain is
             // just a point the default branch passed through (e.g., a branch
             // created and never committed to), not something merged into it.
-            // `branch -vv` abbreviates hashes, so compare by prefix.
+            // Both `branch -vv --no-abbrev` and `rev-list` print full hashes.
             let commit_hash = rest.split_whitespace().nth(1).unwrap_or_default();
             let is_merged = merged_names.contains(&name.as_str())
                 && !commit_hash.is_empty()
                 && !first_parent.is_empty()
-                && !first_parent.iter().any(|h| h.starts_with(commit_hash));
+                && !first_parent.contains(commit_hash);
 
             Some(Branch {
                 name,
@@ -168,15 +170,22 @@ mod tests {
         assert_eq!(commits[1].message, "add feature");
     }
 
+    // Full hashes, as printed by `branch -vv --no-abbrev` and `rev-list`.
+    const H_MAIN: &str = "1111111111111111111111111111111111111111";
+    const H_OLDER_MAIN: &str = "2222222222222222222222222222222222222222";
+    const H_FEATURE: &str = "3333333333333333333333333333333333333333";
+    const H_MERGED: &str = "4444444444444444444444444444444444444444";
+
     #[test]
     fn test_parse_branches() {
-        // rev-list prints full hashes (40 chars), branch -vv abbreviated (7 chars)
-        let output = "* main       abc1234 [origin/main] latest commit\n\
-                         feature-a  def5678 [origin/feature-a: ahead 1] wip\n\
-                         old-branch ghi9012 some old work\n";
+        let output = format!(
+            "* main       {H_MAIN} [origin/main] latest commit\n  \
+               feature-a  {H_FEATURE} [origin/feature-a: ahead 1] wip\n  \
+               old-branch {H_MERGED} some old work\n"
+        );
         let merged = "  old-branch\n";
-        let first_parent = "abc1234567890abcdef1234567890abcdef12345678\n";
-        let branches = parse_branches(output, merged, first_parent);
+        let first_parent = format!("{H_MAIN}\n");
+        let branches = parse_branches(&output, merged, &first_parent);
 
         assert_eq!(branches.len(), 3);
 
@@ -199,11 +208,13 @@ mod tests {
     fn test_merged_branch_checked_out_in_worktree() {
         // A merged branch checked out in a linked worktree is prefixed with `+`
         // in `git branch --merged` output; it must still be detected as merged.
-        let output = "* main       abc1234 [origin/main] latest commit\n\
-                       + wt-branch  ghi9012 (/path/wt) merged work\n";
+        let output = format!(
+            "* main       {H_MAIN} [origin/main] latest commit\n\
+             + wt-branch  {H_MERGED} (/path/wt) merged work\n"
+        );
         let merged = "* main\n+ wt-branch\n";
-        let first_parent = "abc1234567890abcdef1234567890abcdef12345678\n";
-        let branches = parse_branches(output, merged, first_parent);
+        let first_parent = format!("{H_MAIN}\n");
+        let branches = parse_branches(&output, merged, &first_parent);
 
         assert_eq!(branches[1].name, "wt-branch");
         assert!(!branches[1].is_current);
@@ -212,13 +223,14 @@ mod tests {
 
     #[test]
     fn test_branch_at_default_not_marked_merged() {
-        // The default branch tip heads its own first-parent chain; abbreviated
-        // branch hashes match it by prefix.
-        let output = "* main       abc1234 [origin/main] latest commit\n\
-                         new-branch abc1234 starting work\n";
+        // The default branch tip heads its own first-parent chain.
+        let output = format!(
+            "* main       {H_MAIN} [origin/main] latest commit\n  \
+               new-branch {H_MAIN} starting work\n"
+        );
         let merged = "* main\n  new-branch\n";
-        let first_parent = "abc1234567890abcdef1234567890abcdef12345678\n";
-        let branches = parse_branches(output, merged, first_parent);
+        let first_parent = format!("{H_MAIN}\n");
+        let branches = parse_branches(&output, merged, &first_parent);
 
         assert_eq!(branches.len(), 2);
         assert!(!branches[0].is_merged); // main (same commit as default branch)
@@ -231,13 +243,14 @@ mod tests {
         // advanced. It is an ancestor of main (listed by --merged) but sits on
         // main's first-parent chain, so it was never merged. `feature` was
         // joined through a merge commit (off the chain) → truly merged.
-        let output = "* main    abc1234 [origin/main] latest commit\n\
-                         idle    def5678 older main commit\n\
-                         feature ghi9012 feature work\n";
+        let output = format!(
+            "* main    {H_MAIN} [origin/main] latest commit\n  \
+               idle    {H_OLDER_MAIN} older main commit\n  \
+               feature {H_MERGED} feature work\n"
+        );
         let merged = "* main\n  idle\n  feature\n";
-        let first_parent = "abc1234567890abcdef1234567890abcdef12345678\n\
-                            def5678901234567890abcdef1234567890abcdef12\n";
-        let branches = parse_branches(output, merged, first_parent);
+        let first_parent = format!("{H_MAIN}\n{H_OLDER_MAIN}\n");
+        let branches = parse_branches(&output, merged, &first_parent);
 
         assert!(!branches[0].is_merged);
         assert!(!branches[1].is_merged);
@@ -247,10 +260,12 @@ mod tests {
     #[test]
     fn test_no_first_parent_output_marks_nothing_merged() {
         // `git rev-list` failed: without the chain, stay conservative.
-        let output = "* main       abc1234 latest commit\n\
-                         old-branch ghi9012 some old work\n";
+        let output = format!(
+            "* main       {H_MAIN} latest commit\n  \
+               old-branch {H_MERGED} some old work\n"
+        );
         let merged = "* main\n  old-branch\n";
-        let branches = parse_branches(output, merged, "");
+        let branches = parse_branches(&output, merged, "");
 
         assert!(!branches[1].is_merged);
     }

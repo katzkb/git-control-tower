@@ -467,6 +467,9 @@ fn prune_ignores_branch_left_behind_on_default_branch() {
     std::fs::write(dir.join("later.txt"), "later\n").expect("write later");
     run_git(dir, &["add", "later.txt"]);
     run_git(dir, &["commit", "-q", "-m", "later"]);
+    // A path named like the default branch must not make `rev-list` ambiguous.
+    std::fs::create_dir(dir.join("main")).expect("mkdir main");
+    std::fs::write(dir.join("main/file.txt"), "x\n").expect("write main/file");
     let stub_dir = tempfile::tempdir().expect("stub dir");
     let gh = write_gh_stub(stub_dir.path(), "not logged in", 1);
 
